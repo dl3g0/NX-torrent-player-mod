@@ -185,12 +185,21 @@ bool MpvView::startMpv()
 
     mpv_set_option_string(mpv, "vo", "libmpv");
     mpv_set_option_string(mpv, "hwdec", "auto");
+    mpv_set_option_string(mpv, "hwdec-extra-frames", "32");
     mpv_set_option_string(mpv, "config", "no");
     mpv_set_option_string(mpv, "terminal", "no");
     // Switch audio output is stereo; force a proper downmix or 5.1 dialogue
     // (centre channel) is dropped.
     mpv_set_option_string(mpv, "audio-channels", "stereo");
-    mpv_set_option_string(mpv, "audio-normalize-downmix", "yes");
+    // Do NOT normalize the downmix: "yes" scales the 5.1->stereo matrix down to
+    // avoid clipping, which was one reason 5.1 tracks played quiet. "no" keeps the
+    // standard downmix levels so the centre (dialogue) folds in at full strength.
+    mpv_set_option_string(mpv, "audio-normalize-downmix", "no");
+    // Even so a 5.1 master downmixed to stereo sits well below a native stereo
+    // track on the Switch's output. dynaudnorm lifts perceived loudness to a
+    // consistent target in realtime -- quiet 5.1 dialogue comes up without
+    // clipping loud scenes, and native stereo is left roughly where it is.
+    mpv_set_option_string(mpv, "af", "dynaudnorm=f=200:g=11:p=0.9:m=10");
 
     // Preferred track languages (Options). mpv falls back to the file's default
     // track when nothing matches, so a wrong guess costs nothing.
@@ -291,44 +300,12 @@ void MpvView::registerPlayerActions()
         },
         false, false, brls::SOUND_BACK);
 
-    // A toggles pause during playback (ignored while still buffering).
+    // A toggles pause during playback (ignored while still buffering). Tapping the
+    // video does the same (see the gesture in buildLoadingOverlay).
     this->registerAction(
         "Pause", brls::BUTTON_A,
         [this](brls::View*) {
-            if (!ready || !mpv)
-                return true;
-
-            // Commit a scrub: jump there and resume. mpv's seek reaches our
-            // stream's seek_cb, which moves the torrent playhead, so the
-            // download window follows to the new position.
-            if (seeking)
-            {
-                seeking = false;
-                char t[32];
-                std::snprintf(t, sizeof(t), "%.3f", seekTarget);
-                const char* cmd[] = { "seek", t, "absolute", nullptr };
-                mpv_command_async(mpv, 0, cmd);
-                userPaused = false;
-                mpv_set_property_string(mpv, "pause", "no");
-                if (pauseOverlay) pauseOverlay->setVisibility(brls::Visibility::GONE);
-                if (pauseTitleBox) pauseTitleBox->setVisibility(brls::Visibility::GONE);
-                if (optionsHint) optionsHint->setVisibility(brls::Visibility::GONE);
-                if (seekOverlay) seekOverlay->setVisibility(brls::Visibility::GONE);
-                return true;
-            }
-
-            userPaused = !userPaused;
-            mpv_set_property_string(mpv, "pause", userPaused ? "yes" : "no");
-            brls::Visibility vis = userPaused ? brls::Visibility::VISIBLE
-                                              : brls::Visibility::GONE;
-            if (pauseOverlay)
-                pauseOverlay->setVisibility(vis);
-            if (pauseTitleBox)
-                pauseTitleBox->setVisibility(vis);
-            if (optionsHint)
-                optionsHint->setVisibility(vis);
-            if (seekOverlay)
-                seekOverlay->setVisibility(vis);
+            onPlayPause();
             return true;
         },
         false, false, brls::SOUND_CLICK);
@@ -378,6 +355,60 @@ void MpvView::registerPlayerActions()
             return true;
         },
         false, false, brls::SOUND_CLICK);
+}
+
+void MpvView::setControlsVisible(bool show)
+{
+    brls::Visibility v = show ? brls::Visibility::VISIBLE : brls::Visibility::GONE;
+    if (pauseOverlay) pauseOverlay->setVisibility(v);
+    if (pauseTitleBox) pauseTitleBox->setVisibility(v);
+    if (optionsHint) optionsHint->setVisibility(v);
+    if (seekOverlay) seekOverlay->setVisibility(v);
+}
+
+void MpvView::onPlayPause()
+{
+    if (!ready || !mpv)
+        return;
+
+    // Commit a scrub: jump there and resume. mpv's seek reaches our stream's
+    // seek_cb, which moves the torrent playhead, so the download window follows.
+    if (seeking)
+    {
+        seeking = false;
+        char t[32];
+        std::snprintf(t, sizeof(t), "%.3f", seekTarget);
+        const char* cmd[] = { "seek", t, "absolute", nullptr };
+        mpv_command_async(mpv, 0, cmd);
+        userPaused = false;
+        mpv_set_property_string(mpv, "pause", "no");
+        setControlsVisible(false);
+        return;
+    }
+
+    userPaused = !userPaused;
+    mpv_set_property_string(mpv, "pause", userPaused ? "yes" : "no");
+    setControlsVisible(userPaused);
+}
+
+void MpvView::seekToFraction(double frac)
+{
+    if (!ready || !mpv || obsDur <= 0.0)
+        return;
+    if (frac < 0.0) frac = 0.0;
+    if (frac > 1.0) frac = 1.0;
+    double target = frac * obsDur;
+    char t[32];
+    std::snprintf(t, sizeof(t), "%.3f", target);
+    const char* cmd[] = { "seek", t, "absolute", nullptr };
+    mpv_command_async(mpv, 0, cmd);
+    obsPos     = target;   // reflect on the bar now (obsPos is async otherwise)
+    seekTarget = target;
+    // Lifting the finger off a tap/drag resumes playback and takes the bar down.
+    seeking    = false;
+    userPaused = false;
+    mpv_set_property_string(mpv, "pause", "no");
+    setControlsVisible(false);
 }
 
 void MpvView::openTrackMenu()
@@ -469,7 +500,9 @@ void MpvView::openTrackMenu()
     header->setTitle("Playback");
     content->addView(header);
 
-    if (aLabels.size() > 1)  // more than one audio track is worth a selector
+    // Always show the audio, even when there is only one track -- it tells you
+    // what is playing (language/title).
+    if (!aLabels.empty())
     {
         auto* a = new brls::SelectorCell();
         a->init("Audio", aLabels, aCur, [this, aIds](int sel) {
@@ -495,20 +528,24 @@ void MpvView::openTrackMenu()
         });
         content->addView(s);
     }
-
-    if (aLabels.size() <= 1 && sIds.size() <= 1)
+    else  // no subtitle tracks: still show a "Subtitles: None" row for clarity
     {
-        auto* none = new brls::Label();
-        none->setText("This video has no other audio or subtitle tracks.");
-        none->setFontSize(18.0f);
-        none->setTextColor(nvgRGB(190, 190, 195));
-        none->setMargins(12.0f, 12.0f, 4.0f, 12.0f);
-        content->addView(none);
+        auto* s = new brls::SelectorCell();
+        s->init("Subtitles", { "None" }, 0, [](int) {});
+        content->addView(s);
     }
 
     auto* dlg = new brls::Dialog(content);
     dlg->addButton("Close", []() {});  // B also closes it (cancelable)
     dlg->open();
+
+    // The dialog button text defaults to brls/accent -- purple app-wide, which
+    // clashes with the teal the SelectorCell values use in this same menu. Recolour
+    // just this button to match the rest of the menu.
+    if (auto* btn = dlg->getView("brls/dialog/button1"))
+        if (auto* lbl = dynamic_cast<brls::Label*>(btn->getView("brls/button/label")))
+            lbl->setTextColor(
+                brls::Application::getTheme()["brls/list/listItem_value_color"]);
 }
 
 MpvView::~MpvView()
@@ -562,6 +599,17 @@ void MpvView::pumpEvents()
 {
     if (!mpv)
         return;
+
+    // Pause when the console takes focus away (HOME menu / overlay), so the video
+    // does not keep playing -- and its audio blaring -- in the background. Left
+    // paused; the user resumes with A or a tap when they come back.
+    if (ready && !userPaused && appletGetFocusState() != AppletFocusState_InFocus)
+    {
+        userPaused = true;
+        mpv_set_property_string(mpv, "pause", "yes");
+        setControlsVisible(true);
+    }
+
     while (true)
     {
         mpv_event* ev = mpv_wait_event(mpv, 0);
@@ -966,6 +1014,54 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     seekOverlay->addView(seekTotal);
     this->addView(seekOverlay);
 
+    // --- Touch controls --------------------------------------------------
+    // Tap the video to play/pause (which reveals the bar). Taps on the children
+    // below (seek bar, Options hint) interrupt this one -- borealis lets a child
+    // gesture win over its ancestor -- so they act on their own areas instead.
+    this->addGestureRecognizer(
+        new brls::TapGestureRecognizer(this, [this]() { onPlayPause(); }));
+
+    // Tap anywhere along the seek bar to jump there: map the tap's x within the
+    // measured track to a fraction of the duration.
+    seekOverlay->addGestureRecognizer(new brls::TapGestureRecognizer(
+        [this](brls::TapGestureStatus status, brls::Sound*) {
+            if (status.state != brls::GestureState::END || !seekTrack)
+                return;
+            float w = seekTrack->getWidth();
+            if (w > 0.0f)
+                seekToFraction((status.position.x - seekTrack->getX()) / w);
+        }));
+
+    // Drag along the seek bar to scrub: the cursor/target follows the finger
+    // live (updateSeekBar draws it while `seeking`), and the seek is committed on
+    // release -- one seek instead of one per pixel.
+    seekOverlay->addGestureRecognizer(new brls::PanGestureRecognizer(
+        [this](brls::PanGestureStatus status, brls::Sound*) {
+            if (!ready || !mpv || !seekTrack || obsDur <= 0.0)
+                return;
+            float w = seekTrack->getWidth();
+            if (w <= 0.0f)
+                return;
+            double frac = (status.position.x - seekTrack->getX()) / w;
+            if (frac < 0.0) frac = 0.0;
+            if (frac > 1.0) frac = 1.0;
+            if (status.state == brls::GestureState::END)
+                seekToFraction(frac);  // seek there, resume, hide the bar
+            else  // START / STAY: track the finger, do not seek yet
+            {
+                seeking    = true;
+                seekDur    = obsDur;
+                seekTarget = frac * obsDur;
+                setControlsVisible(true);
+            }
+        },
+        brls::PanAxis::HORIZONTAL));
+
+    // Tap the "Options" hint (top-right, shown while paused) for the track menu.
+    if (optionsHint)
+        optionsHint->addGestureRecognizer(new brls::TapGestureRecognizer(
+            optionsHint, [this]() { openTrackMenu(); }));
+
     // Semi-transparent network/torrent info panel, toggled with ZR. Two columns:
     // the network/worker counters alone are longer than the screen is tall, so a
     // single column pushed the video section off the bottom where it could never
@@ -1110,6 +1206,15 @@ void MpvView::updateBufferIndicator()
                                               : brls::Visibility::GONE);
     }
 }
+
+// Worst gap (ms) between consecutive render frames since the panel last read
+// it. The panel and the [stats] log both run on the render thread, so neither
+// can show a stall of that thread directly -- they only sample once it resumes.
+// This does: video "freezing" while audio plays means frames are decoded but
+// presented late; if this gap balloons to hundreds of ms the render LOOP itself
+// is hitching (a mpv/decode/GPU-present problem would keep it near one frame).
+// Single player at a time, so a file-scope value needs no header field.
+static double g_renderMaxGapMs = 0.0;
 
 void MpvView::updateInfoOverlay()
 {
@@ -1258,9 +1363,36 @@ void MpvView::updateInfoOverlay()
         latMs[i]          = latUs[i] / 1000;
     }
 
+    // Thread heartbeats: ms since each engine thread last ran, @ the core it
+    // ran on. A freeze with every syscall probe flat (poll/recv/send/sd all
+    // low) is a *scheduling* stall, not an OS-service stall -- and only these
+    // ages show it: the stalled thread's age balloons while survivors stay near
+    // 0, and the cores say who starved whom. rd/wr legitimately idle when the
+    // buffer is full (nothing to read/write), so watch net and ui.
+    uint32_t hbAge[4];
+    int hbCore[4];
+    torrentfs_heartbeats(tfs, hbAge, hbCore);
+    // Wifi bars (0..3, 9 = n/a): a dip right at a freeze means the wifi driver
+    // scanned/roamed -- a system stall the engine did not cause.
+    u32 wifiBars = 9;
+    {
+        NifmInternetConnectionType ict;
+        NifmInternetConnectionStatus ics;
+        if (R_FAILED(nifmGetInternetConnectionStatus(&ict, &wifiBars, &ics)))
+            wifiBars = 9;
+    }
+
     // Left column: everything about the swarm. Right column: what came out of
     // it -- the video, and the source it is being read from.
-    char text[1536];
+    // In RAM mode nothing hits the card, so the "written" rate is a RAM-store
+    // rate: label it as such rather than "SD write", which read like disk I/O.
+    const char* storeLabel = torrentfs_ram_active(tfs) ? "RAM store" : "SD write";
+    // Worst render-frame interval in the window just gone (resets each refresh,
+    // so during a stall the panel can't refresh and the next one carries the
+    // full gap). ~40 ms = healthy 24 fps; hundreds of ms = the render loop hitched.
+    double renderGapMs = g_renderMaxGapMs;
+    g_renderMaxGapMs   = 0.0;
+    char text[2048];
     std::snprintf(text, sizeof(text),
                   "NETWORK\n"
                   "Peers: %d (+%d incoming)\n"
@@ -1276,10 +1408,12 @@ void MpvView::updateInfoOverlay()
                   "claim: ph=%lld win=[%lld,%lld)  ok=%d fail=%d\n"
                   "inflight pieces: %d\n"
                   "cache: %.2f GB  wr fail: %d  rd short: %d\n"
-                  "SD write: %.2f MB/s\n"
+                  "%s: %.2f MB/s\n"
                   "sys calls/s | max ms (calm=%d):\n"
                   "poll %u|%llu  recv %u|%llu  send %u|%llu\n"
                   "sd wr %u|%llu  sd rd %u|%llu\n"
+                  "hb(ms@core) net %u@%d wr %u@%d rd %u@%d ui %u@%d  wifi %u\n"
+                  "render worst frame gap: %.0f ms\n"
                   "conn ok/fail: %d / %d\n"
                   "fail: %d sock/local   %d timeout\n"
                   "unchoked: %d   choked: %d\n"
@@ -1296,11 +1430,14 @@ void MpvView::updateInfoOverlay()
                   inflight,
                   (double)cacheTotal / (1024.0 * 1024.0 * 1024.0), cacheWrFail,
                   cacheRdShort,
-                  sdWrite / (1024.0 * 1024.0),
+                  storeLabel, sdWrite / (1024.0 * 1024.0),
                   torrentfs_calm(tfs),
                   latRate[0], latMs[0], latRate[1], latMs[1],
                   latRate[2], latMs[2],
                   latRate[3], latMs[3], latRate[4], latMs[4],
+                  hbAge[0], hbCore[0], hbAge[1], hbCore[1],
+                  hbAge[2], hbCore[2], hbAge[3], hbCore[3], wifiBars,
+                  renderGapMs,
                   c[0], c[1],
                   sockFail, connTimeouts,
                   c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9],
@@ -1554,6 +1691,26 @@ void MpvView::maybePushWatchState(bool force)
 {
     if (watch.authKey.empty() || watch.itemId.empty())
         return;
+
+    // Finished an episode that has a next one -- reached EOF, or stopped within
+    // the last 5% (people press B over the credits instead of waiting for EOF,
+    // and >=95% is exactly what Continue Watching filters out). Advance the
+    // library pointer to the next episode instead of recording this one at
+    // ~100%, which would push the show out of Continue Watching. A ~1% offset
+    // keeps it inside the window; resumeFrom() ignores anything under 60 s, so
+    // opening it still starts from the beginning.
+    bool finished = ended ||
+                    (lastDurSec > 0.0 && lastPosSec >= lastDurSec * 0.95);
+    if (force && finished && !watch.nextVideoId.empty())
+    {
+        double dur = lastDurSec > 0.0 ? lastDurSec : 2400.0;
+        double off = dur * 0.01;
+        if (off > 55.0) off = 55.0;
+        stremio::pushWatchStateAsync(watch.authKey, watch.itemId,
+                                     watch.nextVideoId, off, dur);
+        return;
+    }
+
     if (lastPosSec < 30.0)
         return;
     auto now = std::chrono::steady_clock::now();
@@ -1679,6 +1836,17 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
     pumpEvents();  // also feeds the engine's backlog (async property observe)
     if (tfs)
         torrentfs_hb_ui(tfs);  // render-thread heartbeat for the freeze probes
+
+    // Measure this render loop's own frame-to-frame interval (see g_renderMaxGapMs).
+    {
+        static auto prevFrame = std::chrono::steady_clock::now();
+        auto nowFrame = std::chrono::steady_clock::now();
+        double gap =
+            std::chrono::duration<double, std::milli>(nowFrame - prevFrame).count();
+        prevFrame = nowFrame;
+        if (gap > g_renderMaxGapMs)
+            g_renderMaxGapMs = gap;
+    }
 
     // A touch on the screen flips borealis into TOUCH input mode, and the first
     // gamepad press after that is consumed just to switch back -- so A took two

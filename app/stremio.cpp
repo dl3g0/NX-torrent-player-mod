@@ -490,14 +490,18 @@ void fetchLibraryAsync(const std::string& authKey,
                 int nRemoved = 0, nNoName = 0, nTemp = 0;
                 for (const auto& o : objs)
                 {
-                    // Stremio keeps deleted entries in the collection flagged
-                    // removed=true, and auto-adds anything you watch as
-                    // temp=true (that's "Continue Watching", not a real library
-                    // add). Both are worth counting: they explain a short list.
-                    if (json::boolean(o, "removed")) { nRemoved++; continue; }
-                    if (json::boolean(o, "temp")) nTemp++;
-
+                    // Stremio flags entries removed=true (dropped from the "+
+                    // Library" grid) and temp=true (auto-added by watching, i.e.
+                    // Continue Watching). Keep BOTH: Continue Watching is driven by
+                    // watch state, so a removed-but-watched title still belongs
+                    // there (Stremio shows it too) -- it was skipping these that
+                    // hid shows finished on another device. The Library view
+                    // filters them out via the flags below.
                     LibItem it;
+                    it.removed = json::boolean(o, "removed");
+                    it.temp    = json::boolean(o, "temp");
+                    if (it.removed) nRemoved++;
+                    if (it.temp) nTemp++;
                     it.id     = json::str(o, "_id");
                     it.name   = json::str(o, "name");
                     it.type   = json::str(o, "type");
@@ -607,6 +611,14 @@ void pushWatchStateAsync(const std::string& authKey, const std::string& itemId,
 {
     if (authKey.empty() || itemId.empty() || posSec <= 0) return;
 
+    // Update the local record NOW, on the calling (UI) thread, before the network
+    // round-trip. The detail screens read g_lastWatch to draw progress bars and
+    // resume points; doing this only after the PUT succeeded meant backing out of
+    // playback showed the stale position (the PUT lands seconds later, if at all)
+    // -- and wrote g_lastWatch from a worker thread, racing the UI reads.
+    g_lastWatch = { itemId, videoId, posSec * 1000.0, durSec * 1000.0 };
+    g_libraryGen++;
+
     brls::async([authKey, itemId, videoId, posSec, durSec]() {
         std::string body = "{\"authKey\":\"" + json::escape(authKey) +
                            "\",\"collection\":\"libraryItem\",\"ids\":[\"" +
@@ -700,17 +712,9 @@ void pushWatchStateAsync(const std::string& authKey, const std::string& itemId,
                             err))
             brls::Logger::warning("[stremio] watch-state put failed: {}", err);
         else
-        {
-            // Stremio now has newer progress than the library we loaded once at
-            // sign-in. Bump the generation so the tab (and any episode list)
-            // reloads when the user returns, and record the position so those
-            // lists can show it without another fetch.
-            g_lastWatch  = { itemId, videoId, posSec * 1000.0, durSec * 1000.0 };
-            g_libraryGen++;
             brls::Logger::info("[stremio] watch-state {} @{}s/{}s pushed",
                                videoId.empty() ? itemId : videoId, (int)posSec,
                                (int)durSec);
-        }
     });
 }
 
@@ -1132,7 +1136,7 @@ void fetchSearchAsync(const std::string& query,
     brls::async([query, done]() {
         LibraryResult r;
         r.ok         = true;
-        const char* types[] = { "theaters", "series" };
+        const char* types[] = { "movie", "series" };
         for (const char* type : types)
         {
             std::string url = std::string("https://v3-cinemeta.strem.io/catalog/") +
@@ -1328,6 +1332,17 @@ StremioTab::StremioTab()
     this->registerAction(
         "View", brls::BUTTON_RIGHT,
         [this](brls::View*) {
+            // Search lays results in two columns (Movies | Shows). Left/Right moves
+            // between them when there IS a neighbour in that direction (return
+            // false = not consumed, so borealis runs its focus navigation); at the
+            // outer edge -- or on the search bar, which has no neighbour -- it falls
+            // through to cycling the category instead.
+            if (view == View::Search)
+            {
+                brls::View* cur = brls::Application::getCurrentFocus();
+                if (cur && cur->getNextFocus(brls::FocusDirection::RIGHT, cur))
+                    return false;
+            }
             if (!authKey.empty() && libLoaded) cycleView(+1);
             return true;
         },
@@ -1335,6 +1350,12 @@ StremioTab::StremioTab()
     this->registerAction(
         "View", brls::BUTTON_LEFT,
         [this](brls::View*) {
+            if (view == View::Search)
+            {
+                brls::View* cur = brls::Application::getCurrentFocus();
+                if (cur && cur->getNextFocus(brls::FocusDirection::LEFT, cur))
+                    return false;
+            }
             if (!authKey.empty() && libLoaded) cycleView(-1);
             return true;
         },
@@ -1642,21 +1663,47 @@ void StremioTab::renderView()
             // (the library is already sorted by mtime desc). Not every one is in
             // the library proper -- Stremio auto-adds watched titles as temp
             // entries, which is exactly Continue Watching.
+            // The just-played position updates locally the instant playback ends,
+            // before the server round-trip. Overlay it so a finished episode shows
+            // as advanced to the next one here and now, rather than waiting for --
+            // or racing -- the library refetch. The server catches up on reload.
+            stremio::LocalWatch lw = stremio::lastWatch();
             std::vector<stremio::LibItem> cw;
-            for (const auto& it : libItems)
+            for (auto it : libItems)  // by value: overlaid below
             {
-                double p = it.progress();
-                if (p > 0.005 && p < 0.95) cw.push_back(it);
+                if (lw.itemId == it.id && !lw.videoId.empty())
+                {
+                    it.videoId      = lw.videoId;
+                    it.timeOffsetMs = lw.offsetMs;
+                    it.durationMs   = lw.durationMs;
+                }
+                double p           = it.progress();
+                bool   inProgress  = p > 0.005 && p < 0.95;
+                // A watched series stays in Continue Watching even once the current
+                // episode is finished (>=95%) or already advanced to the next at
+                // offset 0 (p < 0): Stremio shows it on the next episode. We keep
+                // any series with a watched episode -- opening it lands on the right
+                // episode (buildEpisodeCards advances past a finished one). Movies
+                // still drop when finished.
+                bool watchedSeries = it.type == "series" && !it.videoId.empty();
+                if (inProgress || watchedSeries) cw.push_back(it);
             }
             //  history -- Material glyph in the header title.
             showItems(cw, "  Continue Watching", "Nothing in progress");
             break;
         }
         case View::Library:
-            showItems(libItems, "  Library · " +  //  bookmark
-                                    std::to_string(libItems.size()) + " items",
+        {
+            // The grid is the explicit library only -- drop the removed entries we
+            // now keep for Continue Watching.
+            std::vector<stremio::LibItem> lib;
+            for (const auto& it : libItems)
+                if (!it.removed) lib.push_back(it);
+            showItems(lib, "  Library · " +  //  bookmark
+                                    std::to_string(lib.size()) + " items",
                       "Library is empty");
             break;
+        }
         case View::PopularMovies:  //  movie
             if (popMoviesLoaded)
                 showItems(popMovies, "  Popular Movies", "No popular movies");
@@ -1740,7 +1787,49 @@ void StremioTab::renderSearch()
         }
         else
         {
-            for (const auto& it : searchResults) lastRow = addItemRow(it);
+            // Split the results: movies on the left, shows on the right.
+            auto* split = new brls::Box();
+            split->setAxis(brls::Axis::ROW);
+            split->setAlignItems(brls::AlignItems::FLEX_START);
+
+            auto makeCol = [](const char* title) {
+                auto* col = new brls::Box();
+                col->setAxis(brls::Axis::COLUMN);
+                col->setWidthPercentage(50.0f);  // hard 50/50, not content-sized
+                auto* h = new brls::Label();
+                h->setText(title);
+                h->setFontSize(20.0f);
+                h->setTextColor(nvgRGB(150, 150, 155));
+                h->setMargins(0.0f, 0.0f, 10.0f, 20.0f);
+                col->addView(h);
+                return col;
+            };
+            auto* moviesCol = makeCol("Movies");
+            auto* showsCol  = makeCol("Shows");
+
+            int nMovies = 0, nShows = 0;
+            for (const auto& it : searchResults)
+            {
+                bool isSeries = it.type == "series";
+                (isSeries ? showsCol : moviesCol)->addView(buildItemRow(it, false));
+                (isSeries ? nShows : nMovies)++;
+            }
+            auto emptyNote = [](brls::Box* col, int n) {
+                if (n) return;
+                auto* l = new brls::Label();
+                l->setText("None");
+                l->setFontSize(18.0f);
+                l->setTextColor(nvgRGB(110, 110, 115));
+                l->setMarginLeft(20.0f);
+                col->addView(l);
+            };
+            emptyNote(moviesCol, nMovies);
+            emptyNote(showsCol, nShows);
+
+            split->addView(moviesCol);
+            split->addView(showsCol);
+            libList->addView(split);
+            lastRow = split;
         }
     }
     finishList(lastRow);
@@ -1834,6 +1923,13 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
 
 // Builds one poster/title/progress row for `it`, adds it to libList, returns it.
 brls::Box* StremioTab::addItemRow(const stremio::LibItem& it)
+{
+    auto* row = buildItemRow(it, true);
+    libList->addView(row);
+    return row;
+}
+
+brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
 {
     auto* row = new brls::Box();
     row->setAxis(brls::Axis::ROW);
@@ -1932,18 +2028,20 @@ brls::Box* StremioTab::addItemRow(const stremio::LibItem& it)
     }
     row->addView(textCol);
 
-    auto* type = new brls::Label();
-    type->setText(it.type == "series" ? "Show" : "Movie");
-    type->setFontSize(19.0f);
-    type->setTextColor(nvgRGB(150, 150, 155));
-    type->setMarginLeft(16.0f);
-    // Keep it on one line and let it hold its width: the full-width progress bar
-    // in textCol otherwise squeezed this label until it wrapped.
-    type->setSingleLine(true);
-    type->setShrink(0.0f);
-    row->addView(type);
+    if (showType)
+    {
+        auto* type = new brls::Label();
+        type->setText(it.type == "series" ? "Show" : "Movie");
+        type->setFontSize(19.0f);
+        type->setTextColor(nvgRGB(150, 150, 155));
+        type->setMarginLeft(16.0f);
+        // Keep it on one line and let it hold its width: the full-width progress
+        // bar in textCol otherwise squeezed this label until it wrapped.
+        type->setSingleLine(true);
+        type->setShrink(0.0f);
+        row->addView(type);
+    }
 
-    libList->addView(row);
     return row;
 }
 

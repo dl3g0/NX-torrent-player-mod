@@ -26,7 +26,10 @@
 namespace brls
 {
 
-#define ELLIPSIS "\u2026"
+// LOCAL PATCH (see VENDORED.md): three dots instead of U+2026 -- the single
+// ellipsis glyph rendered mid-line (vertically centred) in our font, whereas
+// three periods sit on the baseline.
+#define ELLIPSIS "..."
 
 static size_t strLen(const std::string& str)
 {

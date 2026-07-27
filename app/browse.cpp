@@ -649,7 +649,7 @@ std::string clampText(const std::string& s, size_t max)
     std::string out = s.substr(0, cut);
     while (!out.empty() && (out.back() == ' ' || out.back() == ','))
         out.pop_back();
-    return out + "…";
+    return out + "...";  // three dots, not U+2026 (renders mid-line in this font)
 }
 
 // AppletFrame that paints the design's dark-navy radial gradient behind the
@@ -782,6 +782,7 @@ class AddonSourcePicker : public brls::Activity
     WatchInfo watch;
     brls::Box* addonBar   = nullptr;  // subclass creates + places these two
     brls::Box* sourcesRow = nullptr;
+    brls::HScrollingFrame* sourcesScroll = nullptr;  // the frame wrapping sourcesRow
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 
     void startAddonSources() { loadAddons(); }
@@ -830,7 +831,17 @@ class AddonSourcePicker : public brls::Activity
             addonBtns[k]->setStyle((int)k == i ? &brls::BUTTONSTYLE_PRIMARY
                                                : &brls::BUTTONSTYLE_BORDERLESS);
         auto hit = streamCache.find(i);
-        if (hit != streamCache.end()) { buildSourceCards(hit->second); return; }
+        if (hit != streamCache.end())
+        {
+            // A cached-but-empty addon means "checked, has nothing" -- show the
+            // message again rather than an empty row (buildSourceCards on an empty
+            // list would clear to nothing and drop the notice).
+            if (hit->second.empty())
+                showSourcesMessage("No source from this addon", false);
+            else
+                buildSourceCards(hit->second);
+            return;
+        }
 
         showSourcesMessage("Loading sources...", false);
         auto live = alive;
@@ -860,6 +871,11 @@ class AddonSourcePicker : public brls::Activity
         parkFocusOffSources();
         sourcesRow->setFocusable(false);
         sourcesRow->clearViews();
+        // Switching to an addon with a shorter list left the frame scrolled to
+        // where the previous (longer) list had it -- past the new content -- so
+        // entering the first card did not bring it on screen until you backed out
+        // to the addon bar and down again. Rewind to the start on every rebuild.
+        if (sourcesScroll) sourcesScroll->setContentOffsetX(0.0f, false);
         for (size_t i = 0; i < streams.size(); i++)
         {
             auto* card = makeSourceCard(streams[i], i > 0);
@@ -914,6 +930,14 @@ class AddonSourcePicker : public brls::Activity
                 // Player sits directly on the detail screen: pop both at EOF to
                 // land back on the library (film) or the series screen (episode).
                 w.endPop = 2;
+                // Resume from where we actually stopped if we just played this
+                // same title/episode: the local record updates the instant
+                // playback pushes state on B, so re-picking a source reflects it
+                // rather than the position captured when the screen was built.
+                stremio::LocalWatch lw = stremio::lastWatch();
+                if (lw.itemId == w.itemId && lw.progress() >= 0.0 &&
+                    (w.videoId.empty() || lw.videoId == w.videoId))
+                    w.resumeSec = resumeFrom(lw.offsetMs, lw.durationMs);
                 brls::Application::pushActivity(new PlayerActivity(
                     magnet, cardArt, cardLabel, stream.fileIdx, w));
                 return true;
@@ -965,6 +989,9 @@ class AddonSourcePicker : public brls::Activity
         parkFocusOffSources();
         sourcesRow->setFocusable(false);
         sourcesRow->clearViews();
+        // Same stale-offset trap as buildSourceCards: after scrolling into a long
+        // list, a message added at the row start sat off-screen to the left.
+        if (sourcesScroll) sourcesScroll->setContentOffsetX(0.0f, false);
         auto* box = new brls::Box();
         box->setFocusable(focusable);
         if (focusable) box->setHideHighlight(true);
@@ -1080,6 +1107,7 @@ class MovieDetailActivity : public AddonSourcePicker
         sourcesRow->setAxis(brls::Axis::ROW);
         sourcesRow->setAlignItems(brls::AlignItems::CENTER);
         hs->setContentView(sourcesRow);
+        sourcesScroll = hs;
         right->addView(hs);
 
         // A focusable placeholder so borealis has a focus target until the addon
@@ -1250,6 +1278,7 @@ class EpisodeDetailActivity : public AddonSourcePicker
         sourcesRow->setAxis(brls::Axis::ROW);
         sourcesRow->setAlignItems(brls::AlignItems::CENTER);
         hs->setContentView(sourcesRow);
+        sourcesScroll = hs;
         root->addView(hs);
 
         showSourcesMessage("Loading...", true);
@@ -1334,7 +1363,12 @@ class SeriesDetailActivity : public brls::Activity
     {
     }
 
-    ~SeriesDetailActivity() override { *alive = false; }
+    ~SeriesDetailActivity() override
+    {
+        *alive = false;
+        if (focusSubbed)
+            brls::Application::getGlobalFocusChangeEvent()->unsubscribe(focusSub);
+    }
 
     brls::View* createContentView() override
     {
@@ -1411,7 +1445,49 @@ class SeriesDetailActivity : public brls::Activity
 
         loadPoster();
         loadMeta();
+
+        // Refresh the episode strip when focus returns from playback (the player
+        // bumps libraryGen as it pushes progress), so the watch bar reflects where
+        // you got to. Same generation-tracked, deferred pattern as ListActivity.
+        seenGen  = stremio::libraryGen();
+        focusSub = brls::Application::getGlobalFocusChangeEvent()->subscribe(
+            [this](brls::View* v) { onSeriesFocus(v); });
+        focusSubbed = true;
         return frame;
+    }
+
+    void onSeriesFocus(brls::View* focused)
+    {
+        if (!episodesRow || !focused || !isUnder(focused, episodesRow)) return;
+        if (stremio::libraryGen() == seenGen) return;
+        seenGen = stremio::libraryGen();
+        if (activeSeason < 0 || activeSeason >= (int)seasons.size()) return;
+        auto live = alive;
+        // Defer: we are inside a focus-change dispatch and buildEpisodeCards frees
+        // the focused card. Run on the next tick; it parks focus off the strip
+        // first, and we then land on the (rebuilt) episode to continue.
+        brls::sync([this, live]() {
+            if (!*live || !episodesRow) return;
+            brls::View* cur = brls::Application::getCurrentFocus();
+            bool refocus    = cur && isUnder(cur, episodesRow);
+            // Finishing the last episode of a season advances into the next one, so
+            // switch to the season of the episode to continue, not necessarily the
+            // one we were on.
+            int tgtSeason = seasonOfVideoId(continueVideoId());
+            int idx = activeSeason;
+            for (size_t i = 0; i < seasons.size(); i++)
+                if (seasons[i] == tgtSeason) { idx = (int)i; break; }
+            if (idx != activeSeason)
+                selectSeason(idx, false);
+            else
+                buildEpisodeCards(seasons[activeSeason]);
+            if (refocus && firstEpisode)
+            {
+                if (activeSeason >= 0 && activeSeason < (int)seasonBtns.size())
+                    brls::Application::giveFocus(seasonBtns[activeSeason]);  // scroll bar
+                brls::Application::giveFocus(firstEpisode);
+            }
+        });
     }
 
   private:
@@ -1484,15 +1560,21 @@ class SeriesDetailActivity : public brls::Activity
         }
         seasonBtns.back()->setMarginRight(40.0f);
 
-        // Open on the season of the in-progress episode, else the first. Land on
-        // the season bar (not the episodes) so the layout matches the other
-        // screens; a deliberate A on a season is what dives into its episodes.
-        int cur     = seasonOfVideoId(item.videoId);
+        // Open on the season of the episode to continue, and land straight on
+        // that episode (press UP to reach the season bar) -- landing on the season
+        // bar meant an extra Down just to reach the show you were mid-way through.
+        std::string tgt = continueVideoId();
+        int cur     = seasonOfVideoId(tgt.empty() ? item.videoId : tgt);
         int initIdx = 0;
         for (size_t i = 0; i < seasons.size(); i++)
             if (seasons[i] == cur) { initIdx = (int)i; break; }
+        // Focus the active season button first so its (CENTERED) bar scrolls it
+        // into view, then land on the episode -- the bar keeps that scroll, so the
+        // current season stays visible instead of needing an Up to reveal it.
         brls::Application::giveFocus(seasonBtns[initIdx]);
-        selectSeason(initIdx, false);
+        selectSeason(initIdx, true);
+        if (!brls::Application::getCurrentFocus())  // no episodes: fall back to bar
+            brls::Application::giveFocus(seasonBtns[initIdx]);
     }
 
     void selectSeason(int idx, bool focusEpisodes)
@@ -1505,6 +1587,31 @@ class SeriesDetailActivity : public brls::Activity
         buildEpisodeCards(seasons[idx]);
         if (focusEpisodes && firstEpisode)
             brls::Application::giveFocus(firstEpisode);
+    }
+
+    // The episode to land on when the show opens: the account's current episode
+    // if still in progress, otherwise the one after it in (season, episode) order
+    // -- a finished episode means "continue with the next", even across a season
+    // boundary. The just-played local record wins over the library snapshot.
+    // Empty for a never-watched show.
+    std::string continueVideoId()
+    {
+        stremio::LocalWatch lw = stremio::lastWatch();
+        bool        local = lw.itemId == item.id && lw.progress() >= 0.0;
+        std::string vid   = local ? lw.videoId : item.videoId;
+        double      prog  = local ? lw.progress() : item.progress();
+        if (vid.empty() || prog < 0.95 || !videos) return vid;
+        std::vector<const stremio::Video*> ord;
+        for (const auto& e : *videos)
+            if (e.season >= 0) ord.push_back(&e);
+        std::sort(ord.begin(), ord.end(),
+                  [](const stremio::Video* a, const stremio::Video* b) {
+                      return a->season != b->season ? a->season < b->season
+                                                    : a->episode < b->episode;
+                  });
+        for (size_t i = 0; i + 1 < ord.size(); i++)
+            if (ord[i]->id == vid) return ord[i + 1]->id;
+        return vid;  // the finale: nothing after it, stay put
     }
 
     void buildEpisodeCards(int season)
@@ -1523,7 +1630,15 @@ class SeriesDetailActivity : public brls::Activity
                   });
         if (eps.empty()) { showEpisodesMessage("No episodes", false); return; }
 
-        brls::View* firstThumb = nullptr;
+        // The episode the account is mid-way through (local just-played record
+        // wins over the library snapshot, same rule as progressFor): diving into
+        // its season should land on it, not always on episode 1.
+        // Land on the episode to continue (current if in progress, else the next
+        // -- see continueVideoId), when it lives in this season.
+        std::string curVid = continueVideoId();
+
+        brls::View* firstThumb  = nullptr;
+        brls::View* resumeThumb = nullptr;
         for (size_t i = 0; i < eps.size(); i++)
         {
             brls::View* thumb = nullptr;
@@ -1532,15 +1647,18 @@ class SeriesDetailActivity : public brls::Activity
                 thumb->setCustomNavigationRoute(brls::FocusDirection::UP,
                                                 seasonBtns[activeSeason]);
             if (!firstThumb) firstThumb = thumb;
+            if (thumb && !curVid.empty() && eps[i].id == curVid) resumeThumb = thumb;
             episodesRow->addView(col);
         }
-        firstEpisode = firstThumb;  // where A on the season lands
+        // Land on the in-progress episode when it lives in this season, else the
+        // first. Used both by A-on-a-season and the season button's DOWN route.
+        firstEpisode = resumeThumb ? resumeThumb : firstThumb;
         if (!episodesRow->getChildren().empty())
             episodesRow->getChildren().back()->setMarginRight(60.0f);
-        if (firstThumb && activeSeason >= 0 &&
+        if (firstEpisode && activeSeason >= 0 &&
             activeSeason < (int)seasonBtns.size())
             seasonBtns[activeSeason]->setCustomNavigationRoute(
-                brls::FocusDirection::DOWN, firstThumb);
+                brls::FocusDirection::DOWN, firstEpisode);
     }
 
     // A caption ("3 · Title") over a focusable still with a watch-progress bar.
@@ -1630,6 +1748,22 @@ class SeriesDetailActivity : public brls::Activity
                          std::to_string(v.episode) + ")";
         if (v.id == item.videoId)
             w.resumeSec = resumeFrom(item.timeOffsetMs, item.durationMs);
+        // The episode after this one, in (season, episode) order: the player
+        // advances the library pointer to it at EOF so the show stays in Continue
+        // Watching on the next episode. Empty for the series finale.
+        if (videos)
+        {
+            std::vector<const stremio::Video*> ord;
+            for (const auto& e : *videos)
+                if (e.season >= 0) ord.push_back(&e);
+            std::sort(ord.begin(), ord.end(),
+                      [](const stremio::Video* a, const stremio::Video* b) {
+                          return a->season != b->season ? a->season < b->season
+                                                        : a->episode < b->episode;
+                      });
+            for (size_t i = 0; i + 1 < ord.size(); i++)
+                if (ord[i]->id == v.id) { w.nextVideoId = ord[i + 1]->id; break; }
+        }
         brls::Application::pushActivity(
             new EpisodeDetailActivity(authKey, v, seriesRating, epArt, w));
     }
@@ -1683,8 +1817,12 @@ class SeriesDetailActivity : public brls::Activity
     std::vector<int> seasons;
     std::vector<brls::Button*> seasonBtns;
     int activeSeason           = -1;
-    brls::View* firstEpisode   = nullptr;  // first card of the active season
+    brls::View* firstEpisode   = nullptr;  // in-progress (else first) card of the season
     std::string seriesRating;
+
+    brls::GenericEvent::Subscription focusSub {};
+    bool     focusSubbed = false;
+    uint32_t seenGen     = 0;
 
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 };

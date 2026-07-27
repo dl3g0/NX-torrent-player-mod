@@ -1596,7 +1596,11 @@ int64_t torrentfs_read(torrentfs *tfs, int64_t offset, char *buf, int64_t nbytes
     mutexLock(&tfs->cache_lock);
     u64 lt0 = armGetSystemTick();
     size_t got = cache_read_upto(tfs, abs, buf, (size_t)can_read);
-    lat_add(tfs, LAT_RD, lt0);
+    // In RAM mode cache_read_upto is a plain memcpy from the window, not an SD
+    // syscall: recording it as an "sd rd" probe made the ZR panel's read counter
+    // climb on every mpv read and look like disk activity. Only the real,
+    // fd-backed read path is a genuine SD access.
+    if (!tfs->ram_mode) lat_add(tfs, LAT_RD, lt0);
     mutexUnlock(&tfs->cache_lock);
 
     // Racy on purpose: diagnostic counter on the mpv thread.
@@ -1688,6 +1692,13 @@ void torrentfs_cache_stats(const torrentfs *tfs, int *wr_fail, int *rd_short,
 
 int64_t torrentfs_cache_written(const torrentfs *tfs) {
     return tfs->st_cache_written;
+}
+
+// The mode this torrent actually opened with (latched, so it can differ from
+// the global torrentfs_ram_stream() toggle if that was flipped mid-playback).
+// In RAM mode torrentfs_cache_written is a RAM-store byte count, not SD writes.
+int torrentfs_ram_active(const torrentfs *tfs) {
+    return tfs->ram_mode;
 }
 
 void torrentfs_set_backlog(torrentfs *tfs, int ms) {

@@ -92,6 +92,19 @@ if (PLATFORM_SWITCH)
         COMMAND ${NX_NACPTOOL_EXE} --create "${APP_TITLE}" "${PROJECT_AUTHOR}" "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_ALTER}" ${PROJECT_NAME}.nacp --titleid=${PROJECT_TITLEID}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROJECT_RESOURCES} ${CMAKE_BINARY_DIR}/resources
         COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/resources/font
+        # Drop borealis' demo/sample resources -- our app ships its own UI in code
+        # and its own assets, so none of these are read on device (~1.7 MB, mostly
+        # the pokemon demo images). Kept: img/sys (header battery/wifi), material
+        # (icon font), and ALL of i18n -- borealis' button hints (OK/Back/Exit)
+        # live in those json files, so pruning them blanked the hint labels.
+        COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/resources/img/pokemon
+        COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/resources/xml
+        COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/resources/icon
+        COMMAND ${CMAKE_COMMAND} -E remove -f
+            ${CMAKE_BINARY_DIR}/resources/img/tiles.png
+            ${CMAKE_BINARY_DIR}/resources/img/demo_icon.jpg
+            ${CMAKE_BINARY_DIR}/resources/img/borealis_256.png
+            ${CMAKE_BINARY_DIR}/resources/img/borealis_96.png
         # Bundle our loading-screen logo, list icon and the Stremio mark at romfs:/.
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/NX-torrent-player-bg-rounded.png ${CMAKE_BINARY_DIR}/resources/NX-torrent-player-bg-rounded.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/video-icon.png ${CMAKE_BINARY_DIR}/resources/video-icon.png
@@ -111,6 +124,9 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${BOREALIS_LIBRARY}/lib/extern/glfw/include        # GLFW/glfw3.h
     ${BOREALIS_LIBRARY}/lib/extern/glfw/deps)          # stb_image_write.h
 target_compile_options(${PROJECT_NAME} PRIVATE -ffunction-sections -fdata-sections ${APP_PLATFORM_OPTION})
+# Drop unreferenced functions/data (paired with -ffunction/-fdata-sections above)
+# so the linker only keeps the mpv/ffmpeg code actually reached, shrinking the nro.
+target_link_options(${PROJECT_NAME} PRIVATE -Wl,--gc-sections)
 target_link_libraries(${PROJECT_NAME} PRIVATE
     borealis
     PkgConfig::MPV

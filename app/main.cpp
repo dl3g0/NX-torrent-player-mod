@@ -510,6 +510,24 @@ brls::View* buildLocalTab()
 class BrowserFrame : public brls::AppletFrame
 {
   public:
+    // On teardown -- app exit above all -- the header views this frame owns and
+    // the live StremioTab beneath it are freed in an order we do not control.
+    // Several global sinks bridge those two subtrees: viewTabSink captures the
+    // header's view bar and its buttons, libraryUpTarget a header button, the
+    // cyclers/selector the tab. As it is destroyed ~StremioTab calls
+    // reportView(-1), which routes through viewTabSink into what may already be a
+    // freed header view -- the crash on quitting from the signed-in Stremio tab.
+    // A subclass destructor body runs BEFORE the base Box destroys our children,
+    // so clearing every bridge here makes those late calls harmless no-ops.
+    ~BrowserFrame() override
+    {
+        stremio::setViewTabSink(nullptr);
+        stremio::setViewSelector(nullptr);
+        stremio::setViewCycler(nullptr);
+        stremio::setLibraryUpTarget(nullptr);
+        stremio::setLibraryCountSink(nullptr);
+    }
+
     void setStremioGradient(bool enabled) { this->stremioGradient = enabled; }
 
     void draw(NVGcontext* vg, float x, float y, float width, float height,
@@ -563,6 +581,20 @@ brls::View* buildTab(config::Tab tab)
     return tab == config::Tab::STREMIO ? (brls::View*)new StremioTab()
                                        : buildLocalTab();
 }
+
+// A Label that renders with the Material icon font as its PRIMARY face. Reached
+// through the regular font's fallback, a Material glyph is positioned on the
+// text baseline and sits visibly too high; as the primary face, nanovg centres
+// it with the icon font's own metrics, level with the text beside it.
+class IconLabel : public brls::Label
+{
+  public:
+    IconLabel()
+    {
+        int f = brls::Application::getFont(brls::FONT_MATERIAL_ICONS);
+        if (f >= 0) this->font = f;
+    }
+};
 
 // Categories as buttons in the header, on the left next to the icon.
 // Hand-built: borealis' TabFrame is sidebar-only.
@@ -657,13 +689,36 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     viewBar->setAlignItems(brls::AlignItems::CENTER);
 
     std::vector<brls::Button*> viewBtns;
+    std::vector<brls::Label*>  viewIcons;
+    const float btnFont    = brls::Application::getStyle()["brls/button/text_size"];
     const auto& viewLabels = stremio::viewLabels();
     for (size_t i = 0; i < viewLabels.size(); i++)
     {
+        // Each label is "<material-glyph> <text>". Rendered as one Button string
+        // the glyph shares the text's baseline and sits visibly too high. Split
+        // it out into its own Label: the Button is a row with alignItems=center,
+        // so a separate icon Label is centred against the text instead.
+        const std::string& full = viewLabels[i];
+        size_t      sp    = full.find(' ');
+        std::string glyph = sp == std::string::npos ? std::string() : full.substr(0, sp);
+        std::string text  = sp == std::string::npos ? full : full.substr(sp + 1);
+
         auto* b = new brls::Button();
-        b->setText(viewLabels[i]);
+        b->setText(text);
         b->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
         if (i) b->setMarginLeft(2.0f);
+
+        auto* ic = new IconLabel();
+        ic->setText(glyph);
+        ic->setFontSize(btnFont);
+        ic->setMarginRight(5.0f);
+        // The icon font centres a touch low against the text; a small bottom
+        // margin nudges it back up (a centred row shifts content up by ~half the
+        // bottom margin).
+        ic->setMarginBottom(4.0f);
+        b->addView(ic, 0);   // before the text label
+        viewIcons.push_back(ic);
+
         int idx = (int)i;
         b->registerClickAction([idx](brls::View*) {
             stremio::selectActiveView(idx);
@@ -676,16 +731,30 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     // active >= 0: show the bar and mark that view PRIMARY. active < 0: fold it
     // away and take its buttons out of the focus ring (a GONE box keeps its
     // children focusable otherwise -- the same trap as the sign-in form).
-    auto applyViewBar = [viewBar, viewBtns](int active) {
+    auto applyViewBar = [viewBar, viewBtns, viewIcons, stremioBtn](int active) {
         bool show = active >= 0;
         viewBar->setVisibility(show ? brls::Visibility::VISIBLE
                                     : brls::Visibility::GONE);
+        brls::Theme theme = brls::Application::getTheme();
         for (size_t i = 0; i < viewBtns.size(); i++)
         {
+            bool isActive = (int)i == active;
             viewBtns[i]->setFocusable(show);
-            viewBtns[i]->setStyle((int)i == active ? &brls::BUTTONSTYLE_PRIMARY
-                                                   : &brls::BUTTONSTYLE_BORDERLESS);
+            viewBtns[i]->setStyle(isActive ? &brls::BUTTONSTYLE_PRIMARY
+                                           : &brls::BUTTONSTYLE_BORDERLESS);
+            // The icon lives in its own Label, so it does not inherit the button's
+            // per-state text colour on its own -- keep it in step here.
+            viewIcons[i]->setTextColor(
+                theme[isActive ? "brls/button/primary_enabled_text"
+                               : "brls/button/default_enabled_text"]);
         }
+        // Up from the Stremio list lands on the ACTIVE view button (Continue /
+        // Movies / ...), not the "Stremio" category tab. reportView runs before
+        // the list is (re)built, so finishList picks this up. Falls back to the
+        // category button when no view is shown.
+        stremio::setLibraryUpTarget(show && active < (int)viewBtns.size()
+                                        ? (brls::View*)viewBtns[active]
+                                        : (brls::View*)stremioBtn);
     };
     applyViewBar(-1);
     stremio::setViewTabSink(applyViewBar);

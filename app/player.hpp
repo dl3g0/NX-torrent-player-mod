@@ -41,6 +41,11 @@ struct WatchInfo
     std::string authKey;
     std::string itemId;   // library _id ("tt1234567")
     std::string videoId;  // what is playing: itemId for a film, "tt123:1:3" ep
+    // The episode after this one, in series order. When an episode plays to its
+    // end, the library pointer is advanced to this so the show stays in Continue
+    // Watching on the next episode instead of vanishing. Empty for films and the
+    // last episode.
+    std::string nextVideoId;
     double resumeSec = 0.0;  // start playback here (0 = from the beginning)
     std::string displayTitle;  // shown top-left on pause; "" falls back to the
                                // name derived from the source
@@ -90,6 +95,12 @@ class MpvView : public brls::Box
     // subtitle track. Pauses playback behind it (it stays paused on close, A
     // resumes), and reads the tracks straight off mpv.
     void openTrackMenu();
+
+    // Touch controls: tap the video to play/pause (and reveal the bar), tap the
+    // seek bar to jump to that point, tap the Options hint to open the track menu.
+    void onPlayPause();                 // the A-button behaviour, reused by a tap
+    void setControlsVisible(bool show); // pause overlay + title + hint + seek bar
+    void seekToFraction(double frac);   // seek to frac (0..1) of the duration
 
     // Dumps every engine counter to the log on a fixed interval, independently
     // of the ZR panel. Single snapshots hide the shape of the problem (a rate

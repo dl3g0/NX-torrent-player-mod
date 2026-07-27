@@ -32,26 +32,46 @@ void SwitchFontLoader::loadFonts()
 
     brls::Logger::info("switch system locale: {}", brls::Application::getPlatform()->getLocale());
 
-    // Standard
+    // Standard (system Latin/kana/basic). Loaded as FONT_REGULAR and used as a
+    // fallback of the primary font below.
     rc = plGetSharedFontByType(&font, PlSharedFontType_Standard);
-    if (R_SUCCEEDED(rc))
-        Application::loadFontFromMemory(FONT_REGULAR, font.address, font.size, false);
-    else
+    bool haveStd = R_SUCCEEDED(rc) &&
+                   Application::loadFontFromMemory(FONT_REGULAR, font.address, font.size, false);
+    if (!haveStd)
         Logger::error("switch: could not load Standard shared font: {:#x}", rc);
 
-    // Simplified Chinese
-    // custom Font
-    if (access(USER_FONT_PATH.c_str(), F_OK) != -1)
+    // LOCAL PATCH (see VENDORED.md): make the app's bundled Space Grotesk the
+    // PRIMARY font. getDefaultFont() is FONT_CHINESE_SIMPLIFIED on Switch, so it
+    // is loaded into THAT slot -- all UI text renders in it -- and the system
+    // fonts (Standard here, then ext/traditional/Korean/symbols below) are added
+    // as fallbacks for the glyphs it lacks. Loading it merely as FONT_REGULAR did
+    // not work: the system Chinese font that used to be the primary carries Latin
+    // glyphs, so the fallback to Space Grotesk was never reached for Latin text.
+    bool sg = Application::loadFontFromFile(FONT_CHINESE_SIMPLIFIED,
+                                            "romfs:/SpaceGrotesk-Medium.ttf");
+    if (sg)
     {
-        brls::Logger::info("Load custom font: {}", USER_FONT_PATH);
-        this->loadFontFromFile(FONT_CHINESE_SIMPLIFIED, USER_FONT_PATH);
+        brls::Logger::info("switch: loaded Space Grotesk as the primary font");
+        if (haveStd)
+            nvgAddFallbackFontId(vg, Application::getFont(FONT_CHINESE_SIMPLIFIED),
+                                 Application::getFont(FONT_REGULAR));
+        // System Simplified Chinese as a fallback (own slot; primary name is taken).
+        rc = plGetSharedFontByType(&font, PlSharedFontType_ChineseSimplified);
+        if (R_SUCCEEDED(rc) &&
+            Application::loadFontFromMemory("sys_chinese", font.address, font.size, false))
+            nvgAddFallbackFontId(vg, Application::getFont(FONT_CHINESE_SIMPLIFIED),
+                                 Application::getFont("sys_chinese"));
     }
     else
     {
-        brls::Logger::warning("Cannot find custom font, (Searched at: {})", USER_FONT_PATH);
+        // Space Grotesk missing: stock behaviour -- system Simplified Chinese is
+        // the primary, Standard its Latin fallback.
+        Logger::error("switch: Space Grotesk not found, falling back to system fonts");
         rc = plGetSharedFontByType(&font, PlSharedFontType_ChineseSimplified);
-        if (R_SUCCEEDED(rc) && Application::loadFontFromMemory(FONT_CHINESE_SIMPLIFIED, font.address, font.size, false))
-            nvgAddFallbackFontId(vg, Application::getFont(FONT_CHINESE_SIMPLIFIED), Application::getFont(FONT_REGULAR));
+        if (R_SUCCEEDED(rc) &&
+            Application::loadFontFromMemory(FONT_CHINESE_SIMPLIFIED, font.address, font.size, false))
+            nvgAddFallbackFontId(vg, Application::getFont(FONT_CHINESE_SIMPLIFIED),
+                                 Application::getFont(FONT_REGULAR));
         else
             Logger::error("switch: could not load Chinese Simplified shared font: {:#x}", rc);
     }

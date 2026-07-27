@@ -42,6 +42,13 @@ struct LibItem
     // bumps it, so sorting by it descending puts the most recently viewed first.
     std::string mtime;
 
+    // removed = not in the explicit "+ Library" grid; temp = auto-added by
+    // watching. Neither excludes it from Continue Watching, which is driven by
+    // watch state -- Stremio shows a removed-but-watched title there too. The
+    // Library view filters these out.
+    bool removed = false;
+    bool temp    = false;
+
     // 0..1 through the last watched video, or -1 when there is nothing to show.
     double progress() const
     {
@@ -310,7 +317,10 @@ class StremioTab : public brls::Box
                    const std::string& header, const char* emptyMsg);
     void loadCatalog(const char* type, std::vector<stremio::LibItem>& cache,
                      bool& loaded, const std::string& header);
-    brls::Box* addItemRow(const stremio::LibItem& it);  // one poster row
+    brls::Box* addItemRow(const stremio::LibItem& it);  // one poster row into libList
+    // Builds a poster row without parenting it (Search's split columns place it
+    // themselves). showType appends the "Movie"/"Show" tag; a one-type column hides it.
+    brls::Box* buildItemRow(const stremio::LibItem& it, bool showType);
     void finishList(brls::View* lastRow);  // focus/reset/slide after (re)building
     void renderSearch();       // the Search view: a search bar + results
     void promptSearch();       // opens the keyboard, runs the query

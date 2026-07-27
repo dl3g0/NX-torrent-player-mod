@@ -51,6 +51,29 @@ auto icon glyph next to it. Lowering the icon (rather than raising the text)
 keeps every footer label at its original size -- only the button glyphs shrink
 slightly, to sit level with their labels.
 
+### 4. `library/lib/platforms/switch/switch_font.cpp` — Space Grotesk as the primary font
+
+`loadFonts()` loads the app's bundled `romfs:/SpaceGrotesk-Medium.ttf` as the
+PRIMARY font. `getDefaultFont()` is `FONT_CHINESE_SIMPLIFIED` on Switch, so Space
+Grotesk is loaded into that slot and every system font (Standard, Simplified
+Chinese, plus the ext/traditional/Korean/symbol fonts and Material icons) is added
+as a fallback for the glyphs it lacks. So all Latin UI text is Space Grotesk while
+CJK/kana/symbols/icons still render from the system/resource fonts. It must be the
+primary, not merely `FONT_REGULAR`: the system Chinese font that used to be the
+primary carries Latin glyphs, so a `FONT_REGULAR` fallback was never reached for
+Latin. Falls back to the stock system-Chinese-primary setup if the romfs file is
+missing. The `.ttf` is bundled by the top-level CMakeLists.
+
+The patch is marked with a `LOCAL PATCH` comment in the source.
+
+### 5. `library/lib/views/label.cpp` — three-dot ellipsis
+
+`ELLIPSIS` changed from `"…"` (the single horizontal-ellipsis glyph) to
+`"..."`. In our font the U+2026 glyph rendered vertically centred (mid-line) on
+truncated labels; three periods sit on the baseline like the rest of the text.
+
+The patch is marked with a `LOCAL PATCH` comment in the source.
+
 ## Updating
 
 Re-cloning upstream **drops the patch** — re-apply it, and check this file's

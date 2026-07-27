@@ -89,6 +89,11 @@ void torrentfs_cache_stats(const torrentfs *tfs, int *wr_fail, int *rd_short,
 // the cache must reach, and stored_bytes below includes RAM partials.
 int64_t torrentfs_cache_written(const torrentfs *tfs);
 
+// Whether this torrent is streaming into RAM (the mode it was opened with). When
+// true nothing is written to or read from the SD card, and the counter above is
+// a RAM-store byte count -- so the UI can label it and the SD probes honestly.
+int torrentfs_ram_active(const torrentfs *tfs);
+
 // How many milliseconds of playback the player has buffered ahead. The deeper
 // the backlog, the fewer sessions the engine lets claim new work (a ramp from
 // the full swarm below 10 s down to a single session above 30 s), because the
