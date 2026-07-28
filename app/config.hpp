@@ -35,6 +35,11 @@ struct Config
     // Show subtitles at all. Off means mpv loads none rather than picking one.
     bool subtitles = true;
 
+    // Hardware video decoding (nvtegra). On by default. Turn it off to decode in
+    // software instead -- slower and it may stutter on 1080p, but it sidesteps the
+    // GPU decode path, which helps tell whether the random freezes come from it.
+    bool hwDecode = true;
+
     // Ask GitHub for a newer release at startup. On by default, but it is a
     // network call the user did not ask for -- offline or on a metered
     // connection, being able to turn it off matters.

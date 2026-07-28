@@ -147,6 +147,7 @@ void load()
     cfg.audioLang    = readStr(body, "audioLang", cfg.audioLang);
     cfg.subLang      = readStr(body, "subLang", cfg.subLang);
     cfg.subtitles    = readBool(body, "subtitles", cfg.subtitles);
+    cfg.hwDecode     = readBool(body, "hwDecode", cfg.hwDecode);
 
     brls::Logger::info(
         "[config] startupTab={} logging={} hide4k={} checkUpdates={}",
@@ -172,14 +173,16 @@ bool save()
                  "  \"checkUpdates\": %s,\n"
                  "  \"audioLang\": \"%s\",\n"
                  "  \"subLang\": \"%s\",\n"
-                 "  \"subtitles\": %s\n"
+                 "  \"subtitles\": %s,\n"
+                 "  \"hwDecode\": %s\n"
                  "}\n",
                  cfg.startupTab == Tab::STREMIO ? "stremio" : "local",
                  cfg.logging ? "true" : "false", cfg.hide4k ? "true" : "false",
                  cfg.rateGovernor ? "true" : "false",
                  cfg.ramStream ? "true" : "false",
                  cfg.checkUpdates ? "true" : "false", cfg.audioLang.c_str(),
-                 cfg.subLang.c_str(), cfg.subtitles ? "true" : "false");
+                 cfg.subLang.c_str(), cfg.subtitles ? "true" : "false",
+                 cfg.hwDecode ? "true" : "false");
     std::fclose(f);
     return true;
 }

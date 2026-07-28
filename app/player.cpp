@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
+
 #include <switch.h>  // appletSetMediaPlaybackState (keep the screen awake)
 
 #include <glad/glad.h>
@@ -184,8 +185,13 @@ bool MpvView::startMpv()
     }
 
     mpv_set_option_string(mpv, "vo", "libmpv");
-    mpv_set_option_string(mpv, "hwdec", "auto");
-    mpv_set_option_string(mpv, "hwdec-extra-frames", "32");
+    // Hardware decode by default (Options -> Hardware decoding). Software decode
+    // ("no") sidesteps the nvtegra/GPU path -- a way to test whether the random
+    // freezes come from it.
+    bool hwDec = config::get().hwDecode;
+    mpv_set_option_string(mpv, "hwdec", hwDec ? "auto" : "no");
+    if (hwDec)
+        mpv_set_option_string(mpv, "hwdec-extra-frames", "32");
     mpv_set_option_string(mpv, "config", "no");
     mpv_set_option_string(mpv, "terminal", "no");
     // Switch audio output is stereo; force a proper downmix or 5.1 dialogue
@@ -1216,6 +1222,43 @@ void MpvView::updateBufferIndicator()
 // Single player at a time, so a file-scope value needs no header field.
 static double g_renderMaxGapMs = 0.0;
 
+// Worst duration (ms) of the mpv render block itself (mpv_render_context_render +
+// the framebuffer juggling) since the panel last read it. Compared with the frame
+// gap above it pinpoints WHERE the render thread stalls: if this ~= the gap, the
+// stall is inside mpv's GL render (decode upload / our frame-split); if this stays
+// small while the gap balloons, the stall is the final present (swap/compositor),
+// outside our GL.
+static double g_mpvRenderMaxMs = 0.0;
+
+// Worst nvgEndFrame duration (the nanovg UI GL flush in the frame split) since the
+// panel last read it -- the remaining GPU touchpoint besides mpv render and swap.
+static double g_nvgEndMaxMs = 0.0;
+
+// Worst duration (ms) of MpvView::draw's own body (updates + getters + child draw)
+// vs the frame gap: tells whether a render-loop stall is INSIDE our draw or OUTSIDE
+// it (borealis input / present).
+static std::chrono::steady_clock::time_point g_bodyStart;
+static bool   g_bodyStartValid = false;
+static double g_bodyMaxMs       = 0.0;
+
+// Sub-splits of the draw body (body ~= gap says the stall is in here, but not
+// where). Each times one region so the panel names the exact blocker:
+//   gl  = the GL/FBO juggling + report_swap after mpv render (GPU sync point)
+//   ov  = updateInfoOverlay (torrentfs getters + nifm + mpv reads) -- panel-open
+//   log = logStats (torrentfs getters + log write) -- runs ALWAYS, panel-closed too
+//   box = brls::Box::draw (child views / nanovg text)
+static double g_glMaxMs  = 0.0;
+static double g_ovMaxMs  = 0.0;
+static double g_logMaxMs = 0.0;
+static double g_boxMaxMs = 0.0;
+
+// Worst glfwSwapBuffers duration (the final present), from the borealis GLFW
+// backend (LOCAL PATCH there). If the freeze sits here, it is the present /
+// compositor; if it stays small while the gap balloons, it is the UI GL flush.
+extern "C" double g_brlsSwapMaxMs;
+// Worst outer nvgEndFrame duration (the full-UI GL flush) from borealis.
+extern "C" double g_brlsNvgEndMaxMs;
+
 void MpvView::updateInfoOverlay()
 {
     if (!infoOverlay || !infoShown)
@@ -1306,6 +1349,7 @@ void MpvView::updateInfoOverlay()
     double buf = 0.0, fps = 0.0;
     int64_t w = 0, h = 0, drop = 0, decDrop = 0;
     char* hwdec = nullptr;
+    auto infoT0 = std::chrono::steady_clock::now();  // time the sync mpv-core reads
     if (mpv)
     {
         mpv_get_property(mpv, "demuxer-cache-duration", MPV_FORMAT_DOUBLE, &buf);
@@ -1336,6 +1380,9 @@ void MpvView::updateInfoOverlay()
             mpv_free_node_contents(&node);
         }
     }
+    double infoMpvMs = std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - infoT0)
+                           .count();
 
     // SD-card write rate: how fast verified pieces are landing in the cache.
     // Differentiates the engine's written-bytes counter -- NOT cacheTotal,
@@ -1372,15 +1419,13 @@ void MpvView::updateInfoOverlay()
     uint32_t hbAge[4];
     int hbCore[4];
     torrentfs_heartbeats(tfs, hbAge, hbCore);
-    // Wifi bars (0..3, 9 = n/a): a dip right at a freeze means the wifi driver
-    // scanned/roamed -- a system stall the engine did not cause.
+    // Wifi bars: DROPPED. nifmGetInternetConnectionStatus is a synchronous IPC to
+    // the wifi service, and the split probe caught it blocking the render thread
+    // for ~14.5 s (ov ~= body while everything else stayed tiny). Polling it on a
+    // background std::thread instead crashed at startup (thread/stack alloc fails
+    // under RAM-stream memory pressure). It was only a diagnostic indicator, so
+    // for now just report n/a and keep nifm off the hot path entirely.
     u32 wifiBars = 9;
-    {
-        NifmInternetConnectionType ict;
-        NifmInternetConnectionStatus ics;
-        if (R_FAILED(nifmGetInternetConnectionStatus(&ict, &wifiBars, &ics)))
-            wifiBars = 9;
-    }
 
     // Left column: everything about the swarm. Right column: what came out of
     // it -- the video, and the source it is being read from.
@@ -1392,6 +1437,18 @@ void MpvView::updateInfoOverlay()
     // full gap). ~40 ms = healthy 24 fps; hundreds of ms = the render loop hitched.
     double renderGapMs = g_renderMaxGapMs;
     g_renderMaxGapMs   = 0.0;
+    double mpvRenderMs = g_mpvRenderMaxMs;
+    g_mpvRenderMaxMs   = 0.0;
+    g_brlsSwapMaxMs    = 0.0;  // still reset it (swap confirmed ~0), just not shown
+    g_nvgEndMaxMs      = 0.0;  // frame-split flush confirmed ~0, reset but not shown
+    g_brlsNvgEndMaxMs  = 0.0;  // outer UI flush confirmed ~0, reset but not shown
+    double bodyMs      = g_bodyMaxMs;  // MpvView::draw body -- inside-draw vs outside
+    g_bodyMaxMs        = 0.0;
+    // Sub-splits of the body: which region carries the stall (see decls above).
+    double glMs  = g_glMaxMs;  g_glMaxMs  = 0.0;
+    double ovMs  = g_ovMaxMs;  g_ovMaxMs  = 0.0;
+    double logMs = g_logMaxMs; g_logMaxMs = 0.0;
+    double boxMs = g_boxMaxMs; g_boxMaxMs = 0.0;
     char text[2048];
     std::snprintf(text, sizeof(text),
                   "NETWORK\n"
@@ -1413,7 +1470,8 @@ void MpvView::updateInfoOverlay()
                   "poll %u|%llu  recv %u|%llu  send %u|%llu\n"
                   "sd wr %u|%llu  sd rd %u|%llu\n"
                   "hb(ms@core) net %u@%d wr %u@%d rd %u@%d ui %u@%d  wifi %u\n"
-                  "render worst frame gap: %.0f ms\n"
+                  "gap: %.0f  mpv: %.0f  body: %.0f  info: %.0f ms  glerr: 0x%X x%u\n"
+                  "split ms  gl: %.0f  ov: %.0f  log: %.0f  box: %.0f\n"
                   "conn ok/fail: %d / %d\n"
                   "fail: %d sock/local   %d timeout\n"
                   "unchoked: %d   choked: %d\n"
@@ -1437,7 +1495,8 @@ void MpvView::updateInfoOverlay()
                   latRate[3], latMs[3], latRate[4], latMs[4],
                   hbAge[0], hbCore[0], hbAge[1], hbCore[1],
                   hbAge[2], hbCore[2], hbAge[3], hbCore[3], wifiBars,
-                  renderGapMs,
+                  renderGapMs, mpvRenderMs, bodyMs, infoMpvMs, lastGlErr, glErrCount,
+                  glMs, ovMs, logMs, boxMs,
                   c[0], c[1],
                   sockFail, connTimeouts,
                   c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9],
@@ -1636,16 +1695,15 @@ void MpvView::logStats()
     int hbCore[4];
     torrentfs_heartbeats(tfs, hbAge, hbCore);
 
-    // Wifi bars (0..3): if this dips exactly when an episode starts, the
-    // freeze is the wifi driver's environment (scan/roam/interference), not
-    // anything the engine did. 9 = query failed / not wifi.
+    // Wifi bars: DROPPED (see the matching note in updateInfoOverlay). This is
+    // the prime freeze suspect: logStats runs ON THE RENDER THREAD every 2 s
+    // (even panel-closed), and nifmGetInternetConnectionStatus is a synchronous
+    // IPC to the wifi service. When that service stalls (scan/roam), the IPC
+    // blocks the render thread for ~14 s -> video freezes while audio (separate
+    // thread) keeps going. The split probe caught the same call blocking the
+    // panel-open path (ov ~= body). Codec/buffer-independent, which fits every
+    // observation. Keep nifm off the render thread entirely.
     u32 wifi = 9;
-    {
-        NifmInternetConnectionType ictype;
-        NifmInternetConnectionStatus icstat;
-        if (R_FAILED(nifmGetInternetConnectionStatus(&ictype, &wifi, &icstat)))
-            wifi = 9;
-    }
 
     // One line per sample, fixed field order, so the whole run can be read as a
     // trend (and grepped) instead of guessed at from a screenshot.
@@ -1846,6 +1904,8 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
         prevFrame = nowFrame;
         if (gap > g_renderMaxGapMs)
             g_renderMaxGapMs = gap;
+        g_bodyStart      = nowFrame;  // start of this draw's body (see g_bodyMaxMs)
+        g_bodyStartValid = true;
     }
 
     // A touch on the screen flips borealis into TOUCH input mode, and the first
@@ -1883,7 +1943,15 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
     // Flush everything queued so far now (paints the black letterbox UNDER the
     // video), render mpv, then restart the nanovg frame so the red overlay and
     // borealis' outer nvgEndFrame composite ON TOP of the video.
-    nvgEndFrame(vg);
+    {
+        auto nt0 = std::chrono::steady_clock::now();
+        nvgEndFrame(vg);
+        double nms = std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - nt0)
+                         .count();
+        if (nms > g_nvgEndMaxMs)
+            g_nvgEndMaxMs = nms;
+    }
 
     GLint fbo = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &fbo);
@@ -1911,8 +1979,17 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
     glDisable(GL_BLEND);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-    mpv_render_context_render(renderCtx, params);
+    {
+        auto rt0 = std::chrono::steady_clock::now();
+        mpv_render_context_render(renderCtx, params);
+        double rms = std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - rt0)
+                         .count();
+        if (rms > g_mpvRenderMaxMs)
+            g_mpvRenderMaxMs = rms;
+    }
 
+    auto tGl = std::chrono::steady_clock::now();
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, brls::Application::windowWidth, brls::Application::windowHeight);
 
@@ -1925,7 +2002,22 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
     glClear(GL_COLOR_BUFFER_BIT);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
+    // GL error probe: mpv's render and the framebuffer juggling above are the most
+    // likely spot to wedge the driver before a GPU hang. Drain the queue and keep
+    // the last code + a count (shown in the ZR panel) -- an error just before a
+    // freeze points at GL-state corruption.
+    for (GLenum e; (e = glGetError()) != GL_NO_ERROR;)
+    {
+        lastGlErr = (unsigned)e;
+        glErrCount++;
+    }
+
     mpv_render_context_report_swap(renderCtx);
+    {
+        double m = std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - tGl).count();
+        if (m > g_glMaxMs) g_glMaxMs = m;
+    }
 
     // Resume the nanovg frame that we flushed above, matching the parameters
     // Application::frame() opened it with, so the loading overlay (and the outer
@@ -1955,10 +2047,37 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
         updateStickSeek();  // must run every frame: the stick is an axis, not an event
     if (userPaused || seeking)
         updateSeekBar();
-    updateInfoOverlay();
-    logStats();  // always, even with the ZR panel closed
+    {
+        auto t = std::chrono::steady_clock::now();
+        updateInfoOverlay();
+        double m = std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - t).count();
+        if (m > g_ovMaxMs) g_ovMaxMs = m;
+    }
+    {
+        auto t = std::chrono::steady_clock::now();
+        logStats();  // always, even with the ZR panel closed
+        double m = std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - t).count();
+        if (m > g_logMaxMs) g_logMaxMs = m;
+    }
 
-    brls::Box::draw(vg, x, y, width, height, style, ctx);
+    {
+        auto t = std::chrono::steady_clock::now();
+        brls::Box::draw(vg, x, y, width, height, style, ctx);
+        double m = std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - t).count();
+        if (m > g_boxMaxMs) g_boxMaxMs = m;
+    }
+
+    if (g_bodyStartValid)
+    {
+        double b = std::chrono::duration<double, std::milli>(
+                       std::chrono::steady_clock::now() - g_bodyStart)
+                       .count();
+        if (b > g_bodyMaxMs)
+            g_bodyMaxMs = b;
+    }
 }
 
 PlayerActivity::PlayerActivity(std::string source, PlayerArt art,

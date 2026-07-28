@@ -14,6 +14,8 @@
     limitations under the License.
 */
 
+#include <chrono>  // LOCAL PATCH: swap-time diagnostic (see endFrame)
+
 #include <borealis/core/application.hpp>
 #include <borealis/core/logger.hpp>
 #include <borealis/platforms/glfw/glfw_video.hpp>
@@ -425,10 +427,21 @@ void GLFWVideoContext::beginFrame()
 #endif
 }
 
+// LOCAL PATCH (diagnostic, see VENDORED.md): worst glfwSwapBuffers duration since
+// the app last read it. Read via `extern double g_brlsSwapMaxMs;` -- tells whether
+// a render-loop freeze sits in the present (swap) or elsewhere.
+extern "C" double g_brlsSwapMaxMs = 0.0;
+
 void GLFWVideoContext::endFrame()
 {
 #ifdef BOREALIS_USE_OPENGL
+    auto t0 = std::chrono::steady_clock::now();
     glfwSwapBuffers(this->window);
+    double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0)
+                    .count();
+    if (ms > g_brlsSwapMaxMs)
+        g_brlsSwapMaxMs = ms;
 #elif defined(BOREALIS_USE_D3D11)
     D3D11_CONTEXT->endFrame();
 #endif

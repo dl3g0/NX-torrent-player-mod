@@ -44,6 +44,12 @@ brls::View* SettingsActivity::createContentView()
 
     auto* scroll = new brls::ScrollingFrame();
     scroll->setGrow(1.0f);
+    // CENTERED, not the default NATURAL: NATURAL's pixel free-scroll hands focus
+    // to the frame and re-grabs the topmost visible cell as you cross a page,
+    // which intermittently wedged the cursor on the Playback section and refused
+    // to go further. CENTERED moves focus one cell at a time and scrolls to keep
+    // it in view -- the same fix the Stremio list uses.
+    scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
     auto* list = new brls::Box();
     list->setAxis(brls::Axis::COLUMN);
     list->setPaddingLeft(60.0f);
@@ -169,12 +175,19 @@ brls::View* SettingsActivity::createContentView()
         "Keep downloaded pieces in memory instead of writing them to the SD "
         "card. Removes the brief stutter every time a piece finishes (the SD "
         "write hammers the system core, worse for bigger pieces), at the cost "
-        "of no resume and a limited seek-back range. Applies to the next video.");
+        "of no resume and a limited seek-back range.");
     ramHint->setFontSize(15.0f);
     ramHint->setTextColor(nvgRGB(150, 150, 155));
     ramHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
     ramHint->setLineHeight(1.4f);
     list->addView(ramHint);
+
+    auto* hwdec = new brls::BooleanCell();
+    hwdec->init("Hardware decoding", cfg.hwDecode, [](bool on) {
+        config::get().hwDecode = on;
+        config::save();
+    });
+    list->addView(hwdec);
 
     // ---- stremio ---------------------------------------------------------
     auto* stremioHdr = new brls::Header();
