@@ -176,12 +176,6 @@ class MpvView : public brls::Box
     int64_t statsLastBytes = 0;
     bool statsStarted      = false;
 
-    // GL error probe: last non-zero glGetError() after the mpv render + framebuffer
-    // juggling, and a running count. A GL error appearing right before a freeze
-    // points at GL-state corruption ahead of a GPU hang (shown in the ZR panel).
-    unsigned lastGlErr  = 0;
-    unsigned glErrCount = 0;
-
     bool ready         = false;  // mpv has presented the first video frame
     bool fileLoaded    = false;  // mpv opened the stream (header downloaded)
     bool overlayHidden = false;  // loading screen has been taken down

@@ -743,11 +743,6 @@ bool Application::handleAction(const ActionType type, const int button, const bo
     return !consumedButtons.empty();
 }
 
-// LOCAL PATCH (diagnostic, see VENDORED.md): worst duration of the outer
-// nvgEndFrame (the full-UI GL flush) since the app last read it. Read via
-// `extern "C" double g_brlsNvgEndMaxMs;`.
-extern "C" double g_brlsNvgEndMaxMs = 0.0;
-
 void Application::frame()
 {
     VideoContext* videoContext = Application::platform->getVideoContext();
@@ -813,15 +808,7 @@ void Application::frame()
 
     // End frame
     nvgResetTransform(Application::getNVGContext()); // scale
-    {
-        auto nt0 = std::chrono::steady_clock::now();
-        nvgEndFrame(Application::getNVGContext());
-        double nms = std::chrono::duration<double, std::milli>(
-                         std::chrono::steady_clock::now() - nt0)
-                         .count();
-        if (nms > g_brlsNvgEndMaxMs)
-            g_brlsNvgEndMaxMs = nms;
-    }
+    nvgEndFrame(Application::getNVGContext());
 
     Application::platform->getVideoContext()->endFrame();
 }
