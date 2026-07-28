@@ -102,6 +102,17 @@ class MpvView : public brls::Box
     void setControlsVisible(bool show); // pause overlay + title + hint + seek bar
     void seekToFraction(double frac);   // seek to frac (0..1) of the duration
 
+    // Control lock (Y). Blocks every player input -- buttons, the stick and touch
+    // -- for the session, so a running video is not disturbed by an accidental
+    // press. Y toggles it. While locked, any other input flashes the lock hint
+    // (top-right) instead of acting; updateLockHint hides it again after a moment.
+    void toggleLock();
+    void flashLock();
+    void updateLockHint();
+    bool controlsLocked  = false;
+    bool lockFlashActive = false;
+    std::chrono::steady_clock::time_point lockFlashUntil;
+
     // Dumps every engine counter to the log on a fixed interval, independently
     // of the ZR panel. Single snapshots hide the shape of the problem (a rate
     // read just before it collapses looks healthy); the trend is the evidence.
@@ -127,11 +138,21 @@ class MpvView : public brls::Box
     brls::Box* pauseTitleBox = nullptr;  // title, top-left, shown while paused
     std::string pauseTitle;              // what it says
     brls::Box* optionsHint   = nullptr;  // "X Options" hint, top-right while paused
+    brls::Box* lockHint      = nullptr;  // Y-lock hint / indicator, far top-right
+    brls::Label* lockLabel   = nullptr;  // padlock glyph: open (unlocked) / closed (locked)
     brls::Box* seekOverlay   = nullptr;
     brls::Box* seekFill      = nullptr;
     brls::Label* seekCur     = nullptr;
     brls::Label* seekTotal   = nullptr;
     bool userPaused          = false;
+    // Whether the controls overlay is on screen. Decoupled from userPaused: a
+    // touch on the video toggles this without changing playback, and the centre
+    // button toggles playback. (Gamepad A still does both together.)
+    bool controlsShown       = false;
+    // Auto-hide: while playing, the overlay hides itself a few seconds after it
+    // was shown (paused, it stays up). Reset whenever it is (re)shown.
+    void updateControlsAutoHide();
+    std::chrono::steady_clock::time_point controlsHideAt;
 
     // Scrubbing with the stick: left/right pause playback and move a target
     // along the seek bar; A commits the seek and resumes. The engine follows --
@@ -147,6 +168,10 @@ class MpvView : public brls::Box
     // clock and a hold timer to ramp the rate.
     void updateStickSeek();
     void beginSeek();
+    // Abandon an in-progress scrub without committing: the video never left the
+    // frame it paused on, so this just drops the seek bar and restores the
+    // play/pause the user had. B calls it instead of leaving the stream.
+    void cancelSeek();
     double seekHeld = 0.0;  // seconds the stick has been held off-centre
     std::chrono::steady_clock::time_point seekLastFrame;
     bool seekFrameValid = false;

@@ -54,6 +54,51 @@ constexpr double kSeekBaseRate   = 30.0;  // seconds of video per second, full t
 constexpr double kSeekAccelMax   = 12.0;  // held-down multiplier ceiling
 constexpr double kSeekAccelSecs  = 4.0;   // seconds of holding to reach it
 
+// Material Icons padlock glyphs (present in the bundled MaterialIcons-Regular.ttf,
+// same font as the Options gear): the control-lock pill shows the open one as a
+// hint / while unlocked, the closed one while locked.
+constexpr const char* kGlyphLockOpen   = "\xEE\xA2\x98";  // U+E898 lock_open
+constexpr const char* kGlyphLockClosed = "\xEE\xA2\x97";  // U+E897 lock
+
+namespace
+{
+// The centre play/pause button, drawn directly with nanovg (two bars while
+// playing, a triangle while paused) rather than a font glyph -- the Material
+// play/pause codepoints rendered as the wrong/garbled glyph in a Label here.
+// Reads the live pause flag through a pointer, so it always shows the right icon.
+class PlayPauseButton : public brls::Box
+{
+  public:
+    const bool* paused = nullptr;
+    void draw(NVGcontext* vg, float x, float y, float w, float h,
+              brls::Style style, brls::FrameContext* ctx) override
+    {
+        brls::Box::draw(vg, x, y, w, h, style, ctx);  // the circular background
+        float cx = x + w / 2.0f, cy = y + h / 2.0f;
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 240));
+        if (paused && *paused)
+        {
+            // Play: a right-pointing triangle.
+            nvgBeginPath(vg);
+            nvgMoveTo(vg, cx - 15.0f, cy - 27.0f);
+            nvgLineTo(vg, cx + 28.0f, cy);
+            nvgLineTo(vg, cx - 15.0f, cy + 27.0f);
+            nvgClosePath(vg);
+            nvgFill(vg);
+        }
+        else
+        {
+            // Pause: two rounded bars.
+            const float bw = 13.0f, bh = 52.0f, gap = 16.0f;
+            nvgBeginPath(vg);
+            nvgRoundedRect(vg, cx - gap / 2 - bw, cy - bh / 2, bw, bh, 3.0f);
+            nvgRoundedRect(vg, cx + gap / 2, cy - bh / 2, bw, bh, 3.0f);
+            nvgFill(vg);
+        }
+    }
+};
+} // namespace
+
 // Seconds -> "M:SS" (or "H:MM:SS" past an hour).
 std::string fmtTime(double s)
 {
@@ -295,10 +340,24 @@ bool MpvView::startMpv()
 // the whole time -- that is the only way out of a stuck load.
 void MpvView::registerPlayerActions()
 {
+    // Y locks / unlocks every other control for the session (see toggleLock).
+    // Registered first, and never gated, so it is always the way out of a lock.
+    this->registerAction(
+        "Lock", brls::BUTTON_Y,
+        [this](brls::View*) {
+            toggleLock();
+            return true;
+        },
+        false, false, brls::SOUND_CLICK);
+
     // B returns to the browser.
     this->registerAction(
         "Back", brls::BUTTON_B,
-        [](brls::View*) {
+        [this](brls::View*) {
+            if (controlsLocked) { flashLock(); return true; }
+            // Scrubbing: B cancels the seek and returns to where playback was,
+            // instead of leaving the stream.
+            if (seeking) { cancelSeek(); return true; }
             brls::Logger::info("[teardown] B pressed -> popActivity()");
             bool ok = brls::Application::popActivity();
             brls::Logger::info("[teardown] popActivity() returned {}", ok);
@@ -311,6 +370,7 @@ void MpvView::registerPlayerActions()
     this->registerAction(
         "Pause", brls::BUTTON_A,
         [this](brls::View*) {
+            if (controlsLocked) { flashLock(); return true; }
             onPlayPause();
             return true;
         },
@@ -320,6 +380,7 @@ void MpvView::registerPlayerActions()
     // current position; further nudges move it. allowRepeating so holding the
     // stick scrubs continuously. A commits (see the Pause action), B leaves.
     auto scrub = [this](double delta) {
+        if (controlsLocked) { flashLock(); return true; }
         if (!ready || !mpv)
             return true;
         if (!seeking)
@@ -343,6 +404,7 @@ void MpvView::registerPlayerActions()
     this->registerAction(
         "Info", brls::BUTTON_RT,
         [this](brls::View*) {
+            if (controlsLocked) { flashLock(); return true; }
             infoShown = !infoShown;
             brls::Logger::info("[player] ZR info toggle -> {}", infoShown);
             if (infoOverlay)
@@ -357,6 +419,7 @@ void MpvView::registerPlayerActions()
     this->registerAction(
         "Options", brls::BUTTON_X,
         [this](brls::View*) {
+            if (controlsLocked) { flashLock(); return true; }
             openTrackMenu();
             return true;
         },
@@ -365,11 +428,85 @@ void MpvView::registerPlayerActions()
 
 void MpvView::setControlsVisible(bool show)
 {
+    controlsShown = show;
     brls::Visibility v = show ? brls::Visibility::VISIBLE : brls::Visibility::GONE;
     if (pauseOverlay) pauseOverlay->setVisibility(v);
     if (pauseTitleBox) pauseTitleBox->setVisibility(v);
     if (optionsHint) optionsHint->setVisibility(v);
     if (seekOverlay) seekOverlay->setVisibility(v);
+    // The centre button draws play vs pause from the live flag itself, so nothing
+    // to update here.
+    // Arm the play-only auto-hide each time the overlay is (re)shown.
+    if (show)
+        controlsHideAt =
+            std::chrono::steady_clock::now() + std::chrono::seconds(4);
+    // The Y-lock pill rides with the pause overlay as a "Y to lock" hint (open
+    // padlock). flashLock is what flips it to the closed padlock while locked.
+    if (lockHint)
+    {
+        lockHint->setVisibility(v);
+        if (lockLabel) lockLabel->setText(kGlyphLockOpen);
+    }
+}
+
+void MpvView::toggleLock()
+{
+    controlsLocked = !controlsLocked;
+    brls::Logger::info("[player] controls {}",
+                       controlsLocked ? "LOCKED" : "unlocked");
+    if (controlsLocked)
+    {
+        // Locking: leave any scrub/pause state and hide the overlay so the video
+        // runs undisturbed. A blocked input then only flashes the lock pill.
+        seeking = false;
+        if (userPaused && mpv)
+        {
+            mpv_set_property_string(mpv, "pause", "no");
+            userPaused = false;
+        }
+        setControlsVisible(false);
+    }
+    flashLock();  // confirm the new state ("Locked" / "Unlocked")
+}
+
+// Show the lock pill for a moment: on a blocked input while locked, and to
+// confirm a toggle. updateLockHint hides it again.
+void MpvView::flashLock()
+{
+    if (!lockHint) return;
+    if (lockLabel)
+        lockLabel->setText(controlsLocked ? kGlyphLockClosed : kGlyphLockOpen);
+    lockHint->setVisibility(brls::Visibility::VISIBLE);
+    lockFlashActive = true;
+    lockFlashUntil =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(1400);
+}
+
+void MpvView::updateControlsAutoHide()
+{
+    // Only while actually playing (paused keeps the controls up), and not mid-
+    // scrub. A tap that re-shows the overlay pushes controlsHideAt out again.
+    if (!controlsShown || userPaused || seeking)
+        return;
+    if (std::chrono::steady_clock::now() >= controlsHideAt)
+        setControlsVisible(false);
+}
+
+void MpvView::updateLockHint()
+{
+    if (!lockFlashActive) return;
+    if (std::chrono::steady_clock::now() < lockFlashUntil) return;
+    lockFlashActive = false;
+    // Flash over. Hide the pill unless the pause overlay is still using it as the
+    // "Lock" hint (paused and not locked), in which case restore that label.
+    if (userPaused && !controlsLocked)
+    {
+        if (lockLabel) lockLabel->setText(kGlyphLockOpen);
+    }
+    else if (lockHint)
+    {
+        lockHint->setVisibility(brls::Visibility::GONE);
+    }
 }
 
 void MpvView::onPlayPause()
@@ -397,6 +534,19 @@ void MpvView::onPlayPause()
     setControlsVisible(userPaused);
 }
 
+void MpvView::cancelSeek()
+{
+    if (!seeking)
+        return;
+    seeking = false;
+    // No seek was committed while scrubbing, so mpv is still paused on the frame
+    // it started from. Restore what the user had -- playing, or paused with the
+    // overlay -- and take the seek bar down.
+    if (mpv)
+        mpv_set_property_string(mpv, "pause", userPaused ? "yes" : "no");
+    setControlsVisible(userPaused);
+}
+
 void MpvView::seekToFraction(double frac)
 {
     if (!ready || !mpv || obsDur <= 0.0)
@@ -417,6 +567,44 @@ void MpvView::seekToFraction(double frac)
     setControlsVisible(false);
 }
 
+namespace
+{
+// A SelectorCell whose value (the track name) truncates to the cell width instead
+// of wrapping and overflowing the dialog, and marquee-scrolls while the cell is
+// focused -- same idea as the source cards' lines.
+class TrackCell : public brls::SelectorCell
+{
+  public:
+    TrackCell()
+    {
+        // The value label ships with shrink=0, so a long track name forced its
+        // full content width -- overflowing the 720-wide dialog and spilling left
+        // over the title. Let the VALUE shrink (and truncate) while the TITLE
+        // holds its width, so the row fits and onLayout clips the value with an
+        // ellipsis. It marquees on focus (below). The strings are also clamped in
+        // openTrackMenu as a floor.
+        title->setShrink(0.0f);
+        detail->setSingleLine(true);
+        detail->setShrink(1.0f);
+        detail->setMaxWidth(500.0f);
+        // Left-align is REQUIRED for the marquee: Label::setAnimated is a no-op
+        // unless the alignment is LEFT. It also gives the natural "start...end"
+        // truncation. (The value was right-aligned by default.)
+        detail->setHorizontalAlign(brls::HorizontalAlign::LEFT);
+    }
+    void onFocusGained() override
+    {
+        brls::SelectorCell::onFocusGained();
+        detail->setAnimated(true);
+    }
+    void onFocusLost() override
+    {
+        brls::SelectorCell::onFocusLost();
+        detail->setAnimated(false);
+    }
+};
+} // namespace
+
 void MpvView::openTrackMenu()
 {
     if (!ready || !mpv)
@@ -428,10 +616,7 @@ void MpvView::openTrackMenu()
     {
         userPaused = true;
         mpv_set_property_string(mpv, "pause", "yes");
-        if (pauseOverlay) pauseOverlay->setVisibility(brls::Visibility::VISIBLE);
-        if (pauseTitleBox) pauseTitleBox->setVisibility(brls::Visibility::VISIBLE);
-        if (optionsHint) optionsHint->setVisibility(brls::Visibility::VISIBLE);
-        if (seekOverlay) seekOverlay->setVisibility(brls::Visibility::VISIBLE);
+        setControlsVisible(true);
     }
 
     // Human label for a track: uppercased language, then its title, else "Track N".
@@ -441,7 +626,7 @@ void MpvView::openTrackMenu()
         for (auto& c : s) c = (char)std::toupper((unsigned char)c);
         if (!title.empty()) s += (s.empty() ? "" : " - ") + title;
         if (s.empty()) s = "Track " + std::to_string(id);
-        return s;
+        return s;  // full name kept: the cell truncates/marquees, the dropdown shows it whole
     };
 
     // Walk mpv's track-list once, splitting audio and subtitle tracks and noting
@@ -510,7 +695,7 @@ void MpvView::openTrackMenu()
     // what is playing (language/title).
     if (!aLabels.empty())
     {
-        auto* a = new brls::SelectorCell();
+        auto* a = new TrackCell();
         a->init("Audio", aLabels, aCur, [this, aIds](int sel) {
             char v[24];
             std::snprintf(v, sizeof(v), "%lld", (long long)aIds[sel]);
@@ -521,7 +706,7 @@ void MpvView::openTrackMenu()
 
     if (sIds.size() > 1)  // there is at least one subtitle track besides "Off"
     {
-        auto* s = new brls::SelectorCell();
+        auto* s = new TrackCell();
         s->init("Subtitles", sLabels, sCur, [this, sIds](int sel) {
             if (sIds[sel] < 0)
                 mpv_set_property_string(mpv, "sid", "no");
@@ -852,8 +1037,11 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     bufferOverlay->setAxis(brls::Axis::ROW);
     bufferOverlay->setAlignItems(brls::AlignItems::CENTER);
     bufferOverlay->setPositionType(brls::PositionType::ABSOLUTE);
-    bufferOverlay->setPositionTop(40.0f);
-    bufferOverlay->setPositionRight(40.0f);
+    // Below the top-right controls cluster (Options + lock pills reach ~104px), so
+    // the buffering badge no longer sits on top of it, and right-aligned to the
+    // lock pill (the cluster sits at right:60).
+    bufferOverlay->setPositionTop(124.0f);
+    bufferOverlay->setPositionRight(60.0f);
     bufferOverlay->setPadding(12.0f, 20.0f, 12.0f, 20.0f);
     bufferOverlay->setCornerRadius(8.0f);
     bufferOverlay->setBackgroundColor(nvgRGBA(0, 0, 0, 170));
@@ -874,7 +1062,10 @@ void MpvView::buildLoadingOverlay(const std::string& title)
 
     this->addView(bufferOverlay);
 
-    // Centered pause icon (two bars) shown while the user has paused with A.
+    // Centre play/pause button, shown with the controls overlay. The overlay box
+    // spans the screen (to centre the button) but is NOT tappable itself -- only
+    // the bounded button below is, so a tap anywhere else falls through to the
+    // video's show/hide-overlay tap.
     pauseOverlay = new brls::Box();
     pauseOverlay->setAxis(brls::Axis::ROW);
     pauseOverlay->setJustifyContent(brls::JustifyContent::CENTER);
@@ -886,14 +1077,20 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     pauseOverlay->setWidthPercentage(100.0f);
     pauseOverlay->setHeightPercentage(100.0f);
     pauseOverlay->setVisibility(brls::Visibility::GONE);
-    for (int i = 0; i < 2; i++)
     {
-        auto* bar = new brls::Box();
-        bar->setDimensions(26.0f, 92.0f);
-        bar->setCornerRadius(6.0f);
-        bar->setBackgroundColor(nvgRGBA(255, 255, 255, 235));
-        bar->setMargins(0, 11, 0, 11);
-        pauseOverlay->addView(bar);
+        auto* btn = new PlayPauseButton();
+        btn->paused = &userPaused;  // draws play vs pause from the live flag
+        btn->setDimensions(140.0f, 140.0f);
+        btn->setCornerRadius(70.0f);
+        btn->setBackgroundColor(nvgRGBA(0, 0, 0, 90));
+        // Tap the centre button to play/pause (works like the A button). Bounded,
+        // so taps elsewhere toggle the overlay instead.
+        btn->addGestureRecognizer(
+            new brls::TapGestureRecognizer(btn, [this]() {
+                if (controlsLocked) { flashLock(); return; }
+                onPlayPause();
+            }));
+        pauseOverlay->addView(btn);
     }
     this->addView(pauseOverlay);
 
@@ -914,20 +1111,35 @@ void MpvView::buildLoadingOverlay(const std::string& title)
         tl->setTextColor(nvgRGB(255, 255, 255));
         tl->setSingleLine(true);
         // Cap the width so a long title is cut with an ellipsis instead of
-        // running across the screen into the top-right options hint. Short
-        // titles keep their natural width (the pill shrinks to fit).
-        tl->setMaxWidth(920.0f);
+        // running across the screen into the top-right hints. Shortened to clear
+        // the wider top-right cluster (Options + the Y-lock hint). Short titles
+        // keep their natural width (the pill shrinks to fit).
+        tl->setMaxWidth(760.0f);
         pauseTitleBox->addView(tl);
     }
     this->addView(pauseTitleBox);
 
-    // Top-right hint while paused: the X button glyph + a gear, telling the user
-    // X opens the audio/subtitle options. Same show/hide as the pause overlays.
+    // Top-right cluster shown while paused: the Options hint, then the Y-lock
+    // hint at the far right. Right-anchored so they stay together against the
+    // edge, and each pill toggles its own visibility (the lock one also flashes
+    // on a blocked input) without the other moving.
+    auto* topRight = new brls::Box();
+    topRight->setPositionType(brls::PositionType::ABSOLUTE);
+    topRight->setPositionTop(48.0f);
+    topRight->setPositionRight(60.0f);
+    topRight->setAxis(brls::Axis::ROW);
+    topRight->setAlignItems(brls::AlignItems::CENTER);
+    this->addView(topRight);
+
+    // The X button glyph + a gear: X opens the audio/subtitle options. Same
+    // show/hide as the pause overlays. Nudged left of the Y-lock pill.
     optionsHint = new brls::Box();
-    optionsHint->setPositionType(brls::PositionType::ABSOLUTE);
-    optionsHint->setPositionTop(48.0f);
-    optionsHint->setPositionRight(60.0f);
-    optionsHint->setPadding(10.0f, 20.0f, 10.0f, 20.0f);
+    // Fixed height (not content-driven): keeps both pills the same thickness and
+    // stops the cluster from reflowing -- and the lock pill from jumping a pixel
+    // -- when Options is hidden on lock. Vertical space comes from centring.
+    optionsHint->setHeight(56.0f);
+    optionsHint->setPadding(4.0f, 20.0f, 0.0f, 20.0f);
+    optionsHint->setMarginRight(16.0f);
     optionsHint->setCornerRadius(8.0f);
     optionsHint->setBackgroundColor(nvgRGBA(0, 0, 0, 140));
     optionsHint->setAxis(brls::Axis::ROW);
@@ -951,7 +1163,37 @@ void MpvView::buildLoadingOverlay(const std::string& title)
         gear->setMargins(5.0f, 0.0f, 0.0f, 0.0f);
         optionsHint->addView(gear);
     }
-    this->addView(optionsHint);
+    topRight->addView(optionsHint);
+
+    // The Y button glyph + "Lock": a hint that Y locks the controls while paused,
+    // and the indicator that flashes when a blocked input is attempted (its label
+    // then reads "Locked", see flashLock). Far right of the cluster.
+    lockHint = new brls::Box();
+    lockHint->setHeight(56.0f);  // match optionsHint exactly (see the note there)
+    lockHint->setPadding(4.0f, 20.0f, 0.0f, 20.0f);
+    lockHint->setCornerRadius(8.0f);
+    lockHint->setBackgroundColor(nvgRGBA(0, 0, 0, 140));
+    lockHint->setAxis(brls::Axis::ROW);
+    lockHint->setAlignItems(brls::AlignItems::CENTER);
+    lockHint->setVisibility(brls::Visibility::GONE);
+    {
+        auto* y = new brls::Label();
+        y->setText("\xEE\x83\xA3");  // borealis font: the Y button glyph (U+E0E3)
+        y->setFontSize(26.0f);
+        y->setTextColor(nvgRGB(255, 255, 255));
+        y->setMargins(0.0f, 12.0f, 0.0f, 0.0f);
+        lockHint->addView(y);
+
+        // Padlock glyph (Material Icons): open = a hint that Y locks; closed =
+        // locked. Nudged down a touch like the gear, which sits high in its box.
+        lockLabel = new brls::Label();
+        lockLabel->setText(kGlyphLockOpen);
+        lockLabel->setFontSize(26.0f);
+        lockLabel->setTextColor(nvgRGB(255, 255, 255));
+        lockLabel->setMargins(4.0f, 0.0f, 0.0f, 0.0f);
+        lockHint->addView(lockLabel);
+    }
+    topRight->addView(lockHint);
 
     // Seek bar at the bottom while paused: elapsed | progress | total.
     seekOverlay = new brls::Box();
@@ -1021,16 +1263,23 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     this->addView(seekOverlay);
 
     // --- Touch controls --------------------------------------------------
-    // Tap the video to play/pause (which reveals the bar). Taps on the children
-    // below (seek bar, Options hint) interrupt this one -- borealis lets a child
-    // gesture win over its ancestor -- so they act on their own areas instead.
+    // Tap the video to show/hide the controls overlay. Taps on the children below
+    // (centre play/pause button, seek bar, Options / lock hints) interrupt this
+    // one -- borealis lets a child gesture win over its ancestor -- so they act on
+    // their own areas instead of toggling the overlay.
     this->addGestureRecognizer(
-        new brls::TapGestureRecognizer(this, [this]() { onPlayPause(); }));
+        new brls::TapGestureRecognizer(this, [this]() {
+            if (controlsLocked) { flashLock(); return; }
+            // A tap on the video shows/hides the controls overlay -- it does NOT
+            // play/pause (that is the centre button now).
+            if (ready) setControlsVisible(!controlsShown);
+        }));
 
     // Tap anywhere along the seek bar to jump there: map the tap's x within the
     // measured track to a fraction of the duration.
     seekOverlay->addGestureRecognizer(new brls::TapGestureRecognizer(
         [this](brls::TapGestureStatus status, brls::Sound*) {
+            if (controlsLocked) { flashLock(); return; }
             if (status.state != brls::GestureState::END || !seekTrack)
                 return;
             float w = seekTrack->getWidth();
@@ -1043,6 +1292,7 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     // release -- one seek instead of one per pixel.
     seekOverlay->addGestureRecognizer(new brls::PanGestureRecognizer(
         [this](brls::PanGestureStatus status, brls::Sound*) {
+            if (controlsLocked) { flashLock(); return; }
             if (!ready || !mpv || !seekTrack || obsDur <= 0.0)
                 return;
             float w = seekTrack->getWidth();
@@ -1052,12 +1302,14 @@ void MpvView::buildLoadingOverlay(const std::string& title)
             if (frac < 0.0) frac = 0.0;
             if (frac > 1.0) frac = 1.0;
             if (status.state == brls::GestureState::END)
-                seekToFraction(frac);  // seek there, resume, hide the bar
-            else  // START / STAY: track the finger, do not seek yet
+                seekToFraction(frac);  // commit there, resume, hide the bar
+            else  // START / STAY: track the finger
             {
-                seeking    = true;
-                seekDur    = obsDur;
-                seekTarget = frac * obsDur;
+                // Pause and capture the start position, like the stick/button
+                // scrub -- without this the video kept playing under the preview
+                // seeks and the two fought (jumpy playback while dragging).
+                if (!seeking) beginSeek();
+                seekTarget = frac * seekDur;
                 setControlsVisible(true);
             }
         },
@@ -1066,7 +1318,17 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     // Tap the "Options" hint (top-right, shown while paused) for the track menu.
     if (optionsHint)
         optionsHint->addGestureRecognizer(new brls::TapGestureRecognizer(
-            optionsHint, [this]() { openTrackMenu(); }));
+            optionsHint, [this]() {
+                if (controlsLocked) { flashLock(); return; }
+                openTrackMenu();
+            }));
+
+    // Tap the Y-lock pill to toggle the lock -- like the Y button, and NOT gated,
+    // so a tap on it is the way to unlock by touch too. (While locked and idle the
+    // pill is hidden; a tap on the video flashes it, and a tap on it then unlocks.)
+    if (lockHint)
+        lockHint->addGestureRecognizer(
+            new brls::TapGestureRecognizer(lockHint, [this]() { toggleLock(); }));
 
     // Semi-transparent network/torrent info panel, toggled with ZR. Two columns:
     // the network/worker counters alone are longer than the screen is tall, so a
@@ -1713,12 +1975,16 @@ void MpvView::beginSeek()
 // a slow nudge and a fast sweep the same gesture.
 void MpvView::updateStickSeek()
 {
-    if (!ready || !mpv)
+    if (!ready || !mpv || controlsLocked)
         return;
 
     brls::ControllerState st {};
     brls::Application::getPlatform()->getInputManager()->updateUnifiedControllerState(&st);
-    float x = st.axes[brls::ControllerAxis::LEFT_X];
+    // Either stick scrubs -- take whichever is pushed further from centre, so the
+    // right Joy-Con's stick works the same as the left one.
+    float lx = st.axes[brls::ControllerAxis::LEFT_X];
+    float rx = st.axes[brls::ControllerAxis::RIGHT_X];
+    float x  = (lx < 0 ? -lx : lx) >= (rx < 0 ? -rx : rx) ? lx : rx;
 
     auto now = std::chrono::steady_clock::now();
     double dt = seekFrameValid
@@ -1912,8 +2178,10 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
         updateBufferIndicator();
     if (ready)
         updateStickSeek();  // must run every frame: the stick is an axis, not an event
-    if (userPaused || seeking)
+    if (controlsShown || seeking)
         updateSeekBar();
+    updateControlsAutoHide();  // hide the overlay after a few seconds of playback
+    updateLockHint();  // fades the lock flash out after its moment
     updateInfoOverlay();
     logStats();  // always, even with the ZR panel closed
 

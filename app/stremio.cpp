@@ -1548,7 +1548,11 @@ void StremioTab::draw(NVGcontext* vg, float x, float y, float width, float heigh
             brls::Application::getPlatform()
                 ->getInputManager()
                 ->updateUnifiedControllerState(&cs);
-            float sx = cs.axes[brls::ControllerAxis::LEFT_X];
+            // Either stick flicks the view -- take whichever is pushed further,
+            // so the right Joy-Con's stick works like the left one.
+            float lx = cs.axes[brls::ControllerAxis::LEFT_X];
+            float rx = cs.axes[brls::ControllerAxis::RIGHT_X];
+            float sx = (lx < 0 ? -lx : lx) >= (rx < 0 ? -rx : rx) ? lx : rx;
             if (!stickLatched && (sx > 0.6f || sx < -0.6f))
             {
                 stickLatched = true;
