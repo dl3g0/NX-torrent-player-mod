@@ -19,7 +19,11 @@ and your library, addons and sources are included too.
   downloading ahead of the playhead, and re-centres on it when you seek.
 - **Stremio integration** — sign in, browse your library, drill down through
   seasons → episodes → addons → sources, artwork and all.
-- **Local torrents** — drop `.torrent` files on the SD card (/switch/NX-torrent-player/torrents/) and play them.
+- **Local torrents & magnets** — drop `.torrent` files on the SD card, or add
+  magnet links (a `magnet.txt` file, or the on-screen keyboard). A magnet's name
+  and file list are resolved and cached so you can pick which video to stream.
+- **Player** — audio/subtitle track menu, analog scrubbing (either stick), touch
+  controls, a control lock (Y), and auto-resume where you left off.
 - **borealis** UI: Horizon look, controller-first, touch works too.
 
 ## Screenshots
@@ -47,12 +51,21 @@ default); it replaces its own .nro and restarts.
 
 ## Usage
 
-### Local torrents
+### Local torrents & magnets
 
 Drop `.torrent` files into `sdmc:/switch/NX-torrent-player/torrents/`
 (sub-folders are scanned too) and they appear in the **Local** tab with the
-torrent's total size. Torrents with no video in them are not listed. If a
-torrent holds several videos — a season pack — you get to pick which one.
+torrent's total size.
+
+Magnet links show up in the same list. Add them either by editing
+`torrents/magnet.txt` (one magnet link or bare info-hash per line) or with the
+**Add magnet** button at the top of the tab (on-screen keyboard). A magnet's
+name and file list are fetched in the background — a spinner shows which one is
+resolving — and cached, so next time it lists and opens instantly.
+
+Press **Y** on an entry to remove it (a magnet is dropped from the list; a
+`.torrent` file is deleted from the SD card). When a torrent — local or magnet —
+holds several videos, you get to pick which one; if it has no video, it says so.
 
 
 ### Stremio
