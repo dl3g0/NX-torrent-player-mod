@@ -6,6 +6,7 @@
 #include <borealis.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <strings.h>
@@ -13,6 +14,8 @@
 #include <dirent.h>
 #include <string>
 #include <sys/stat.h>
+#include <map>
+#include <set>
 #include <vector>
 
 #include <borealis/views/applet_frame.hpp>
@@ -134,14 +137,33 @@ void ensureAppDataDir()
     mkdir(APPDATA_DIR, 0777);      // ignore EEXIST
     mkdir(APPDATA_TORRENTS, 0777); // where the user drops .torrent files
     mkdir(APPDATA_POSTERS, 0777);  // cached Stremio artwork
+
+    // Seed magnet.txt so the user has a file to edit from a PC (and knows the
+    // format). Only when it does not exist yet -- never clobber their list.
+    if (FILE* f = std::fopen(APPDATA_MAGNETS, "rb"))
+    {
+        std::fclose(f);
+    }
+    else if (FILE* w = std::fopen(APPDATA_MAGNETS, "wb"))
+    {
+        std::fprintf(w,
+                     "# One magnet link or info-hash per line -- these show up in "
+                     "the Local tab.\n"
+                     "# Lines starting with # are ignored. Examples:\n"
+                     "# magnet:?xt=urn:btih:<hash>&dn=Some+Movie\n"
+                     "# <40-character info hash>\n");
+        std::fclose(w);
+    }
 }
 
 
 struct TorrentEntry
 {
-    std::string name;      // display name (file name)
-    std::string path;      // full path on the SD card
-    std::string sizeText;  // human-readable size of the whole torrent
+    std::string name;      // display name (file name, or the magnet's dn=)
+    std::string path;      // .torrent path on the SD card, or a magnet: URI
+    std::string sizeText;  // whole-torrent size; "magnet" for magnets (size unknown)
+    bool isMagnet     = false;
+    bool needsResolve = false;  // a magnet whose name+files are not cached yet
 };
 
 // Human-readable byte size (e.g. "1.4 GB").
@@ -250,6 +272,225 @@ void scanTorrentsRec(const std::string& dir, std::vector<TorrentEntry>& out)
     closedir(d);
 }
 
+// Trackers appended to a bare info-hash (same set as the Stremio path). Public
+// UDP trackers most torrents announce to anyway; DHT fills the rest.
+constexpr const char* kMagnetTrackers =
+    "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
+    "&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce"
+    "&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce"
+    "&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce"
+    "&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce"
+    "&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce";
+
+// Turn what the user pasted/typed into a playable magnet URI, or "" if it is not
+// one. Accepts a full "magnet:?..." link OR a bare info-hash (40 hex / 32 base32)
+// -- the latter is far less painful to type on the on-screen keyboard, and the
+// engine only needs the hash plus some trackers to start.
+std::string normalizeMagnet(std::string s)
+{
+    // Trim surrounding whitespace.
+    size_t a = s.find_first_not_of(" \t\r\n");
+    size_t b = s.find_last_not_of(" \t\r\n");
+    if (a == std::string::npos) return "";
+    s = s.substr(a, b - a + 1);
+
+    if (s.compare(0, 7, "magnet:") == 0)
+    {
+        // Already a magnet. Add trackers if it carries none (a trackerless magnet
+        // otherwise leans entirely on DHT, which is slow to bootstrap on wifi).
+        if (s.find("&tr=") == std::string::npos && s.find("?tr=") == std::string::npos)
+            s += kMagnetTrackers;
+        return s;
+    }
+
+    // A bare hash? 40 hex or 32 base32 characters, nothing else.
+    auto isHex = [](const std::string& h) {
+        if (h.size() != 40) return false;
+        for (char c : h)
+            if (!std::isxdigit((unsigned char)c)) return false;
+        return true;
+    };
+    auto isB32 = [](const std::string& h) {
+        if (h.size() != 32) return false;
+        for (char c : h)
+        {
+            char u = (char)std::toupper((unsigned char)c);
+            if (!((u >= 'A' && u <= 'Z') || (u >= '2' && u <= '7'))) return false;
+        }
+        return true;
+    };
+    if (isHex(s) || isB32(s))
+        return "magnet:?xt=urn:btih:" + s + kMagnetTrackers;
+    return "";
+}
+
+// A friendly name for a magnet: its dn= (display name) if present, else a short
+// "Magnet <hash-prefix>".
+std::string magnetName(const std::string& magnet)
+{
+    size_t dn = magnet.find("dn=");
+    if (dn != std::string::npos)
+    {
+        dn += 3;
+        size_t end = magnet.find('&', dn);
+        std::string raw = magnet.substr(dn, end == std::string::npos ? end : end - dn);
+        // Minimal percent-decode + '+' -> space, enough to read the name.
+        std::string out;
+        for (size_t i = 0; i < raw.size(); i++)
+        {
+            if (raw[i] == '+') out += ' ';
+            else if (raw[i] == '%' && i + 2 < raw.size())
+            {
+                auto hex = [](char c) {
+                    if (c >= '0' && c <= '9') return c - '0';
+                    c = (char)std::tolower((unsigned char)c);
+                    return c >= 'a' && c <= 'f' ? c - 'a' + 10 : 0;
+                };
+                out += (char)(hex(raw[i + 1]) * 16 + hex(raw[i + 2]));
+                i += 2;
+            }
+            else out += raw[i];
+        }
+        if (!out.empty()) return out;
+    }
+    size_t h = magnet.find("btih:");
+    if (h != std::string::npos)
+        return "Magnet " + magnet.substr(h + 5, 8);
+    return "Magnet";
+}
+
+// The lower-cased btih info-hash of a magnet, or "" if it has none.
+std::string magnetHash(const std::string& magnet)
+{
+    size_t p = magnet.find("btih:");
+    if (p == std::string::npos) return "";
+    p += 5;
+    size_t e = magnet.find('&', p);
+    std::string h = magnet.substr(p, e == std::string::npos ? e : e - p);
+    for (auto& c : h) c = (char)std::tolower((unsigned char)c);
+    return h;
+}
+
+// Whether a magnet's file list has been resolved and cached (APPDATA_MAGNET_FILES
+// holds a line for its hash, even if that line is the "no video" marker).
+bool magnetFilesCached(const std::string& hash)
+{
+    if (hash.empty()) return false;
+    FILE* f = std::fopen(APPDATA_MAGNET_FILES, "rb");
+    if (!f) return false;
+    std::string body;
+    char buf[512];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
+    std::fclose(f);
+    // A whole-line prefix "<hash>\t" -- at the start or right after a newline.
+    std::string key = hash + "\t";
+    if (body.compare(0, key.size(), key) == 0) return true;
+    return body.find("\n" + key) != std::string::npos;
+}
+
+// The magnet.txt list: one magnet or info-hash per line ('#' comments and blank
+// lines skipped). Each becomes an entry shown next to the .torrents.
+std::vector<TorrentEntry> scanMagnets(const std::string& path)
+{
+    std::vector<TorrentEntry> out;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return out;
+    std::string body;
+    char buf[512];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
+    std::fclose(f);
+
+    size_t i = 0;
+    while (i < body.size())
+    {
+        size_t nl = body.find('\n', i);
+        std::string line = body.substr(i, nl == std::string::npos ? nl : nl - i);
+        i = nl == std::string::npos ? body.size() : nl + 1;
+        size_t s = line.find_first_not_of(" \t\r");
+        if (s == std::string::npos || line[s] == '#') continue;
+        std::string magnet = normalizeMagnet(line);
+        if (magnet.empty()) continue;
+        // Resolve (name + file list) until the files are cached, even if a dn=
+        // name is already there -- we still need the file list to stream.
+        bool cached = magnetFilesCached(magnetHash(magnet));
+        out.push_back({ magnetName(magnet), magnet, "magnet", true, !cached });
+    }
+    return out;
+}
+
+// Minimal percent-encoding for a magnet's dn= value.
+std::string urlEncodeName(const std::string& s)
+{
+    std::string out;
+    for (char c : s)
+    {
+        if (std::isalnum((unsigned char)c) || c == '.' || c == '-' || c == '_')
+            out += c;
+        else
+        {
+            char b[4];
+            std::snprintf(b, sizeof(b), "%%%02X", (unsigned char)c);
+            out += b;
+        }
+    }
+    return out;
+}
+
+// Once a magnet's metadata resolves on device, write its real name into
+// magnet.txt (as &dn=...) if that line did not have one -- so it lists with a
+// readable name from then on. Matched by info-hash; other lines are untouched.
+void updateMagnetName(const std::string& magnet, const std::string& name)
+{
+    std::string want = magnetHash(magnet);
+    if (want.empty() || name.empty()) return;
+
+    FILE* f = std::fopen(APPDATA_MAGNETS, "rb");
+    if (!f) return;
+    std::string body;
+    char buf[512];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
+    std::fclose(f);
+
+    std::string out;
+    bool changed = false;
+    size_t i = 0;
+    while (i < body.size())
+    {
+        size_t nl = body.find('\n', i);
+        std::string line = body.substr(i, nl == std::string::npos ? nl : nl - i);
+        i = nl == std::string::npos ? body.size() : nl + 1;
+
+        size_t a = line.find_first_not_of(" \t\r");
+        if (a != std::string::npos && line[a] != '#')
+        {
+            std::string mg = normalizeMagnet(line);
+            if (!mg.empty() && magnetHash(mg) == want &&
+                line.find("dn=") == std::string::npos)
+            {
+                size_t b = line.find_last_not_of(" \t\r");
+                std::string base = line.substr(a, b - a + 1);
+                std::string enc  = urlEncodeName(name);
+                line = base.compare(0, 7, "magnet:") == 0
+                           ? base + "&dn=" + enc
+                           : "magnet:?xt=urn:btih:" + base + "&dn=" + enc;
+                changed = true;
+            }
+        }
+        out += line;
+        if (nl != std::string::npos) out += '\n';
+    }
+    if (!changed) return;
+    if (FILE* w = std::fopen(APPDATA_MAGNETS, "wb"))
+    {
+        std::fwrite(out.data(), 1, out.size(), w);
+        std::fclose(w);
+        brls::Logger::info("[magnet] saved name '{}' for {}", name, want);
+    }
+}
+
 std::vector<TorrentEntry> scanTorrents(const std::string& dir)
 {
     std::vector<TorrentEntry> out;
@@ -300,120 +541,294 @@ std::vector<VideoFile> torrentVideoFiles(const std::string& path)
     return out;
 }
 
-// List cell: a video icon on the left, the torrent name, and its size on the
-// right. Built in code (RecyclerCell's ctor wires the click -> didSelectRowAt).
-class TorrentCell : public brls::RecyclerCell
+// Append a magnet's resolved video files to the cache, keyed by hash. An empty
+// list writes a "no video" marker (index -1) so the magnet is still marked
+// resolved and the player can say so instead of re-fetching every time. Only
+// called once per magnet (when its files were not cached).
+void cacheMagnetFiles(const std::string& hash, const std::vector<VideoFile>& vids)
+{
+    if (hash.empty()) return;
+    FILE* f = std::fopen(APPDATA_MAGNET_FILES, "a");
+    if (!f) return;
+    if (vids.empty())
+    {
+        std::fprintf(f, "%s\t-1\t0\t-\n", hash.c_str());
+    }
+    else
+    {
+        for (const auto& v : vids)
+        {
+            // Names never contain a tab or newline in practice; strip any to be safe.
+            std::string nm = v.name;
+            for (char& c : nm)
+                if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+            std::fprintf(f, "%s\t%d\t%lld\t%s\n", hash.c_str(), v.index,
+                         (long long)v.length, nm.c_str());
+        }
+    }
+    std::fclose(f);
+}
+
+// The cached video files for a magnet, largest first. Empty if not cached OR if
+// the magnet has no video (use magnetFilesCached to tell the two apart).
+std::vector<VideoFile> magnetCachedFiles(const std::string& hash)
+{
+    std::vector<VideoFile> out;
+    if (hash.empty()) return out;
+    FILE* f = std::fopen(APPDATA_MAGNET_FILES, "rb");
+    if (!f) return out;
+    std::string body;
+    char buf[512];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
+    std::fclose(f);
+
+    size_t i = 0;
+    std::string key = hash + "\t";
+    while (i < body.size())
+    {
+        size_t nl = body.find('\n', i);
+        std::string line = body.substr(i, nl == std::string::npos ? nl : nl - i);
+        i = nl == std::string::npos ? body.size() : nl + 1;
+        if (line.compare(0, key.size(), key) != 0) continue;
+        // <hash>\t<index>\t<size>\t<name>
+        size_t p1 = key.size();
+        size_t p2 = line.find('\t', p1);
+        size_t p3 = p2 == std::string::npos ? p2 : line.find('\t', p2 + 1);
+        if (p2 == std::string::npos || p3 == std::string::npos) continue;
+        int index      = std::atoi(line.substr(p1, p2 - p1).c_str());
+        int64_t size   = std::atoll(line.substr(p2 + 1, p3 - p2 - 1).c_str());
+        std::string nm = line.substr(p3 + 1);
+        if (index < 0) continue;  // the "no video" marker
+        out.push_back({ index, nm, size });
+    }
+    std::sort(out.begin(), out.end(), [](const VideoFile& a, const VideoFile& b) {
+        return a.length > b.length;
+    });
+    return out;
+}
+
+// Root of the Local tab. Holds the `alive` flag the background name resolver
+// checks: cleared when the tab is torn down so late callbacks are no-ops.
+class LocalTabRoot : public brls::Box
 {
   public:
-    brls::Label* name = nullptr;
-    brls::Label* size = nullptr;
+    std::shared_ptr<bool> alive = std::make_shared<bool>(true);
+    ~LocalTabRoot() override { *alive = false; }
+};
 
-    TorrentCell()
+// Play `source` (a .torrent path or a magnet URI): no video -> an error; one ->
+// play it; several -> ask which file first.
+void pickAndPlay(const std::string& source, const std::string& title,
+                 const std::vector<VideoFile>& vids)
+{
+    if (vids.empty())
     {
-        this->setFocusable(true);
-        this->setAxis(brls::Axis::ROW);
-        this->setAlignItems(brls::AlignItems::CENTER);
-        this->setHeight(64.0f);
-        this->setPaddingLeft(24.0f);
-        this->setPaddingRight(24.0f);
-        this->setCornerRadius(6.0f);
+        auto* d = new brls::Dialog("This torrent has no video file to stream.");
+        d->addButton("OK", []() {});
+        d->open();
+        return;
+    }
+    if (vids.size() == 1)
+    {
+        brls::Application::pushActivity(
+            new PlayerActivity(source, {}, vids[0].name, vids[0].index));
+        return;
+    }
+    std::vector<Row> rows;
+    for (const auto& v : vids)
+    {
+        Row row;
+        row.label  = v.name;
+        row.detail = humanSize(v.length);
+        rows.push_back(row);
+    }
+    brls::Application::pushActivity(new ListActivity(
+        title, "Pick a file", rows, [source, vids](int i) {
+            brls::Logger::info("Playing {} file {} ({})", source, vids[i].index,
+                               vids[i].name);
+            brls::Application::pushActivity(
+                new PlayerActivity(source, {}, vids[i].name, vids[i].index));
+        }));
+}
 
-        auto* icon = new brls::Image();
-        icon->setImageFromRes("video-icon.png");
-        icon->setScalingType(brls::ImageScalingType::FIT);
-        icon->setDimensions(38.0f, 38.0f);
-        icon->setMarginRight(20.0f);
-        this->addView(icon);
+// Open an entry. A magnet uses its cached file list (an empty-but-cached list is
+// a torrent with no video -> error). A magnet still resolving cannot be played
+// yet -- we do not know its files. A .torrent reads its files directly.
+void playEntry(const TorrentEntry& e)
+{
+    if (e.isMagnet)
+    {
+        std::string h = magnetHash(e.path);
+        if (!magnetFilesCached(h))
+        {
+            auto* d = new brls::Dialog(
+                "Still fetching this magnet's files -- please wait.");
+            d->addButton("OK", []() {});
+            d->open();
+            return;
+        }
+        pickAndPlay(e.path, e.name, magnetCachedFiles(h));
+        return;
+    }
+    pickAndPlay(e.path, e.name, torrentVideoFiles(e.path));
+}
 
-        name = new brls::Label();
-        name->setFontSize(22.0f);
-        name->setGrow(1.0f);
-        // Torrent names are long enough to wrap to two lines, which made the
-        // rows ragged. Keep one line: borealis then truncates it, and scrolls
-        // the full name past on focus (autoAnimate, on by default).
-        name->setSingleLine(true);
-        this->addView(name);
+// The widgets of one built row we may still update: its name label, and (for a
+// magnet whose name is loading) its spinner.
+struct LocalRow
+{
+    brls::Box* view               = nullptr;
+    brls::Label* name             = nullptr;
+    brls::ProgressSpinner* spinner = nullptr;
+};
 
-        size = new brls::Label();
+// A list row: icon, name, and either the size or -- for a magnet still resolving
+// its name -- a spinner. Clicking it plays the entry.
+LocalRow makeLocalRow(const TorrentEntry& e)
+{
+    auto* row = new brls::Box();
+    row->setFocusable(true);
+    row->setAxis(brls::Axis::ROW);
+    row->setAlignItems(brls::AlignItems::CENTER);
+    row->setHeight(64.0f);
+    row->setPaddingLeft(24.0f);
+    row->setPaddingRight(24.0f);
+    row->setCornerRadius(6.0f);
+
+    auto* icon = new brls::Image();
+    icon->setImageFromRes(e.isMagnet ? "magnet-icon.png" : "video-icon.png");
+    icon->setScalingType(brls::ImageScalingType::FIT);
+    icon->setDimensions(38.0f, 38.0f);
+    icon->setMarginRight(20.0f);
+    row->addView(icon);
+
+    auto* name = new brls::Label();
+    name->setFontSize(22.0f);
+    name->setGrow(1.0f);
+    name->setSingleLine(true);  // truncates, and scrolls the full name on focus
+    // Keep the placeholder "Magnet <hash>" name while resolving. Since only one
+    // resolves at a time, the queued ones start with a "(waiting)" suffix; the
+    // resolver's onStart drops it (and shows the spinner) when its turn comes.
+    name->setText(e.needsResolve ? e.name + "  (waiting)" : e.name);
+    row->addView(name);
+
+    brls::ProgressSpinner* spinner = nullptr;
+    if (e.needsResolve)
+    {
+        spinner = new brls::ProgressSpinner();
+        spinner->setDimensions(26.0f, 26.0f);
+        spinner->setMarginLeft(16.0f);
+        spinner->animate(true);
+        spinner->setVisibility(brls::Visibility::GONE);  // shown when its turn comes
+        row->addView(spinner);
+    }
+    else if (!e.sizeText.empty())
+    {
+        auto* size = new brls::Label();
         size->setFontSize(19.0f);
         size->setTextColor(brls::Application::getTheme().getColor(
             "brls/list/listItem_value_color"));
         size->setMarginLeft(16.0f);
-        // "6.3 GB" was being squeezed by the growing name until it wrapped.
-        // It is short and fixed-shape, so give it a lane of its own and let the
-        // name take whatever is left.
         size->setSingleLine(true);
         size->setShrink(0.0f);
         size->setWidth(86.0f);
         size->setHorizontalAlign(brls::HorizontalAlign::RIGHT);
-        this->addView(size);
+        size->setText(e.sizeText);
+        row->addView(size);
     }
 
-    static brls::RecyclerCell* create() { return new TorrentCell(); }
-};
+    TorrentEntry cap = e;
+    row->registerClickAction([cap](brls::View*) {
+        playEntry(cap);
+        return true;
+    });
+    return { row, name, spinner };
+}
 
-class TorrentDataSource : public brls::RecyclerDataSource
+// Remove a magnet line (matched by info-hash) from magnet.txt.
+void removeMagnetFromFile(const std::string& magnet)
 {
-  public:
-    explicit TorrentDataSource(std::vector<TorrentEntry> items)
-        : items(std::move(items))
-    {
-    }
+    std::string want = magnetHash(magnet);
+    if (want.empty()) return;
+    FILE* f = std::fopen(APPDATA_MAGNETS, "rb");
+    if (!f) return;
+    std::string body;
+    char buf[512];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
+    std::fclose(f);
 
-    int numberOfRows(brls::RecyclerFrame* recycler, int section) override
+    std::string out;
+    size_t i = 0;
+    while (i < body.size())
     {
-        return (int)items.size();
-    }
-
-    brls::RecyclerCell* cellForRow(brls::RecyclerFrame* recycler,
-                                   brls::IndexPath index) override
-    {
-        auto* cell = (TorrentCell*)recycler->dequeueReusableCell("Cell");
-        cell->name->setText(items[index.row].name);
-        cell->size->setText(items[index.row].sizeText);
-        return cell;
-    }
-
-    void didSelectRowAt(brls::RecyclerFrame* recycler,
-                        brls::IndexPath index) override
-    {
-        const std::string& path = items[index.row].path;
-
-        // A season pack holds one video per episode, and the engine's default
-        // (stream the largest file) would pick an arbitrary one. Ask.
-        std::vector<VideoFile> vids = torrentVideoFiles(path);
-        if (vids.size() > 1)
+        size_t nl = body.find('\n', i);
+        std::string line = body.substr(i, nl == std::string::npos ? nl : nl - i);
+        i = nl == std::string::npos ? body.size() : nl + 1;
+        bool drop = false;
+        size_t a = line.find_first_not_of(" \t\r");
+        if (a != std::string::npos && line[a] != '#')
         {
-            std::vector<Row> rows;
-            for (const auto& v : vids)
-            {
-                Row row;
-                row.label  = v.name;
-                row.detail = humanSize(v.length);
-                rows.push_back(row);
-            }
-            brls::Application::pushActivity(new ListActivity(
-                items[index.row].name, "Pick a file", rows,
-                [path, vids](int i) {
-                    brls::Logger::info("Playing torrent: {} file {} ({})", path,
-                                       vids[i].index, vids[i].name);
-                    brls::Application::pushActivity(
-                        new PlayerActivity(path, {}, vids[i].name,
-                                           vids[i].index));
-                }));
-            return;
+            std::string mg = normalizeMagnet(line);
+            if (!mg.empty() && magnetHash(mg) == want) drop = true;
         }
+        if (!drop)
+        {
+            out += line;
+            if (nl != std::string::npos) out += '\n';
+        }
+    }
+    if (FILE* w = std::fopen(APPDATA_MAGNETS, "wb"))
+    {
+        std::fwrite(out.data(), 1, out.size(), w);
+        std::fclose(w);
+    }
+}
 
-        brls::Logger::info("Playing torrent: {}", path);
-        brls::Application::pushActivity(new PlayerActivity(path));
+// "Add magnet": the on-screen keyboard captures a magnet link or a bare hash.
+// On success it is appended to magnet.txt and the normalised URI returned (""
+// on cancel / invalid, which also shows a dialog). The caller adds it to the
+// list -- it does NOT auto-play.
+std::string promptMagnetInput()
+{
+    SwkbdConfig kbd;
+    if (R_FAILED(swkbdCreate(&kbd, 0)))
+        return "";
+    swkbdConfigMakePresetDefault(&kbd);
+    swkbdConfigSetHeaderText(&kbd, "Magnet link or info hash");
+    swkbdConfigSetGuideText(&kbd, "magnet:?xt=... or a 40-character hash");
+    swkbdConfigSetStringLenMax(&kbd, 2000);
+    char raw[2048] = { 0 };
+    Result rc = swkbdShow(&kbd, raw, sizeof(raw));
+    swkbdClose(&kbd);
+    if (R_FAILED(rc) || !raw[0])
+        return "";
+
+    std::string magnet = normalizeMagnet(raw);
+    if (magnet.empty())
+    {
+        auto* d = new brls::Dialog(
+            "That does not look like a magnet link or an info hash.");
+        d->addButton("OK", []() {});
+        d->open();
+        return "";
     }
 
-  private:
-    std::vector<TorrentEntry> items;
-};
+    // Persist the trimmed input (readable) so it also lists on the next launch.
+    std::string line = raw;
+    size_t a = line.find_first_not_of(" \t\r\n");
+    size_t b = line.find_last_not_of(" \t\r\n");
+    line = a == std::string::npos ? "" : line.substr(a, b - a + 1);
+    if (FILE* f = std::fopen(APPDATA_MAGNETS, "a"))
+    {
+        std::fprintf(f, "%s\n", line.c_str());
+        std::fclose(f);
+    }
+    return magnet;
+}
 
-// Centered message shown when the torrents folder is empty, telling the user
-// where to drop .torrent files.
+// Centered message shown when there are no torrents or magnets yet.
 brls::View* buildEmptyState()
 {
     auto* box = new brls::Box();
@@ -431,8 +846,8 @@ brls::View* buildEmptyState()
     box->addView(title);
 
     auto* hint = new brls::Label();
-    hint->setText("Add .torrent files to this folder on your SD card, "
-                  "then relaunch:");
+    hint->setText("Drop .torrent files in this folder on your SD card, or add "
+                  "magnet links to magnet.txt inside it (one per line):");
     hint->setFontSize(20);
     hint->setTextColor(nvgRGB(190, 190, 195));  // light gray (text_disabled is
                                                 // too dark on the dark theme)
@@ -480,29 +895,224 @@ static void appletModeBlock()
     consoleExit(NULL);
 }
 
-// The local ".torrent files on the SD card" list -- now one tab among several.
-brls::View* buildLocalTab()
+// Resolve magnets in the background, ONE AT A TIME (no full download starts):
+// their name is written into magnet.txt and their video-file list into the files
+// cache. `alive` stops the chain once the tab is gone. `onStart(magnet)` fires
+// (UI thread) when a magnet's turn begins -- to move the spinner onto it; then
+// `onEach(magnet, name)` fires when its attempt finishes (name "" = failed).
+void resolveMagnetNames(
+    std::shared_ptr<bool> alive,
+    std::shared_ptr<std::vector<std::string>> todo, size_t idx,
+    std::function<void(const std::string&)> onStart,
+    std::function<void(const std::string&, const std::string&)> onEach)
 {
-    auto items = scanTorrents(APPDATA_TORRENTS "/");
+    if (!alive || !*alive)
+        return;
+    if (idx >= todo->size())
+        return;
 
-    brls::View* content;
-    if (items.empty())
+    std::string magnet = (*todo)[idx];
+    if (onStart)
+        onStart(magnet);  // its turn: show the spinner, drop "(waiting)"
+
+    brls::async([alive, todo, idx, magnet, onStart, onEach]() {
+        std::string name;
+        torrent_meta* m = (torrent_meta*)std::calloc(1, sizeof(torrent_meta));
+        if (m)
+        {
+            char err[128] = { 0 };
+            if (torrent_load_magnet(m, magnet.c_str(), err, sizeof(err)) == 0)
+            {
+                name = m->name;
+                // Extract + cache its video files (largest first) in the same
+                // fetch, so playing it can offer a picker with no extra wait.
+                std::vector<VideoFile> vids;
+                for (int i = 0; i < m->file_count; i++)
+                {
+                    std::string p = m->files[i].path;
+                    if (!isVideoFile(p)) continue;
+                    size_t slash = p.find_last_of("/\\");
+                    vids.push_back({ i,
+                                     slash == std::string::npos ? p
+                                                                : p.substr(slash + 1),
+                                     m->files[i].length });
+                }
+                torrent_unload(m);
+                if (!magnetFilesCached(magnetHash(magnet)))
+                    cacheMagnetFiles(magnetHash(magnet), vids);
+            }
+            std::free(m);
+        }
+        brls::sync([alive, todo, idx, magnet, name, onStart, onEach]() {
+            if (!*alive)
+                return;
+            if (!name.empty())
+                updateMagnetName(magnet, name);
+            if (onEach)
+                onEach(magnet, name);
+            resolveMagnetNames(alive, todo, idx + 1, onStart, onEach);
+        });
+    });
+}
+
+// hash -> (name label, spinner) for magnet rows still resolving their name.
+using MagnetWidgets =
+    std::map<std::string, std::pair<brls::Label*, brls::ProgressSpinner*>>;
+
+// Delete a row's backing (the .torrent file, or the magnet's magnet.txt line),
+// move focus to a neighbour first, then drop the row from the list.
+void deleteEntryRow(brls::Box* list, brls::Box* row, const TorrentEntry& e,
+                    std::shared_ptr<MagnetWidgets> widgets)
+{
+    auto& kids = list->getChildren();
+    int idx    = -1;
+    for (size_t i = 0; i < kids.size(); i++)
+        if (kids[i] == row) { idx = (int)i; break; }
+    brls::View* neighbour = nullptr;
+    if (idx >= 0)
     {
-        content = buildEmptyState();
+        if (idx + 1 < (int)kids.size()) neighbour = kids[idx + 1];
+        else if (idx - 1 >= 0)          neighbour = kids[idx - 1];
+    }
+    if (neighbour) brls::Application::giveFocus(neighbour);
+
+    if (e.isMagnet)
+    {
+        removeMagnetFromFile(e.path);
+        if (widgets) widgets->erase(magnetHash(e.path));  // also cancels its name fill
     }
     else
     {
-        auto* recycler = new brls::RecyclerFrame();
-        recycler->registerCell("Cell", []() { return TorrentCell::create(); });
-        recycler->setDataSource(new TorrentDataSource(std::move(items)));
-        recycler->setGrow(1.0f);
-        // Inset the list so the focus highlight (which draws a glow outside the
-        // cell) isn't clipped by the screen edges.
-        // setPadding(top,right,bottom,left).
-        recycler->setPadding(32.0f, 60.0f, 47.0f, 60.0f);
-        content = recycler;
+        std::remove(e.path.c_str());
     }
-    return content;
+    list->removeView(row);  // frees it
+}
+
+// Y on a row: confirm, then delete it (removes the magnet, or the .torrent file).
+void registerRowDelete(brls::Box* list, brls::Box* row, TorrentEntry e,
+                       std::shared_ptr<MagnetWidgets> widgets)
+{
+    row->registerAction(
+        "Delete", brls::BUTTON_Y,
+        [list, row, e, widgets](brls::View*) {
+            std::string msg = e.isMagnet
+                                  ? "Remove this magnet from the list?"
+                                  : "Delete this .torrent file from the SD card?";
+            auto* d = new brls::Dialog(msg + "\n\n" + e.name);
+            d->addButton("Cancel", []() {});
+            d->addButton("Delete", [list, row, e, widgets]() {
+                deleteEntryRow(list, row, e, widgets);
+            });
+            d->open();
+            return true;
+        },
+        false, false, brls::SOUND_NONE);
+}
+
+// The local list -- .torrent files AND magnet.txt entries, in one section.
+// Magnets still resolving their name are shown first, with a spinner, and update
+// in place once the name comes in (no relaunch needed).
+brls::View* buildLocalTab()
+{
+    auto items   = scanTorrents(APPDATA_TORRENTS "/");
+    auto magnets = scanMagnets(APPDATA_MAGNETS);
+    items.insert(items.end(), magnets.begin(), magnets.end());
+    std::sort(items.begin(), items.end(),
+              [](const TorrentEntry& a, const TorrentEntry& b) {
+                  if (a.needsResolve != b.needsResolve) return a.needsResolve;  // loading first
+                  return a.name < b.name;
+              });
+
+    auto* root = new LocalTabRoot();
+    root->setAxis(brls::Axis::COLUMN);
+    root->setGrow(1.0f);
+
+    auto* scroll = new brls::ScrollingFrame();
+    scroll->setGrow(1.0f);
+    scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
+    auto* list = new brls::Box();
+    list->setAxis(brls::Axis::COLUMN);
+    // setContentView forces the width and drops margins, so the inset is padding.
+    list->setPadding(24.0f, 60.0f, 47.0f, 60.0f);
+    scroll->setContentView(list);
+    root->addView(scroll);
+
+    auto widgets = std::make_shared<MagnetWidgets>();
+    auto alive   = root->alive;
+
+    // Fills a loading row in as its name resolves (shared by the initial list and
+    // the "Add magnet" button). Its spinner goes away either way.
+    std::function<void(const std::string&, const std::string&)> onEach =
+        [widgets](const std::string& magnet, const std::string& name) {
+            auto it = widgets->find(magnetHash(magnet));
+            if (it == widgets->end()) return;
+            if (it->second.second)
+                it->second.second->setVisibility(brls::Visibility::GONE);
+            if (it->second.first && !name.empty())
+                it->second.first->setText(name);
+        };
+
+    // A magnet's turn begins: drop its "(waiting)" suffix and show its spinner.
+    std::function<void(const std::string&)> onStart =
+        [widgets](const std::string& magnet) {
+            auto it = widgets->find(magnetHash(magnet));
+            if (it == widgets->end()) return;
+            if (it->second.first)
+                it->second.first->setText(magnetName(magnet));
+            if (it->second.second)
+                it->second.second->setVisibility(brls::Visibility::VISIBLE);
+        };
+
+    // "Add magnet" at the top: adds it to the list (and magnet.txt) via the
+    // on-screen keyboard, and resolves its name in the background. Does not play.
+    auto* addBtn = new brls::Button();
+    addBtn->setText("+  Add magnet");
+    addBtn->setMarginBottom(14.0f);
+    addBtn->registerClickAction([list, widgets, alive, onStart, onEach](brls::View*) {
+        std::string magnet = promptMagnetInput();
+        if (magnet.empty()) return true;
+        TorrentEntry e;
+        e.isMagnet  = true;
+        e.path      = magnet;
+        e.name        = magnetName(magnet);
+        e.sizeText    = "magnet";
+        e.needsResolve = true;  // freshly added -> its files are not cached yet
+        LocalRow w  = makeLocalRow(e);
+        registerRowDelete(list, w.view, e, widgets);
+        list->addView(w.view, 1);  // just under the Add button
+        brls::Application::giveFocus(w.view);
+        if (e.needsResolve)
+        {
+            (*widgets)[magnetHash(magnet)] = { w.name, w.spinner };
+            auto one = std::make_shared<std::vector<std::string>>();
+            one->push_back(magnet);
+            resolveMagnetNames(alive, one, 0, onStart, onEach);
+        }
+        return true;
+    });
+    list->addView(addBtn);
+
+    if (items.empty())
+    {
+        list->addView(buildEmptyState());
+        return root;
+    }
+
+    auto todo = std::make_shared<std::vector<std::string>>();
+    for (const auto& e : items)
+    {
+        LocalRow w = makeLocalRow(e);
+        registerRowDelete(list, w.view, e, widgets);
+        list->addView(w.view);
+        if (e.needsResolve)
+        {
+            (*widgets)[magnetHash(e.path)] = { w.name, w.spinner };
+            todo->push_back(e.path);
+        }
+    }
+    if (!todo->empty())
+        resolveMagnetNames(alive, todo, 0, onStart, onEach);
+    return root;
 }
 
 // Browser frame background for the Stremio tab: diagonal gradient from
@@ -848,6 +1458,9 @@ int main(int argc, char* argv[])
     torrentfs_set_governor(config::get().rateGovernor ? 1 : 0);
     // argv[0] tells us which .nro to replace; nothing else can.
     update::init(argc, argv);
+
+    // Fill in a magnet's name in magnet.txt once its metadata resolves on device.
+    setMagnetResolvedHook(updateMagnetName);
 
     // Off by default: unbuffered writes plus a [stats] line every 2s means the
     // SD card is written to for the whole session. Opt in from Options when

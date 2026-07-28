@@ -3,12 +3,19 @@
 #include <borealis.hpp>
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 
 struct mpv_handle;
 struct mpv_render_context;
 struct torrentfs;
+
+// Fired once a magnet's on-device metadata resolves, with the magnet URI played
+// and the real torrent name. Lets the Local tab fill in a name it did not have
+// yet (a magnet added without a dn=). Set to nullptr to disable.
+void setMagnetResolvedHook(
+    std::function<void(const std::string& magnet, const std::string& name)> hook);
 
 // A borealis view that streams a torrent (path to a .torrent file, or a magnet:
 // URI) through our on-device engine and renders it full-screen with mpv on top

@@ -108,6 +108,7 @@ if (PLATFORM_SWITCH)
         # Bundle our loading-screen logo, list icon and the Stremio mark at romfs:/.
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/NX-torrent-player-bg-rounded.png ${CMAKE_BINARY_DIR}/resources/NX-torrent-player-bg-rounded.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/video-icon.png ${CMAKE_BINARY_DIR}/resources/video-icon.png
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/magnet-icon.png ${CMAKE_BINARY_DIR}/resources/magnet-icon.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/stremio-icon.png ${CMAKE_BINARY_DIR}/resources/stremio-icon.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/local-tab-icon.png ${CMAKE_BINARY_DIR}/resources/local-icon.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/SpaceGrotesk-Medium.ttf ${CMAKE_BINARY_DIR}/resources/SpaceGrotesk-Medium.ttf

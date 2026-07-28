@@ -29,6 +29,16 @@ extern "C" {
 #include "torrent.h"  // magnet metadata-fetch progress counters
 }
 
+// See setMagnetResolvedHook (player.hpp): fired with the played magnet and its
+// resolved name so the Local tab can save a name it did not have yet.
+static std::function<void(const std::string&, const std::string&)>
+    g_magnetResolvedHook;
+void setMagnetResolvedHook(
+    std::function<void(const std::string&, const std::string&)> hook)
+{
+    g_magnetResolvedHook = std::move(hook);
+}
+
 namespace
 {
 void* getProcAddress(void*, const char* name)
@@ -198,7 +208,7 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
                                            fileIndex, err, sizeof(err));
         std::string e = err;
 
-        brls::sync([this, liveFlag, t, e]() {
+        brls::sync([this, liveFlag, t, e, source]() {
             // B may have been pressed while we waited: `this` is gone and the
             // engine we just opened would leak.
             if (!*liveFlag)
@@ -213,6 +223,10 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
                 return;
             }
             tfs = t;
+            // A magnet from the Local list may have had no name -- now that its
+            // metadata resolved, hand the real name back so it can be saved.
+            if (g_magnetResolvedHook && source.compare(0, 7, "magnet:") == 0)
+                g_magnetResolvedHook(source, torrentfs_name(t));
             if (!startMpv() && statusLabel)
                 statusLabel->setText("Player initialisation failed");
         });
