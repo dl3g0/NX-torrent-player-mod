@@ -287,6 +287,17 @@ brls::View* SettingsActivity::createContentView()
     version->setMargins(12.0f, 20.0f, 8.0f, 20.0f);
     list->addView(version);
 
+    auto* changelog = new brls::Button();
+    changelog->setText("View changelog");
+    changelog->setMargins(4.0f, 20.0f, 8.0f, 20.0f);
+    changelog->registerClickAction([](brls::View*) {
+        // showChangelog raises its own blocking spinner while it loads, so the
+        // user cannot re-press this or leave Options mid-fetch.
+        update::showChangelog(APP_VERSION);
+        return true;
+    });
+    list->addView(changelog);
+
     auto* checkNow = new brls::Button();
     checkNow->setText("Check now");
     checkNow->setMargins(4.0f, 20.0f, 18.0f, 20.0f);

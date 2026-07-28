@@ -361,13 +361,19 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
 std::vector<stremio::Addon> usableStreamAddons(
     const std::vector<stremio::Addon>& all, const std::string& type)
 {
-    static const char* kUnsupported[] = { "WatchHub", "Local Files", "Peario" };
+    // Addons we never show: the first three can't serve a torrent we can play;
+    // the Public Domain ones work but are noise in the source list (the user
+    // asked to hide them). Matched as a substring of the addon's name.
+    static const char* kHidden[] = {
+        "WatchHub", "Local Files", "Peario",
+        "Public Domain Movies", "Public Domain Foreign Movies",
+    };
     std::vector<stremio::Addon> out;
     for (const auto& a : all)
     {
         if (!a.hasStream || !a.supportsType(type)) continue;
         bool skip = false;
-        for (const char* bad : kUnsupported)
+        for (const char* bad : kHidden)
             if (a.name.find(bad) != std::string::npos) { skip = true; break; }
         if (skip) continue;
         out.push_back(a);
@@ -764,6 +770,26 @@ class FadeHScrollingFrame : public brls::HScrollingFrame
     brls::View* content = nullptr;
 };
 
+// A source card. Its text lines each truncate to the card width and marquee-
+// scroll while the card holds the focus -- borealis only animates a label when
+// asked, and these labels are children of the focused card, not focused
+// themselves (same trick as EpisodeThumb's caption).
+class SourceCard : public brls::Box
+{
+  public:
+    void onFocusGained() override
+    {
+        brls::Box::onFocusGained();
+        for (auto* l : lines) l->setAnimated(true);
+    }
+    void onFocusLost() override
+    {
+        brls::Box::onFocusLost();
+        for (auto* l : lines) l->setAnimated(false);
+    }
+    std::vector<brls::Label*> lines;
+};
+
 // Base for the film / episode source screens: an addon switcher (a tab bar, like
 // the menus) whose selected addon's playable sources show as cards directly
 // below. The subclass builds the page-specific header, creates addonBar +
@@ -897,19 +923,21 @@ class AddonSourcePicker : public brls::Activity
         auto nameLines  = splitLines(s.name);
         auto titleLines = splitLines(s.title);
         std::string head = deEmoji(joinSpace(nameLines));
-        if (head.empty() && !titleLines.empty()) head = titleLines[0];
+        if (head.empty() && !titleLines.empty()) head = deEmoji(titleLines[0]);
         if (head.empty()) head = "Source";
-        std::string info = deEmoji(joinSpace(titleLines));
 
-        auto* card = new brls::Box();
+        auto* card = new SourceCard();
         card->setFocusable(true);
         card->setAxis(brls::Axis::COLUMN);
         card->setWidth(432.0f);
         card->setHeight(200.0f);
         card->setCornerRadius(10.0f);
+        card->setHighlightCornerRadius(10.0f);
         card->setBackgroundColor(nvgRGB(0x2c, 0x2c, 0x31));
         card->setPadding(24.0f, 26.0f, 24.0f, 28.0f);
         if (marginLeft) card->setMarginLeft(28.0f);
+        // Text lines truncate to the card's inner width (card - L/R padding).
+        const float lineW = 432.0f - 26.0f - 24.0f;
 
         stremio::Stream stream = s;
         PlayerArt cardArt      = art;
@@ -948,17 +976,33 @@ class AddonSourcePicker : public brls::Activity
         h->setText(head);
         h->setFontSize(24.0f);
         h->setSingleLine(true);
+        h->setWidth(lineW);
         card->addView(h);
-        if (!info.empty())
+        card->lines.push_back(h);
+
+        // One row per metadata element (each source line the addon sent), rather
+        // than collapsing them onto a single overflowing line. Each truncates to
+        // the card and marquees when the card is focused. The fixed-height card
+        // fits a few detail rows, so cap it.
+        int shown = 0;
+        for (const auto& raw : titleLines)
         {
+            std::string t = deEmoji(raw);
+            if (t.empty()) continue;
+            if (shown >= 3) break;
             auto* d = new brls::Label();
-            d->setText(clampText(info, 150));
+            d->setText(t);
             d->setFontSize(17.0f);
             d->setTextColor(nvgRGB(170, 170, 178));
-            d->setMarginTop(10.0f);
+            d->setSingleLine(true);
+            d->setWidth(lineW);
+            d->setMarginTop(shown == 0 ? 10.0f : 6.0f);
             card->addView(d);
+            card->lines.push_back(d);
+            shown++;
         }
-        if (stream.infoHash.empty())
+
+        if (s.infoHash.empty())
         {
             auto* u = new brls::Label();
             u->setText("unsupported");
@@ -1568,6 +1612,14 @@ class SeriesDetailActivity : public brls::Activity
         int initIdx = 0;
         for (size_t i = 0; i < seasons.size(); i++)
             if (seasons[i] == cur) { initIdx = (int)i; break; }
+        // Both the focus and the CENTERED bar-scroll that reveals the current
+        // season only run under gamepad input -- borealis skips focus scrolling in
+        // touch mode. Arriving here from a tap leaves us in touch mode, so the bar
+        // stayed put and the current season was left off-screen (the gamepad path
+        // was fine). Switch to gamepad for this initial focus; the next tap flips
+        // it straight back. buildSeasonBar runs once, so this never fights a live
+        // touch interaction.
+        brls::Application::setInputType(brls::InputType::GAMEPAD);
         // Focus the active season button first so its (CENTERED) bar scrolls it
         // into view, then land on the episode -- the bar keeps that scroll, so the
         // current season stays visible instead of needing an Up to reveal it.
@@ -1687,6 +1739,7 @@ class SeriesDetailActivity : public brls::Activity
         thumb->setWidth(320.0f);
         thumb->setHeight(180.0f);  // 16:9
         thumb->setCornerRadius(10.0f);
+        thumb->setHighlightCornerRadius(10.0f);  // match the still's rounding
         thumb->setBackgroundColor(nvgRGB(0x1a, 0x1a, 0x20));
         stremio::Video ev = v;
         thumb->registerClickAction([this, ev](brls::View*) {

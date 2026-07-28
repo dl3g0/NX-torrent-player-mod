@@ -18,6 +18,7 @@ struct Release
     bool ok = false;       // the check completed (not: an update exists)
     bool newer = false;    // ok, and the release is newer than APP_VERSION
     std::string version;   // "0.2.0" (the tag's leading 'v' stripped)
+    std::string title;     // the release's own name, for the changelog header
     std::string notes;     // release body, shown in the prompt
     // The .nro asset -- empty when the release ships without one (only the zip,
     // say). Kept apart from `newer` on purpose: "a new version exists" and "we
@@ -39,6 +40,28 @@ void init(int argc, char** argv);
 // no wifi, rate limit, no release yet -- is not worth a popup: check `ok` and
 // stay quiet.
 void checkAsync(std::function<void(Release)> done);
+
+// Fetches the release notes (changelog) for a specific version tag: "0.2.0" maps
+// to the GitHub release tagged "v0.2.0". Calls back on the UI thread -- ok=false
+// with a reason in `error` on failure (no wifi, no release for that tag). Reuses
+// the same API/JSON path as checkAsync, just against a fixed tag rather than
+// "latest", so it works for the running version even when it is not the newest.
+// `title` is the release's own name (which already carries the version and a
+// short overview); it falls back to "v<version>" when the release is unnamed.
+void fetchNotesAsync(const std::string& version,
+                     std::function<void(bool ok, std::string title,
+                                        std::string notes, std::string error)>
+                         done);
+
+// Shows a changelog in a scrollable page. `title` heads it (the release name),
+// `notes` is the GitHub release body (markdown, shown as-is).
+void showNotes(const std::string& title, const std::string& notes);
+
+// The user-facing entry point: puts up a non-cancelable spinner that blocks all
+// input while the changelog for `version` is fetched (so it cannot be triggered
+// twice or dismissed mid-load), then swaps it for the changelog page -- or an
+// error note. Both the Options button and the update prompt call this.
+void showChangelog(const std::string& version);
 
 // Downloads `r`'s .nro next to the running one, as "<name>.nro.new".
 // `progress` is called on the UI thread with 0..1 (-1 while the size is

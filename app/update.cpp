@@ -18,6 +18,10 @@
 #ifndef UPDATE_API_URL
 #define UPDATE_API_URL "https://api.github.com/repos/shodowlo/NX-torrent-player/releases/latest"
 #endif
+// Base for a specific tag's release; the tag (e.g. "v0.2.0") is appended.
+#ifndef UPDATE_TAG_URL
+#define UPDATE_TAG_URL "https://api.github.com/repos/shodowlo/NX-torrent-player/releases/tags/"
+#endif
 
 namespace update
 {
@@ -128,6 +132,10 @@ void checkAsync(std::function<void(Release)> done)
         r.ok      = true;
         r.version = (tag[0] == 'v' || tag[0] == 'V') ? tag.substr(1) : tag;
         r.notes   = json::str(resp, "body");
+        // The release's own name heads the changelog; fall back to the tag when
+        // GitHub left it unnamed.
+        r.title = json::str(resp, "name");
+        if (r.title.empty()) r.title = tag;
 
         // The .nro asset. The release also carries the zip for manual installs;
         // downloading that would mean pulling the same bytes to then unpack one
@@ -152,6 +160,122 @@ void checkAsync(std::function<void(Release)> done)
 
         brls::sync([done, r]() { done(r); });
     });
+}
+
+void fetchNotesAsync(
+    const std::string& version,
+    std::function<void(bool, std::string, std::string, std::string)> done)
+{
+    // A point release's changelog reads better with the earlier patches of the
+    // same minor under it: 0.1.2 shows 0.1.2, then 0.1.1, then 0.1.0. So fetch
+    // every tag from this patch down to x.y.0 and stitch them into one document.
+    // A x.y.0 version is just itself.
+    int v[3];
+    parseVersion(version, v);
+
+    brls::async([v0 = v[0], v1 = v[1], top = v[2], done]() {
+        std::string doc, title, firstErr;
+        bool any = false;
+        for (int p = top; p >= 0; p--)
+        {
+            char tagbuf[32];
+            std::snprintf(tagbuf, sizeof(tagbuf), "v%d.%d.%d", v0, v1, p);
+            std::string tag = tagbuf;
+            std::string url = std::string(UPDATE_TAG_URL) + tag;
+
+            std::string resp, err;
+            if (!http::get(url, resp, err))
+            {
+                if (firstErr.empty()) firstErr = err;
+                brls::Logger::info("[update] changelog {} fetch failed: {}", tag,
+                                   err);
+                continue;
+            }
+            std::string body = json::str(resp, "body");
+            if (body.empty())
+                continue;  // no release published for this patch -- skip it
+
+            std::string name = json::str(resp, "name");
+            if (name.empty()) name = tag;
+
+            if (!any)
+            {
+                // The newest one heads the page (its name becomes the title) and
+                // needs no in-body header of its own.
+                title = name;
+                doc   = body;
+                any   = true;
+            }
+            else
+            {
+                // Separate each older patch with its own name as a section head.
+                doc += "\n\n\n" + name + "\n\n" + body;
+            }
+        }
+
+        if (!any)
+        {
+            std::string m =
+                firstErr.empty() ? "no changelog for this version" : firstErr;
+            brls::sync([done, m]() { done(false, "", "", m); });
+            return;
+        }
+        brls::sync([done, title, doc]() { done(true, title, doc, ""); });
+    });
+}
+
+namespace
+{
+
+// A full-screen, scrollable page for the release body. A modal Dialog cannot hold
+// a long changelog (it neither scrolls nor bounds its height), so this is its own
+// pushed activity: the ScrollingFrame is focusable and, in NATURAL mode, scrolls
+// plain text with the stick or a swipe -- no focusable rows needed.
+class ChangelogActivity : public brls::Activity
+{
+  public:
+    ChangelogActivity(std::string title, std::string notes)
+        : title(std::move(title)), notes(std::move(notes))
+    {
+    }
+
+    brls::View* createContentView() override
+    {
+        auto* scroll = new brls::ScrollingFrame();
+        scroll->setGrow(1.0f);
+        scroll->setScrollingBehavior(brls::ScrollingBehavior::NATURAL);
+
+        // setContentView forces the content's width and drops its margins, so the
+        // reading inset lives on this padded wrapper rather than on the label.
+        auto* pad = new brls::Box();
+        pad->setAxis(brls::Axis::COLUMN);
+        pad->setPadding(30.0f, 60.0f, 50.0f, 60.0f);  // top,right,bottom,left
+
+        auto* label = new brls::Label();
+        label->setSingleLine(false);  // honour the body's newlines and wrap
+        label->setText(notes);
+        label->setFontSize(18.0f);
+        label->setLineHeight(1.4f);
+        pad->addView(label);
+
+        scroll->setContentView(pad);
+
+        auto* frame = new brls::AppletFrame();
+        frame->pushContentView(scroll);
+        frame->setTitle("Changelog — " + title);
+        return frame;
+    }
+
+  private:
+    std::string title;
+    std::string notes;
+};
+
+} // namespace
+
+void showNotes(const std::string& title, const std::string& notes)
+{
+    brls::Application::pushActivity(new ChangelogActivity(title, notes));
 }
 
 void downloadAsync(const Release& r, std::function<void(float)> progress,
@@ -191,23 +315,6 @@ void downloadAsync(const Release& r, std::function<void(float)> progress,
 namespace
 {
 
-// A trimmed release body. GitHub notes can be pages of markdown; a modal is not
-// the place to read them.
-std::string shortNotes(const std::string& notes)
-{
-    std::string t;
-    int lines = 0;
-    for (size_t i = 0; i < notes.size() && lines < 6; i++)
-    {
-        if (notes[i] == '\r') continue;
-        if (notes[i] == '\n') lines++;
-        t += notes[i];
-        if (t.size() > 300) { t += "..."; break; }
-    }
-    while (!t.empty() && (t.back() == '\n' || t.back() == ' ')) t.pop_back();
-    return t;
-}
-
 void note(const std::string& msg)
 {
     auto* d = new brls::Dialog(msg);
@@ -224,15 +331,71 @@ std::string humanMB(int64_t bytes)
 
 } // namespace
 
+void showChangelog(const std::string& version)
+{
+    // Block everything while it loads. A GitHub round trip can take a second or
+    // two, and without this the button underneath stays live: the user could tap
+    // it again (stacking changelog pages), act on the update prompt, or leave the
+    // screen out from under the pending callback. A non-cancelable, button-less
+    // dialog swallows all input -- B included -- until the fetch resolves.
+    auto* box = new brls::Box();
+    box->setAxis(brls::Axis::COLUMN);
+    box->setAlignItems(brls::AlignItems::CENTER);
+    box->setJustifyContent(brls::JustifyContent::CENTER);
+    box->setPadding(28.0f, 44.0f, 28.0f, 44.0f);
+    // A modal needs a focus target, but this one is not meant to look focused.
+    box->setFocusable(true);
+    box->setHideHighlight(true);
+
+    auto* sp = new brls::ProgressSpinner(brls::ProgressSpinnerSize::LARGE);
+    sp->setDimensions(52.0f, 52.0f);
+    sp->animate(true);
+    box->addView(sp);
+
+    auto* label = new brls::Label();
+    label->setText("Loading changelog...");
+    label->setFontSize(19.0f);
+    label->setMarginTop(20.0f);
+    label->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+    box->addView(label);
+
+    auto* loading = new brls::Dialog(box);
+    loading->setCancelable(false);
+    loading->open();
+
+    fetchNotesAsync(version, [loading](bool ok, std::string title,
+                                       std::string notes, std::string err) {
+        // Tear the blocker down first, then show the result on top of whatever
+        // it was covering (the Options list, or the update prompt).
+        loading->close([ok, title, notes, err]() {
+            if (!ok)
+                note("Could not load the changelog: " + err);
+            else
+                showNotes(title, notes);
+        });
+    });
+}
+
 void promptInstall(const Release& r)
 {
+    // Just the release's own title -- it already reads "0.2.0 — <overview>". The
+    // full body lives one tap away under "View changelog"; a modal is the wrong
+    // place for pages of markdown (and it does not scroll).
     std::string msg = "Version " + r.version + " is available.";
     if (r.size > 0) msg += "  (" + humanMB(r.size) + ")";
-    std::string n = shortNotes(r.notes);
-    if (!n.empty()) msg += "\n\n" + n;
+    if (!r.title.empty()) msg += "\n\n" + r.title;
 
     auto* ask = new brls::Dialog(msg);
     ask->addButton("Later", []() {});
+    ask->addButton("View changelog", [r]() {
+        // A dialog button dismisses the prompt before its callback runs, so
+        // re-open the prompt first: it then waits UNDER the changelog, and backing
+        // out returns the user to it to choose Update / Later rather than dropping
+        // them back in the app. showChangelog puts its own blocking spinner over
+        // this re-opened prompt while it fetches.
+        promptInstall(r);
+        showChangelog(r.version);
+    });
     ask->addButton("Update", [r]() {
         // Its own dialog, with a label we keep writing into. Not cancelable:
         // there is no partial file to leave behind (http::download cleans up),
@@ -312,6 +475,13 @@ void promptInstall(const Release& r)
                 });
             });
     });
+
+    // Default the highlight to Update, not Later: the dialog parks focus on the
+    // first button (button1 = Later) as each one is added, so override it once
+    // all three are in. Update is button3 (added last).
+    if (brls::View* up = ask->getView("brls/dialog/button3"))
+        ask->setLastFocusedView(up);
+
     ask->open();
 }
 
