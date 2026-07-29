@@ -585,9 +585,20 @@ static int merge_peers(peer_addr *dst, int *dn, int max,
 
 // Announces to a single HTTP(S) tracker, filling `out` (up to max). Returns the
 // peer count, or -1 on failure (message in err).
+// curl calls this periodically during a transfer; returning non-zero aborts it.
+// We use it purely to bail out promptly when teardown flips the cancel flag,
+// so a slow tracker can't hold the announce join for the full CURLOPT_TIMEOUT.
+static int curl_cancel_cb(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
+                          curl_off_t ultotal, curl_off_t ulnow) {
+    (void)dltotal; (void)dlnow; (void)ultotal; (void)ulnow;
+    const volatile bool *cancel = clientp;
+    return (cancel && *cancel) ? 1 : 0;
+}
+
 static int announce_http(const char *tracker, const char *hash_enc,
                          const char *peer_id_enc, int64_t left,
-                         peer_addr *out, int max, char *err, size_t errlen) {
+                         peer_addr *out, int max,
+                         const volatile bool *cancel, char *err, size_t errlen) {
     char url[1024];
     snprintf(url, sizeof(url),
              "%s%cinfo_hash=%s&peer_id=%s&port=6881&uploaded=0&downloaded=0"
@@ -602,6 +613,11 @@ static int announce_http(const char *tracker, const char *hash_enc,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);  // bound announce/close time
+    // Poll `cancel` during the transfer so teardown aborts within ~1s instead
+    // of blocking the announce join for the full timeout above.
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curl_cancel_cb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, cancel);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     // Pas de bundle CA sur Switch : on désactive la vérif TLS pour l'instant
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
@@ -656,6 +672,7 @@ typedef struct {
 
     torrent_peer_cb cb;   // delivered from this thread as soon as peers arrive
     void *cb_ctx;
+    const volatile bool *cancel;  // teardown flag; aborts a slow announce
 
     Thread thread;
     bool has_thread;
@@ -669,10 +686,10 @@ static void announce_thread(void *arg) {
 
     if (strncmp(j->tracker, "udp://", 6) == 0)
         j->count = udp_announce(j->tracker, j->info_hash, j->peer_id, j->left,
-                                j->peers, AJOB_PEERS, terr, sizeof(terr));
+                                j->peers, AJOB_PEERS, j->cancel, terr, sizeof(terr));
     else
         j->count = announce_http(j->tracker, j->hash_enc, j->peer_id_enc, j->left,
-                                 j->peers, AJOB_PEERS, terr, sizeof(terr));
+                                 j->peers, AJOB_PEERS, j->cancel, terr, sizeof(terr));
 
     j->secs = (double)(armGetSystemTick() - t0) / freq;
 
@@ -681,7 +698,7 @@ static void announce_thread(void *arg) {
 }
 
 int torrent_announce_cb(const torrent_meta *t, torrent_peer_cb cb, void *ctx,
-                        char *err, size_t errlen) {
+                        const volatile bool *cancel, char *err, size_t errlen) {
     char hash_enc[61], peer_id_enc[61];
     uint8_t peer_id[20];
 
@@ -707,6 +724,7 @@ int torrent_announce_cb(const torrent_meta *t, torrent_peer_cb cb, void *ctx,
         j->left = t->total_len;
         j->cb = cb;
         j->cb_ctx = ctx;
+        j->cancel = cancel;
 
         if (threadCreate(&j->thread, announce_thread, j, NULL, 0x8000, 0x2C, -2) == 0) {
             j->has_thread = true;
@@ -750,7 +768,7 @@ int torrent_announce(const torrent_meta *t, peer_addr *peers, int max_peers,
                      char *err, size_t errlen) {
     collector c = { peers, 0, max_peers };
     mutexInit(&c.lock);
-    torrent_announce_cb(t, collect_cb, &c, err, errlen);
+    torrent_announce_cb(t, collect_cb, &c, NULL, err, errlen);
     if (c.total == 0) { set_err(err, errlen, "no peer from the trackers"); return -1; }
     return c.total;
 }

@@ -1,6 +1,7 @@
 #ifndef TORRENT_H
 #define TORRENT_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -112,8 +113,10 @@ int torrent_announce(const torrent_meta *t, peer_addr *peers, int max_peers,
 // until every tracker finished. Returns the number of trackers that answered,
 // or -1 on failure. Lets callers start using the fastest tracker's peers without
 // waiting for the slow ones.
+// `cancel` (may be NULL) is polled while waiting on the trackers so a teardown
+// aborts the announce instead of blocking for the full per-tracker timeout.
 typedef void (*torrent_peer_cb)(void *ctx, const peer_addr *peers, int n);
 int torrent_announce_cb(const torrent_meta *t, torrent_peer_cb cb, void *ctx,
-                        char *err, size_t errlen);
+                        const volatile bool *cancel, char *err, size_t errlen);
 
 #endif

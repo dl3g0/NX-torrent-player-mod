@@ -568,7 +568,7 @@ static void discovery_main(void *arg) {
     torrentfs *t = arg;
     char e[128];
     do {
-        torrent_announce_cb(&t->meta, add_peers_cb, t, e, sizeof(e));
+        torrent_announce_cb(&t->meta, add_peers_cb, t, &t->stop, e, sizeof(e));
         if (t->stop) break;
         dht_find_peers(t->meta.info_hash, 100, 15000, add_peers_cb, t,
                        &t->stop, e, sizeof(e));

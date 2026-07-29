@@ -56,8 +56,10 @@ static uint32_t get32(const uint8_t *p) {
 // so BEP 15 mandates retransmission; we cap retries to stay responsive.
 static int request_reply(int sock, const uint8_t *req, size_t reqlen,
                          uint8_t *resp, size_t respcap, ssize_t *resplen,
-                         uint32_t expect_txid, uint8_t expect_action) {
+                         uint32_t expect_txid, uint8_t expect_action,
+                         const volatile bool *cancel) {
     for (int attempt = 0; attempt < 2; attempt++) {
+        if (cancel && *cancel) return -1;  // teardown: don't wait out the recv
         if (send(sock, req, reqlen, 0) < 0) return -1;
 
         ssize_t n = recv(sock, resp, respcap, 0);
@@ -77,7 +79,8 @@ static int request_reply(int sock, const uint8_t *req, size_t reqlen,
 
 int udp_announce(const char *url, const uint8_t info_hash[20],
                  const uint8_t peer_id[20], int64_t left,
-                 peer_addr *peers, int max_peers, char *err, size_t errlen) {
+                 peer_addr *peers, int max_peers,
+                 const volatile bool *cancel, char *err, size_t errlen) {
     char host[256], port[16];
     if (parse_udp_url(url, host, sizeof(host), port, sizeof(port)) != 0) {
         set_err(err, errlen, "invalid udp URL");
@@ -121,7 +124,7 @@ int udp_announce(const char *url, const uint8_t info_hash[20],
     uint8_t cresp[64];
     ssize_t clen;
     int rc = request_reply(sock, creq, sizeof(creq), cresp, sizeof(cresp), &clen,
-                           ctxid, ACTION_CONNECT);
+                           ctxid, ACTION_CONNECT, cancel);
     if (rc != 0) {
         close(sock);
         set_err(err, errlen, rc == -2 ? "tracker: connect error" : "no connect reply");
@@ -150,7 +153,7 @@ int udp_announce(const char *url, const uint8_t info_hash[20],
     uint8_t aresp[20 + 6 * 256];
     ssize_t alen;
     rc = request_reply(sock, areq, sizeof(areq), aresp, sizeof(aresp), &alen,
-                       atxid, ACTION_ANNOUNCE);
+                       atxid, ACTION_ANNOUNCE, cancel);
     close(sock);
     if (rc != 0) {
         set_err(err, errlen, rc == -2 ? "tracker: announce error" : "no announce reply");
