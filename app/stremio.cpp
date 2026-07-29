@@ -1172,7 +1172,7 @@ StremioTab::StremioTab()
     brls::Theme theme = brls::Application::getTheme();
     // text_disabled is near-black on the dark theme; use the same light gray the
     // empty state uses so hints stay readable.
-    NVGcolor hintColor = nvgRGB(190, 190, 195);
+    NVGcolor hintColor = theme::textDim();
 
     // ---- sign-in form ----------------------------------------------------
     loginBox = new brls::Box();
@@ -1299,7 +1299,7 @@ StremioTab::StremioTab()
     loadingBar->setCornerRadius(2.5f);
     loadingBar->setMarginTop(22.0f);
     loadingBar->setClipsToBounds(true);   // keep the sliding fill inside the track
-    loadingBar->setBackgroundColor(nvgRGBA(255, 255, 255, 35));
+    loadingBar->setBackgroundColor(theme::scrim(35));
     loadingFill = new brls::Box();
     loadingFill->setWidth(90.0f);
     loadingFill->setHeight(5.0f);
@@ -1752,7 +1752,7 @@ void StremioTab::renderSearch()
     bar->setPaddingRight(24.0f);
     bar->setMarginRight(40.0f);
     bar->setCornerRadius(6.0f);
-    bar->setBackgroundColor(nvgRGBA(255, 255, 255, 20));
+    bar->setBackgroundColor(theme::scrim(20));
     bar->setFocusable(true);
     bar->registerClickAction([this](brls::View*) { promptSearch(); return true; });
     bar->addGestureRecognizer(new brls::TapGestureRecognizer(bar));
@@ -1767,8 +1767,8 @@ void StremioTab::renderSearch()
     barText->setText(searchQuery.empty() ? "Search movies & shows..."
                                          : searchQuery);
     barText->setFontSize(24.0f);
-    barText->setTextColor(searchQuery.empty() ? nvgRGB(150, 150, 155)
-                                              : nvgRGB(255, 255, 255));
+    barText->setTextColor(searchQuery.empty() ? theme::textMuted()
+                                              : theme::text());
     barText->setSingleLine(true);
     bar->addView(barText);
     // Gap before the first result (finishList overrides this to the bottom inset
@@ -1785,7 +1785,7 @@ void StremioTab::renderSearch()
             l->setText(!searchLoaded ? "Searching..."
                                      : "No results for \"" + searchQuery + "\"");
             l->setFontSize(20.0f);
-            l->setTextColor(nvgRGB(150, 150, 155));
+            l->setTextColor(theme::textMuted());
             l->setMargins(24.0f, 0.0f, 8.0f, 20.0f);
             libList->addView(l);
             lastRow = l;
@@ -1804,7 +1804,7 @@ void StremioTab::renderSearch()
                 auto* h = new brls::Label();
                 h->setText(title);
                 h->setFontSize(20.0f);
-                h->setTextColor(nvgRGB(150, 150, 155));
+                h->setTextColor(theme::textMuted());
                 h->setMargins(0.0f, 0.0f, 10.0f, 20.0f);
                 col->addView(h);
                 return col;
@@ -1824,7 +1824,7 @@ void StremioTab::renderSearch()
                 auto* l = new brls::Label();
                 l->setText("None");
                 l->setFontSize(18.0f);
-                l->setTextColor(nvgRGB(110, 110, 115));
+                l->setTextColor(theme::textFaint());
                 l->setMarginLeft(20.0f);
                 col->addView(l);
             };
@@ -2006,7 +2006,7 @@ brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
             auto* epl = new brls::Label();
             epl->setText(ep);
             epl->setFontSize(18.0f);
-            epl->setTextColor(nvgRGB(150, 150, 155));
+            epl->setTextColor(theme::textMuted());
             epl->setSingleLine(true);
             epl->setMarginTop(4.0f);
             textCol->addView(epl);
@@ -2019,7 +2019,7 @@ brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
         track->setWidthPercentage(100.0f);
         track->setHeight(5.0f);
         track->setCornerRadius(2.5f);
-        track->setBackgroundColor(nvgRGBA(255, 255, 255, 40));
+        track->setBackgroundColor(theme::scrim(40));
         track->setMarginTop(10.0f);
 
         // AccentBox, not a Box with the accent copied in: these rows live on the
@@ -2039,7 +2039,7 @@ brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
         auto* type = new brls::Label();
         type->setText(it.type == "series" ? "Show" : "Movie");
         type->setFontSize(19.0f);
-        type->setTextColor(nvgRGB(150, 150, 155));
+        type->setTextColor(theme::textMuted());
         type->setMarginLeft(16.0f);
         // Keep it on one line and let it hold its width: the full-width progress
         // bar in textCol otherwise squeezed this label until it wrapped.

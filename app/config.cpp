@@ -213,7 +213,8 @@ void load()
     cfg.subtitles    = readBool(body, "subtitles", cfg.subtitles);
     cfg.hwDecode     = readBool(body, "hwDecode", cfg.hwDecode);
 
-    cfg.accent = readStr(body, "accent", cfg.accent);
+    cfg.accent       = readStr(body, "accent", cfg.accent);
+    cfg.themeVariant = readStr(body, "themeVariant", cfg.themeVariant);
 
     cfg.dockedUiWidth = knownWidth(readInt(body, "dockedUiWidth", cfg.dockedUiWidth),
                                    cfg.dockedUiWidth);
@@ -249,7 +250,8 @@ bool save()
                  "  \"hwDecode\": %s,\n"
                  "  \"dockedUiWidth\": %d,\n"
                  "  \"handheldUiWidth\": %d,\n"
-                 "  \"accent\": \"%s\"\n"
+                 "  \"accent\": \"%s\",\n"
+                 "  \"themeVariant\": \"%s\"\n"
                  "}\n",
                  cfg.startupTab == Tab::STREMIO ? "stremio" : "local",
                  cfg.logging ? "true" : "false", cfg.hide4k ? "true" : "false",
@@ -258,7 +260,8 @@ bool save()
                  cfg.checkUpdates ? "true" : "false", cfg.audioLang.c_str(),
                  cfg.subLang.c_str(), cfg.subtitles ? "true" : "false",
                  cfg.hwDecode ? "true" : "false", cfg.dockedUiWidth,
-                 cfg.handheldUiWidth, cfg.accent.c_str());
+                 cfg.handheldUiWidth, cfg.accent.c_str(),
+                 cfg.themeVariant.c_str());
     std::fclose(f);
     return true;
 }

@@ -101,6 +101,35 @@ brls::View* SettingsActivity::createContentView()
                   });
     list->addView(startup);
 
+    // Startup-only, unlike every other cell here: borealis states the variant is
+    // not expected to change while the app runs, and the views already on screen
+    // copied their colours out of the theme when they were built. Applying it
+    // live would leave the UI half converted, so say so instead.
+    static const std::vector<std::string> kVariantIds = { "dark", "light",
+                                                          "system" };
+    auto* variant = new brls::SelectorCell();
+    variant->init(
+        "Theme", { "Dark (default)", "Light", "Follow the console" },
+        [] {
+            for (size_t i = 0; i < kVariantIds.size(); i++)
+                if (kVariantIds[i] == config::get().themeVariant) return (int)i;
+            return 0;
+        }(),
+        [](int sel) {
+            config::get().themeVariant = kVariantIds[sel];
+            config::save();
+            // Nothing to apply: theme::applyVariant() latched the variant at
+            // startup and is the only reader of this setting.
+        });
+    list->addView(variant);
+
+    auto* variantHint = new brls::Label();
+    variantHint->setText("Applies when you restart the app.");
+    variantHint->setFontSize(15.0f);
+    variantHint->setTextColor(theme::textMuted());
+    variantHint->setMargins(8.0f, 20.0f, 14.0f, 20.0f);
+    list->addView(variantHint);
+
     auto* accent = new brls::SelectorCell();
     accent->init(
         "Accent colour",
@@ -178,7 +207,7 @@ brls::View* SettingsActivity::createContentView()
         "The log is written to the SD card continuously. Turn it on to diagnose a "
         "problem, then restart the app.");
     logHint->setFontSize(15.0f);
-    logHint->setTextColor(nvgRGB(150, 150, 155));
+    logHint->setTextColor(theme::textMuted());
     // Belongs to the toggle above, but needs room to read as a caption rather
     // than a squashed second line of it.
     logHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
@@ -228,7 +257,7 @@ brls::View* SettingsActivity::createContentView()
         "file has one; otherwise it falls back to the file's default. Console "
         "language is currently " + config::consoleLang() + ".");
     langHint->setFontSize(15.0f);
-    langHint->setTextColor(nvgRGB(150, 150, 155));
+    langHint->setTextColor(theme::textMuted());
     langHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
     langHint->setLineHeight(1.4f);
     list->addView(langHint);
@@ -257,7 +286,7 @@ brls::View* SettingsActivity::createContentView()
         "run full speed. Streams with less than 10 s of buffer are never "
         "limited.");
     governorHint->setFontSize(15.0f);
-    governorHint->setTextColor(nvgRGB(150, 150, 155));
+    governorHint->setTextColor(theme::textMuted());
     governorHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
     governorHint->setLineHeight(1.4f);
     list->addView(governorHint);
@@ -280,7 +309,7 @@ brls::View* SettingsActivity::createContentView()
         "write hammers the system core, worse for bigger pieces), at the cost "
         "of no resume and a limited seek-back range.");
     ramHint->setFontSize(15.0f);
-    ramHint->setTextColor(nvgRGB(150, 150, 155));
+    ramHint->setTextColor(theme::textMuted());
     ramHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
     ramHint->setLineHeight(1.4f);
     list->addView(ramHint);
@@ -314,7 +343,7 @@ brls::View* SettingsActivity::createContentView()
     auto* cacheLbl = new brls::Label();
     cacheLbl->setText("Poster cache: " + humanMB(stremio::posterCacheBytes()));
     cacheLbl->setFontSize(16.0f);
-    cacheLbl->setTextColor(nvgRGB(190, 190, 195));
+    cacheLbl->setTextColor(theme::textDim());
     cacheLbl->setMargins(12.0f, 20.0f, 4.0f, 20.0f);
     list->addView(cacheLbl);
 
@@ -338,7 +367,7 @@ brls::View* SettingsActivity::createContentView()
         auto* account   = new brls::Label();
         account->setText(who.empty() ? "Logged in" : "Logged in as: " + who);
         account->setFontSize(17.0f);
-        account->setTextColor(nvgRGB(190, 190, 195));
+        account->setTextColor(theme::textDim());
         account->setMargins(12.0f, 20.0f, 4.0f, 20.0f);
         list->addView(account);
 
@@ -363,7 +392,7 @@ brls::View* SettingsActivity::createContentView()
         auto* signedOut = new brls::Label();
         signedOut->setText("No account signed in.");
         signedOut->setFontSize(16.0f);
-        signedOut->setTextColor(nvgRGB(150, 150, 155));
+        signedOut->setTextColor(theme::textMuted());
         signedOut->setMargins(10.0f, 20.0f, 0.0f, 20.0f);
         list->addView(signedOut);
     }
@@ -386,7 +415,7 @@ brls::View* SettingsActivity::createContentView()
                            " — an update is installed, restart to use it"
                          : "Version " APP_VERSION);
     version->setFontSize(15.0f);
-    version->setTextColor(nvgRGB(150, 150, 155));
+    version->setTextColor(theme::textMuted());
     version->setMargins(12.0f, 20.0f, 8.0f, 20.0f);
     list->addView(version);
 

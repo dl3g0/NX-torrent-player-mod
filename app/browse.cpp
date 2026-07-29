@@ -193,7 +193,7 @@ class RowCell : public brls::Box
             auto* s = new brls::Label();
             s->setText(r.sub);
             s->setFontSize(16.0f);
-            s->setTextColor(nvgRGB(150, 150, 155));
+            s->setTextColor(theme::textMuted());
             s->setSingleLine(true);
             s->setMarginTop(3.0f);
             text->addView(s);
@@ -207,7 +207,7 @@ class RowCell : public brls::Box
             track->setWidthPercentage(100.0f);
             track->setHeight(4.0f);
             track->setCornerRadius(2.0f);
-            track->setBackgroundColor(nvgRGBA(255, 255, 255, 40));
+            track->setBackgroundColor(theme::scrim(40));
             track->setMarginTop(7.0f);
 
             auto* fill = new brls::Box();
@@ -227,7 +227,7 @@ class RowCell : public brls::Box
             auto* d = new brls::Label();
             d->setText(r.detail);
             d->setFontSize(18.0f);
-            d->setTextColor(nvgRGB(200, 200, 205));
+            d->setTextColor(theme::textBody());
             d->setSingleLine(true);
             d->setMarginLeft(16.0f);
             this->addView(d);
@@ -280,7 +280,7 @@ class LoadingActivity : public brls::Activity
         auto* l = new brls::Label();
         l->setText(msg);
         l->setFontSize(20);
-        l->setTextColor(nvgRGB(190, 190, 195));
+        l->setTextColor(theme::textDim());
         l->setMargins(24, 0, 0, 0);
         box->addView(l);
 
@@ -669,8 +669,7 @@ std::string clampText(const std::string& s, size_t max)
 NVGpaint bgGradient(NVGcontext* vg, float x, float y, float w, float h)
 {
     return nvgRadialGradient(vg, x + w * 0.60f, y + h * 0.30f, h * 0.15f,
-                             w * 0.90f, theme::current().bgInner,
-                             theme::current().bgOuter);
+                             w * 0.90f, theme::bgInner(), theme::bgOuter());
 }
 
 // The background colour at an absolute screen point, matching bgGradient over the
@@ -688,7 +687,7 @@ NVGcolor bgColorAt(float px, float py)
     float d  = std::sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
     float t  = (d - inr) / (outr - inr);
     t        = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
-    const NVGcolor in = theme::current().bgInner, out = theme::current().bgOuter;
+    const NVGcolor in = theme::bgInner(), out = theme::bgOuter();
     return nvgRGBAf(in.r + (out.r - in.r) * t, in.g + (out.g - in.g) * t,
                     in.b + (out.b - in.b) * t, 1.0f);
 }
@@ -841,7 +840,9 @@ class AddonSourcePicker : public brls::Activity
                 if (i) b->setMarginLeft(6.0f);
                 int idx = (int)i;
                 b->registerClickAction([this, idx](brls::View*) {
-                    selectAddon(idx);
+                    // A on an addon moves on to its sources, rather than leaving
+                    // the cursor on the button that just did its job.
+                    selectAddon(idx, true);
                     return true;
                 });
                 addonBar->addView(b);
@@ -853,10 +854,14 @@ class AddonSourcePicker : public brls::Activity
         });
     }
 
-    void selectAddon(int i)
+    // focusSources: hand the cursor to the first source card once they are built.
+    // Deferred rather than done here, because an uncached addon only gets its
+    // cards when its fetch lands -- which is well after this returns.
+    void selectAddon(int i, bool focusSources = false)
     {
         if (!addons || i < 0 || i >= (int)addons->size()) return;
-        activeAddon = i;
+        activeAddon         = i;
+        focusSourcesOnBuild = focusSources;
         for (size_t k = 0; k < addonBtns.size(); k++)
             addonBtns[k]->setStyle((int)k == i ? &brls::BUTTONSTYLE_PRIMARY
                                                : &brls::BUTTONSTYLE_BORDERLESS);
@@ -920,6 +925,13 @@ class AddonSourcePicker : public brls::Activity
             !sourcesRow->getChildren().empty())
             addonBtns[activeAddon]->setCustomNavigationRoute(
                 brls::FocusDirection::DOWN, sourcesRow->getChildren()[0]);
+
+        // Requested by A on the addon button. Cleared either way, so a later
+        // rebuild (switching addons with the stick, a fetch landing) does not
+        // snatch the cursor out of wherever it has since gone.
+        if (focusSourcesOnBuild && !sourcesRow->getChildren().empty())
+            brls::Application::giveFocus(sourcesRow->getChildren()[0]);
+        focusSourcesOnBuild = false;
     }
 
     brls::Box* makeSourceCard(const stremio::Stream& s, bool marginLeft)
@@ -937,7 +949,7 @@ class AddonSourcePicker : public brls::Activity
         card->setHeight(200.0f);
         card->setCornerRadius(10.0f);
         card->setHighlightCornerRadius(10.0f);
-        card->setBackgroundColor(nvgRGB(0x2c, 0x2c, 0x31));
+        card->setBackgroundColor(theme::surface());
         card->setPadding(24.0f, 26.0f, 24.0f, 28.0f);
         if (marginLeft) card->setMarginLeft(28.0f);
         // Text lines truncate to the card's inner width (card - L/R padding).
@@ -997,7 +1009,7 @@ class AddonSourcePicker : public brls::Activity
             auto* d = new brls::Label();
             d->setText(t);
             d->setFontSize(17.0f);
-            d->setTextColor(nvgRGB(170, 170, 178));
+            d->setTextColor(theme::textDim());
             d->setSingleLine(true);
             d->setWidth(lineW);
             d->setMarginTop(shown == 0 ? 10.0f : 6.0f);
@@ -1011,7 +1023,7 @@ class AddonSourcePicker : public brls::Activity
             auto* u = new brls::Label();
             u->setText("unsupported");
             u->setFontSize(15.0f);
-            u->setTextColor(nvgRGB(205, 140, 140));
+            u->setTextColor(theme::textWarn());
             u->setMarginTop(8.0f);
             card->addView(u);
         }
@@ -1049,7 +1061,7 @@ class AddonSourcePicker : public brls::Activity
         auto* l = new brls::Label();
         l->setText(msg);
         l->setFontSize(20.0f);
-        l->setTextColor(nvgRGB(150, 150, 155));
+        l->setTextColor(theme::textMuted());
         box->addView(l);
         sourcesRow->addView(box);
         if (focusable && !brls::Application::getCurrentFocus())
@@ -1061,6 +1073,8 @@ class AddonSourcePicker : public brls::Activity
     std::vector<brls::Button*> addonBtns;
     std::map<int, std::vector<stremio::Stream>> streamCache;
     int activeAddon = -1;
+    // Set by A on an addon button, consumed by buildSourceCards.
+    bool focusSourcesOnBuild = false;
 };
 
 // The film detail screen: a large, full-resolution poster on the left; the
@@ -1122,7 +1136,7 @@ class MovieDetailActivity : public AddonSourcePicker
         metaLine = new brls::Label();
         metaLine->setText(item.type == "series" ? "Show" : "Film");
         metaLine->setFontSize(19.0f);
-        metaLine->setTextColor(nvgRGB(205, 205, 212));
+        metaLine->setTextColor(theme::textBody());
         metaLine->setMarginTop(14.0f);
         metaLine->setMarginRight(60.0f);
         right->addView(metaLine);
@@ -1130,7 +1144,7 @@ class MovieDetailActivity : public AddonSourcePicker
         descLabel = new brls::Label();
         descLabel->setText("");
         descLabel->setFontSize(18.0f);
-        descLabel->setTextColor(nvgRGB(198, 198, 206));
+        descLabel->setTextColor(theme::textBody());
         descLabel->setMarginTop(18.0f);
         descLabel->setMarginRight(60.0f);
         right->addView(descLabel);
@@ -1290,7 +1304,7 @@ class EpisodeDetailActivity : public AddonSourcePicker
         if (!seriesRating.empty()) add(kStar + " " + seriesRating);
         metaLine->setText(line);
         metaLine->setFontSize(18.0f);
-        metaLine->setTextColor(nvgRGB(205, 205, 212));
+        metaLine->setTextColor(theme::textBody());
         metaLine->setMarginTop(12.0f);
         meta->addView(metaLine);
 
@@ -1299,7 +1313,7 @@ class EpisodeDetailActivity : public AddonSourcePicker
             auto* desc = new brls::Label();
             desc->setText(clampText(ep.overview, 210));
             desc->setFontSize(18.0f);
-            desc->setTextColor(nvgRGB(198, 198, 206));
+            desc->setTextColor(theme::textBody());
             desc->setMarginTop(12.0f);
             meta->addView(desc);
         }
@@ -1448,7 +1462,7 @@ class SeriesDetailActivity : public brls::Activity
         metaLine = new brls::Label();
         metaLine->setText("Show");
         metaLine->setFontSize(19.0f);
-        metaLine->setTextColor(nvgRGB(205, 205, 212));
+        metaLine->setTextColor(theme::textBody());
         metaLine->setMarginTop(14.0f);
         metaLine->setMarginRight(60.0f);
         right->addView(metaLine);
@@ -1456,7 +1470,7 @@ class SeriesDetailActivity : public brls::Activity
         descLabel = new brls::Label();
         descLabel->setText("");
         descLabel->setFontSize(18.0f);
-        descLabel->setTextColor(nvgRGB(198, 198, 206));
+        descLabel->setTextColor(theme::textBody());
         descLabel->setMarginTop(16.0f);
         descLabel->setMarginRight(60.0f);
         right->addView(descLabel);
@@ -1744,7 +1758,7 @@ class SeriesDetailActivity : public brls::Activity
         thumb->setHeight(180.0f);  // 16:9
         thumb->setCornerRadius(10.0f);
         thumb->setHighlightCornerRadius(10.0f);  // match the still's rounding
-        thumb->setBackgroundColor(nvgRGB(0x1a, 0x1a, 0x20));
+        thumb->setBackgroundColor(theme::surfaceSunken());
         stremio::Video ev = v;
         thumb->registerClickAction([this, ev](brls::View*) {
             openEpisode(ev);
@@ -1853,7 +1867,7 @@ class SeriesDetailActivity : public brls::Activity
         auto* l = new brls::Label();
         l->setText(msg);
         l->setFontSize(20.0f);
-        l->setTextColor(nvgRGB(150, 150, 155));
+        l->setTextColor(theme::textMuted());
         box->addView(l);
         episodesRow->addView(box);
         if (focusable && !brls::Application::getCurrentFocus())
@@ -1917,7 +1931,7 @@ brls::View* ListActivity::createContentView()
         auto* s = new brls::Label();
         s->setText(subtitle);
         s->setFontSize(19);
-        s->setTextColor(nvgRGB(190, 190, 195));
+        s->setTextColor(theme::textDim());
         s->setMargins(0, 60.0f, 14, 0);  // matches the inset the rows carry
         box->addView(s);
     }

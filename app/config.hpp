@@ -76,6 +76,12 @@ struct Config
     // theme::current()), so this is not validated here.
     std::string accent = "purple";
 
+    // "dark", "light" or "system" (the console's own setting). Dark is what the
+    // app has always been. Read at startup only: borealis does not support
+    // swapping the variant while running. Anything unrecognised behaves as
+    // "dark" (see theme::isLight()).
+    std::string themeVariant = "dark";
+
     // RAM streaming (torrentfs_set_ram_stream): keep verified pieces in a
     // bounded RAM window instead of writing them to the SD card. On by default
     // -- it removes the per-piece playback stutter (the SD write of a finished

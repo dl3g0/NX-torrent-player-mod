@@ -275,6 +275,39 @@ bool MpvView::startMpv()
     // "no" means: load no subtitle track at all, rather than pick one and hide
     // it -- which also saves decoding them.
     mpv_set_option_string(mpv, "sid", config::get().subtitles ? "auto" : "no");
+
+    // Subtitle look. mpv's defaults are a 55pt face with a hard 3.0 black border,
+    // no shadow and no blur -- heavy, and the outline reads as a sticker cut out
+    // of the picture. This is the streaming-service treatment instead: a slightly
+    // smaller semibold face, a thinner outline softened by a touch of blur, and a
+    // real drop shadow to lift it off bright scenes.
+    //
+    // NOT setting sub-font: this toolchain's libass (0.17.3) is built without
+    // fontconfig, so there is no font provider to resolve a family name against.
+    // Naming one risks losing subtitle rendering altogether, which is far worse
+    // than a face we did not choose.
+    //
+    // Colours are opaque on purpose. mpv takes #AARRGGBB, but ASS stores alpha
+    // inverted and it is not worth betting the look on which convention wins
+    // here -- the softness comes from blur and shadow offset, not from alpha.
+    mpv_set_option_string(mpv, "sub-font-size", "46");
+    mpv_set_option_string(mpv, "sub-bold", "yes");
+    mpv_set_option_string(mpv, "sub-color", "#FFFFFF");
+    mpv_set_option_string(mpv, "sub-border-color", "#000000");
+    mpv_set_option_string(mpv, "sub-border-size", "2.6");
+    mpv_set_option_string(mpv, "sub-shadow-color", "#000000");
+    mpv_set_option_string(mpv, "sub-shadow-offset", "1.4");
+    mpv_set_option_string(mpv, "sub-blur", "0.35");
+    // A little tracking: bold sans at this size sets too tight otherwise.
+    mpv_set_option_string(mpv, "sub-spacing", "0.4");
+    // Off the very bottom edge (mpv default 34), clear of the seek bar.
+    mpv_set_option_string(mpv, "sub-margin-y", "50");
+    // The one debatable line: without it none of the above reaches ASS/SSA subs,
+    // which keep whatever the release baked in. "yes" restyles them for a
+    // consistent look but flattens hand-styled signs (typical in anime rips);
+    // "scale" -- mpv's default -- would leave those alone. Border names are the
+    // 0.37 spelling; they became sub-outline-* in 0.38.
+    mpv_set_option_string(mpv, "sub-ass-override", "yes");
     mpv_set_option_string(mpv, "cache", "yes");
     // Never let mpv auto-pause playback to rebuffer -- once we start, we keep
     // playing. We do the initial buffering ourselves: start paused, fill the
@@ -511,9 +544,16 @@ void MpvView::updateLockHint()
     if (!lockFlashActive) return;
     if (std::chrono::steady_clock::now() < lockFlashUntil) return;
     lockFlashActive = false;
-    // Flash over. Hide the pill unless the pause overlay is still using it as the
-    // "Lock" hint (paused and not locked), in which case restore that label.
-    if (userPaused && !controlsLocked)
+    // Flash over. Hide the pill unless the controls overlay is still up and using
+    // it as the "Y to lock" hint, in which case just restore that label.
+    //
+    // The test is controlsShown, NOT userPaused: the overlay also shows during
+    // playback (it auto-hides after 4s), and testing userPaused made the pill
+    // vanish out from under a visible overlay. That was the touch bug -- unlock by
+    // tapping the pill (which arms a flash), tap the video straight after to bring
+    // the whole overlay up, and ~1.4s later this hid the pill while the rest of
+    // the overlay stayed.
+    if (controlsShown && !controlsLocked)
     {
         if (lockLabel) lockLabel->setText(kGlyphLockOpen);
     }
@@ -738,6 +778,57 @@ void MpvView::openTrackMenu()
         auto* s = new brls::SelectorCell();
         s->init("Subtitles", { "None" }, 0, [](int) {});
         content->addView(s);
+    }
+
+    // The index whose value sits closest to `x`: these are doubles read back from
+    // mpv, so matching them by equality would fail on the first rounding.
+    auto nearest = [](const std::vector<double>& v, double x) {
+        int best   = 0;
+        double bd  = 1e18;
+        for (size_t i = 0; i < v.size(); i++)
+        {
+            double d = x > v[i] ? x - v[i] : v[i] - x;
+            if (d < bd) { bd = d; best = (int)i; }
+        }
+        return best;
+    };
+    // Reads a double property, falling back to 1.0 -- the neutral value for both
+    // of the ones below.
+    auto getScale = [this](const char* prop) {
+        double d = 1.0;
+        mpv_get_property(mpv, prop, MPV_FORMAT_DOUBLE, &d);
+        return d;
+    };
+    auto setScale = [this](const char* prop, double value) {
+        char v[24];
+        std::snprintf(v, sizeof(v), "%.4g", value);
+        mpv_set_property_string(mpv, prop, v);
+    };
+
+    // Subtitle size, as a percentage of the size the app configures at startup
+    // (sub-font-size): sub-scale multiplies it, so 100% is that baseline rather
+    // than mpv's own default. Only offered when there is something to scale.
+    if (sIds.size() > 1)
+    {
+        const std::vector<double> scales = { 0.75, 0.9, 1.0, 1.15, 1.3, 1.5 };
+        auto* z = new brls::SelectorCell();
+        z->init("Subtitle size",
+                { "75%", "90%", "100%", "115%", "130%", "150%" },
+                nearest(scales, getScale("sub-scale")),
+                [scales, setScale](int sel) { setScale("sub-scale", scales[sel]); });
+        content->addView(z);
+    }
+
+    // Playback speed. mpv resamples the audio to keep the pitch, so this stays
+    // listenable either side of 1x.
+    {
+        const std::vector<double> speeds = { 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0 };
+        auto* sp = new brls::SelectorCell();
+        sp->init("Speed",
+                 { "0.5x", "0.75x", "Normal", "1.25x", "1.5x", "1.75x", "2x" },
+                 nearest(speeds, getScale("speed")),
+                 [speeds, setScale](int sel) { setScale("speed", speeds[sel]); });
+        content->addView(sp);
     }
 
     auto* dlg = new brls::Dialog(content);
@@ -1989,7 +2080,7 @@ void MpvView::beginSeek()
 // a slow nudge and a fast sweep the same gesture.
 void MpvView::updateStickSeek()
 {
-    if (!ready || !mpv || controlsLocked)
+    if (!ready || !mpv)
         return;
 
     brls::ControllerState st {};
@@ -2000,6 +2091,21 @@ void MpvView::updateStickSeek()
     float rx = st.axes[brls::ControllerAxis::RIGHT_X];
     float x  = (lx < 0 ? -lx : lx) >= (rx < 0 ? -rx : rx) ? lx : rx;
 
+    bool pushed = x <= -kStickDeadzone || x >= kStickDeadzone;
+
+    // Locked: the stick is a blocked input like any other, so it flashes the pill
+    // -- which it used to skip entirely, since the lock check sat above the axis
+    // read. Once per push, not once per frame: every other control flashes on a
+    // press, and re-arming the timer every frame would pin the pill on screen for
+    // as long as the stick is held.
+    if (controlsLocked)
+    {
+        if (pushed && !stickWasPushed) flashLock();
+        stickWasPushed = pushed;
+        return;
+    }
+    stickWasPushed = pushed;
+
     auto now = std::chrono::steady_clock::now();
     double dt = seekFrameValid
                     ? std::chrono::duration<double>(now - seekLastFrame).count()
@@ -2008,7 +2114,7 @@ void MpvView::updateStickSeek()
     seekFrameValid = true;
     if (dt > 0.25) dt = 0.25;  // a hitch must not teleport the cursor
 
-    if (x > -kStickDeadzone && x < kStickDeadzone)
+    if (!pushed)
     {
         seekHeld = 0.0;  // released: next push starts slow again
         return;

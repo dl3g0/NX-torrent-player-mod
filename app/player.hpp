@@ -180,6 +180,10 @@ class MpvView : public brls::Box
     // play/pause the user had. B calls it instead of leaving the stream.
     void cancelSeek();
     double seekHeld = 0.0;  // seconds the stick has been held off-centre
+    // Was the stick off-centre last frame? The stick is an axis, not an event, so
+    // this is what turns it into one -- needed to flash the lock pill once per
+    // push while locked instead of on every frame it is held.
+    bool stickWasPushed = false;
     std::chrono::steady_clock::time_point seekLastFrame;
     bool seekFrameValid = false;
 

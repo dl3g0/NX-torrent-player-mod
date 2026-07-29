@@ -1,5 +1,7 @@
 #include "update.hpp"
 
+#include "theme.hpp"
+
 #include <borealis.hpp>
 
 #include <switch.h>
@@ -423,7 +425,7 @@ void promptInstall(const Release& r)
         track->setShrink(0.0f);
         track->setCornerRadius(4.0f);
         track->setMarginTop(18.0f);
-        track->setBackgroundColor(nvgRGBA(255, 255, 255, 38));
+        track->setBackgroundColor(theme::scrim(38));
         auto* fill = new brls::Box();
         fill->setHeight(8.0f);
         fill->setWidth(0.0f);

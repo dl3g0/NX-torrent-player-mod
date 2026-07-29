@@ -373,6 +373,10 @@ std::string magnetHash(const std::string& magnet)
     return h;
 }
 
+// Defined with the rest of the magnet-files cache below; needed up here by
+// scanMagnets to label a row with the size it recorded.
+int64_t magnetCachedTotal(const std::string& hash);
+
 // Whether a magnet's file list has been resolved and cached (APPDATA_MAGNET_FILES
 // holds a line for its hash, even if that line is the "no video" marker).
 bool magnetFilesCached(const std::string& hash)
@@ -416,8 +420,14 @@ std::vector<TorrentEntry> scanMagnets(const std::string& path)
         if (magnet.empty()) continue;
         // Resolve (name + file list) until the files are cached, even if a dn=
         // name is already there -- we still need the file list to stream.
-        bool cached = magnetFilesCached(magnetHash(magnet));
-        out.push_back({ magnetName(magnet), magnet, "magnet", true, !cached });
+        std::string hash = magnetHash(magnet);
+        bool cached      = magnetFilesCached(hash);
+        // Show the real size once it has been recorded, like a .torrent does.
+        // "magnet" is the fallback: a magnet resolved before that was recorded
+        // has no -2 line, and its files are cached so it never resolves again.
+        std::string size = humanSize(magnetCachedTotal(hash));
+        out.push_back({ magnetName(magnet), magnet,
+                        size.empty() ? "magnet" : size, true, !cached });
     }
     return out;
 }
@@ -547,11 +557,19 @@ std::vector<VideoFile> torrentVideoFiles(const std::string& path)
 // list writes a "no video" marker (index -1) so the magnet is still marked
 // resolved and the player can say so instead of re-fetching every time. Only
 // called once per magnet (when its files were not cached).
-void cacheMagnetFiles(const std::string& hash, const std::vector<VideoFile>& vids)
+void cacheMagnetFiles(const std::string& hash, const std::vector<VideoFile>& vids,
+                      int64_t totalLen)
 {
     if (hash.empty()) return;
     FILE* f = std::fopen(APPDATA_MAGNET_FILES, "a");
     if (!f) return;
+    // Index -2: the whole-torrent size, so the list can show it like a .torrent's
+    // without re-fetching metadata. Written alongside the file lines and never on
+    // its own -- magnetFilesCached() only looks for the hash, so a lone -2 line
+    // would wrongly mark the magnet resolved. magnetCachedFiles() drops every
+    // negative index, so it ignores this one for free.
+    if (totalLen > 0)
+        std::fprintf(f, "%s\t-2\t%lld\t-\n", hash.c_str(), (long long)totalLen);
     if (vids.empty())
     {
         std::fprintf(f, "%s\t-1\t0\t-\n", hash.c_str());
@@ -569,6 +587,29 @@ void cacheMagnetFiles(const std::string& hash, const std::vector<VideoFile>& vid
         }
     }
     std::fclose(f);
+}
+
+// The cached whole-torrent size of a magnet (the -2 line cacheMagnetFiles wrote),
+// or 0 when it is not known -- either the magnet is not resolved yet, or it was
+// resolved by a build that did not record the total.
+int64_t magnetCachedTotal(const std::string& hash)
+{
+    if (hash.empty()) return 0;
+    FILE* f = std::fopen(APPDATA_MAGNET_FILES, "rb");
+    if (!f) return 0;
+    std::string body;
+    char buf[512];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
+    std::fclose(f);
+
+    std::string key = hash + "\t-2\t";
+    size_t k        = body.find(key);
+    // Must start a line, or a hash that ends with another one's would match.
+    while (k != std::string::npos && k != 0 && body[k - 1] != '\n')
+        k = body.find(key, k + 1);
+    if (k == std::string::npos) return 0;
+    return std::atoll(body.c_str() + k + key.size());
 }
 
 // The cached video files for a magnet, largest first. Empty if not cached OR if
@@ -683,6 +724,7 @@ struct LocalRow
     brls::Box* view               = nullptr;
     brls::Label* name             = nullptr;
     brls::ProgressSpinner* spinner = nullptr;
+    brls::Label* size             = nullptr;  // null for a .torrent (fixed at scan)
 };
 
 // A list row: icon, name, and either the size or -- for a magnet still resolving
@@ -725,9 +767,14 @@ LocalRow makeLocalRow(const TorrentEntry& e)
         spinner->setVisibility(brls::Visibility::GONE);  // shown when its turn comes
         row->addView(spinner);
     }
-    else if (!e.sizeText.empty())
+
+    // A resolving magnet gets a size label too, not just a spinner: its size is
+    // only known once the metadata lands, and the resolver fills this in then (see
+    // onEach in buildLocalTab). It starts blank so the row does not jump.
+    brls::Label* size = nullptr;
+    if (e.needsResolve || !e.sizeText.empty())
     {
-        auto* size = new brls::Label();
+        size = new brls::Label();
         size->setFontSize(19.0f);
         size->setTextColor(brls::Application::getTheme().getColor(
             "brls/list/listItem_value_color"));
@@ -736,7 +783,7 @@ LocalRow makeLocalRow(const TorrentEntry& e)
         size->setShrink(0.0f);
         size->setWidth(86.0f);
         size->setHorizontalAlign(brls::HorizontalAlign::RIGHT);
-        size->setText(e.sizeText);
+        size->setText(e.needsResolve ? "" : e.sizeText);
         row->addView(size);
     }
 
@@ -745,7 +792,7 @@ LocalRow makeLocalRow(const TorrentEntry& e)
         playEntry(cap);
         return true;
     });
-    return { row, name, spinner };
+    return { row, name, spinner, size };
 }
 
 // Remove a magnet line (matched by info-hash) from magnet.txt.
@@ -851,7 +898,7 @@ brls::View* buildEmptyState()
     hint->setText("Drop .torrent files in this folder on your SD card, or add "
                   "magnet links to magnet.txt inside it (one per line):");
     hint->setFontSize(20);
-    hint->setTextColor(nvgRGB(190, 190, 195));  // light gray (text_disabled is
+    hint->setTextColor(theme::textDim());  // light gray (text_disabled is
                                                 // too dark on the dark theme)
     hint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
     hint->setMargins(0, 0, 10, 0);
@@ -897,15 +944,20 @@ static void appletModeBlock()
 }
 
 // Resolve magnets in the background, ONE AT A TIME (no full download starts):
+// (magnet, resolved name, whole-torrent size). Name "" / size 0 mean the attempt
+// failed. Not the same thing as the player's setMagnetResolvedHook, which only
+// ever needs the name.
+using MagnetResolvedFn =
+    std::function<void(const std::string&, const std::string&, int64_t)>;
+
 // their name is written into magnet.txt and their video-file list into the files
 // cache. `alive` stops the chain once the tab is gone. `onStart(magnet)` fires
 // (UI thread) when a magnet's turn begins -- to move the spinner onto it; then
-// `onEach(magnet, name)` fires when its attempt finishes (name "" = failed).
-void resolveMagnetNames(
-    std::shared_ptr<bool> alive,
-    std::shared_ptr<std::vector<std::string>> todo, size_t idx,
-    std::function<void(const std::string&)> onStart,
-    std::function<void(const std::string&, const std::string&)> onEach)
+// `onEach` fires when its attempt finishes.
+void resolveMagnetNames(std::shared_ptr<bool> alive,
+                        std::shared_ptr<std::vector<std::string>> todo, size_t idx,
+                        std::function<void(const std::string&)> onStart,
+                        MagnetResolvedFn onEach)
 {
     if (!alive || !*alive)
         return;
@@ -918,13 +970,15 @@ void resolveMagnetNames(
 
     brls::async([alive, todo, idx, magnet, onStart, onEach]() {
         std::string name;
+        int64_t total = 0;
         torrent_meta* m = (torrent_meta*)std::calloc(1, sizeof(torrent_meta));
         if (m)
         {
             char err[128] = { 0 };
             if (torrent_load_magnet(m, magnet.c_str(), err, sizeof(err)) == 0)
             {
-                name = m->name;
+                name  = m->name;
+                total = m->total_len;  // whole-torrent size, like torrentScanInfo
                 // Extract + cache its video files (largest first) in the same
                 // fetch, so playing it can offer a picker with no extra wait.
                 std::vector<VideoFile> vids;
@@ -940,25 +994,30 @@ void resolveMagnetNames(
                 }
                 torrent_unload(m);
                 if (!magnetFilesCached(magnetHash(magnet)))
-                    cacheMagnetFiles(magnetHash(magnet), vids);
+                    cacheMagnetFiles(magnetHash(magnet), vids, total);
             }
             std::free(m);
         }
-        brls::sync([alive, todo, idx, magnet, name, onStart, onEach]() {
+        brls::sync([alive, todo, idx, magnet, name, total, onStart, onEach]() {
             if (!*alive)
                 return;
             if (!name.empty())
                 updateMagnetName(magnet, name);
             if (onEach)
-                onEach(magnet, name);
+                onEach(magnet, name, total);
             resolveMagnetNames(alive, todo, idx + 1, onStart, onEach);
         });
     });
 }
 
 // hash -> (name label, spinner) for magnet rows still resolving their name.
-using MagnetWidgets =
-    std::map<std::string, std::pair<brls::Label*, brls::ProgressSpinner*>>;
+struct MagnetRowWidgets
+{
+    brls::Label* name              = nullptr;
+    brls::ProgressSpinner* spinner = nullptr;
+    brls::Label* size              = nullptr;
+};
+using MagnetWidgets = std::map<std::string, MagnetRowWidgets>;
 
 // Delete a row's backing (the .torrent file, or the magnet's magnet.txt line),
 // move focus to a neighbour first, then drop the row from the list.
@@ -1041,27 +1100,31 @@ brls::View* buildLocalTab()
     auto widgets = std::make_shared<MagnetWidgets>();
     auto alive   = root->alive;
 
-    // Fills a loading row in as its name resolves (shared by the initial list and
-    // the "Add magnet" button). Its spinner goes away either way.
-    std::function<void(const std::string&, const std::string&)> onEach =
-        [widgets](const std::string& magnet, const std::string& name) {
-            auto it = widgets->find(magnetHash(magnet));
-            if (it == widgets->end()) return;
-            if (it->second.second)
-                it->second.second->setVisibility(brls::Visibility::GONE);
-            if (it->second.first && !name.empty())
-                it->second.first->setText(name);
-        };
+    // Fills a loading row in as its name and size resolve (shared by the initial
+    // list and the "Add magnet" button). Its spinner goes away either way.
+    MagnetResolvedFn onEach = [widgets](const std::string& magnet,
+                                        const std::string& name, int64_t total) {
+        auto it = widgets->find(magnetHash(magnet));
+        if (it == widgets->end()) return;
+        if (it->second.spinner)
+            it->second.spinner->setVisibility(brls::Visibility::GONE);
+        if (it->second.name && !name.empty())
+            it->second.name->setText(name);
+        // Blank on failure: the row keeps an empty size slot rather than claiming
+        // a wrong one, and the next launch will try again.
+        if (it->second.size)
+            it->second.size->setText(humanSize(total));
+    };
 
     // A magnet's turn begins: drop its "(waiting)" suffix and show its spinner.
     std::function<void(const std::string&)> onStart =
         [widgets](const std::string& magnet) {
             auto it = widgets->find(magnetHash(magnet));
             if (it == widgets->end()) return;
-            if (it->second.first)
-                it->second.first->setText(magnetName(magnet));
-            if (it->second.second)
-                it->second.second->setVisibility(brls::Visibility::VISIBLE);
+            if (it->second.name)
+                it->second.name->setText(magnetName(magnet));
+            if (it->second.spinner)
+                it->second.spinner->setVisibility(brls::Visibility::VISIBLE);
         };
 
     // "Add magnet" at the top: adds it to the list (and magnet.txt) via the
@@ -1084,7 +1147,7 @@ brls::View* buildLocalTab()
         brls::Application::giveFocus(w.view);
         if (e.needsResolve)
         {
-            (*widgets)[magnetHash(magnet)] = { w.name, w.spinner };
+            (*widgets)[magnetHash(magnet)] = { w.name, w.spinner, w.size };
             auto one = std::make_shared<std::vector<std::string>>();
             one->push_back(magnet);
             resolveMagnetNames(alive, one, 0, onStart, onEach);
@@ -1107,7 +1170,7 @@ brls::View* buildLocalTab()
         list->addView(w.view);
         if (e.needsResolve)
         {
-            (*widgets)[magnetHash(e.path)] = { w.name, w.spinner };
+            (*widgets)[magnetHash(e.path)] = { w.name, w.spinner, w.size };
             todo->push_back(e.path);
         }
     }
@@ -1141,44 +1204,62 @@ class BrowserFrame : public brls::AppletFrame
         stremio::setLibraryCountSink(nullptr);
     }
 
-    void setStremioGradient(bool enabled) { this->stremioGradient = enabled; }
+    // Both the background gradient and the header mark are Stremio-tab-only.
+    void setOnStremio(bool on) { this->onStremio = on; }
 
     void draw(NVGcontext* vg, float x, float y, float width, float height,
               brls::Style style, brls::FrameContext* ctx) override
     {
-        if (this->stremioGradient)
+        if (this->onStremio)
         {
-            NVGpaint gradient = nvgLinearGradient(
-                vg, x + width, y, x, y + height, theme::current().gradTop,
-                nvgRGB(0x00, 0x00, 0x00));
+            NVGpaint gradient =
+                nvgLinearGradient(vg, x + width, y, x, y + height,
+                                  theme::gradTop(), theme::gradBottom());
             nvgBeginPath(vg);
             nvgRect(vg, x, y, width, height);
             nvgFillPaint(vg, gradient);
             nvgFill(vg);
         }
         brls::AppletFrame::draw(vg, x, y, width, height, style, ctx);
+
+        // The Stremio mark, drawn on top of the header's icon slot rather than
+        // loaded as a texture, so it follows the accent colour. applyTabIdentity
+        // leaves that Image INVISIBLE (not GONE) on this tab: it still reserves
+        // the same box, which is where we paint. AFTER the base draw, since the
+        // header is one of its children -- and safe to batch normally, unlike the
+        // player, because nothing here renders outside nanovg.
+        if (this->onStremio)
+        {
+            if (!this->iconSlot)
+                this->iconSlot = this->getView("brls/applet_frame/title_icon");
+            if (this->iconSlot)
+                theme::drawStremioMark(vg, this->iconSlot->getX(),
+                                       this->iconSlot->getY(),
+                                       this->iconSlot->getWidth());
+        }
     }
 
   private:
-    bool stremioGradient = false;
+    bool onStremio = false;
+    // Resolved once: getView() walks the tree by id, which has no business
+    // running every frame.
+    brls::View* iconSlot = nullptr;
 };
 
 // Header identity on every tab switch.
 void applyTabIdentity(brls::AppletFrame* frame, config::Tab tab)
 {
-    if (auto* browserFrame = dynamic_cast<BrowserFrame*>(frame))
-        browserFrame->setStremioGradient(tab == config::Tab::STREMIO);
+    bool stremio = tab == config::Tab::STREMIO;
 
-    if (tab == config::Tab::STREMIO)
-    {
-        frame->setTitle("");
-        frame->setIcon("romfs:/stremio-icon.png");
-    }
-    else
-    {
-        frame->setTitle("");
-        frame->setIcon("romfs:/local-icon.png");
-    }
+    if (auto* browserFrame = dynamic_cast<BrowserFrame*>(frame))
+        browserFrame->setOnStremio(stremio);
+
+    frame->setTitle("");
+    // Local keeps its white PNG. Stremio's mark is drawn by BrowserFrame instead,
+    // so no texture is loaded for it at all -- romfs:/stremio-icon.png is a fixed
+    // violet that cannot follow the accent.
+    if (!stremio) frame->setIcon("romfs:/local-icon.png");
+
     // The header icon is sized "auto", i.e. from the texture, and these two are
     // not the same pixel size -- pin both to the same box.
     if (auto* ic = dynamic_cast<brls::Image*>(
@@ -1186,6 +1267,10 @@ void applyTabIdentity(brls::AppletFrame* frame, config::Tab tab)
     {
         ic->setDimensions(54.0f, 54.0f);
         ic->setScalingType(brls::ImageScalingType::FIT);
+        // INVISIBLE, not GONE: it must still reserve its slot in the header row,
+        // because that box is exactly where the mark gets painted.
+        ic->setVisibility(stremio ? brls::Visibility::INVISIBLE
+                                  : brls::Visibility::VISIBLE);
     }
 }
 
@@ -1344,6 +1429,15 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     // active >= 0: show the bar and mark that view PRIMARY. active < 0: fold it
     // away and take its buttons out of the focus ring (a GONE box keeps its
     // children focusable otherwise -- the same trap as the sign-in form).
+    // LEFT out of the view bar must land on "Local", not "Stremio". The category
+    // bar reads "Stremio | Local", so coming from the right of the screen the
+    // nearest button is Local -- but Box::getDefaultFocus() hands back whichever
+    // of the two was focused last (box.cpp:357), and that is normally the active
+    // tab's own button, i.e. Stremio. Only the leftmost view button can leave the
+    // bar this way, so one explicit route is enough to beat that heuristic.
+    if (!viewBtns.empty())
+        viewBtns[0]->setCustomNavigationRoute(brls::FocusDirection::LEFT, localBtn);
+
     auto curView      = std::make_shared<int>(-1);
     auto applyViewBar = [viewBar, viewBtns, viewIcons, stremioBtn,
                          curView](int active) {
@@ -1538,11 +1632,17 @@ int main(int argc, char* argv[])
     }
 
     brls::Application::createWindow("NX Torrent Player");
-    brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::DARK);
+    // Order matters: SwitchPlatform caches the console's ColorSetId at
+    // construction and setThemeVariant() overwrites that same field, so the
+    // console's own preference has to be read before applyVariant() runs -- it is
+    // unrecoverable afterwards. ("Follow the console" depends on this.)
+    theme::captureSystemVariant();
+    theme::applyVariant();
+
     brls::Application::setGlobalQuit(true);
 
-    // Before anything is built: plenty of views read the accent once, as they
-    // are constructed, and keep the colour they got.
+    // Before anything is built: plenty of views read the accent and the palette
+    // once, as they are constructed, and keep the colours they got.
     theme::applyAccent();
 
     // The window was sized inside createWindow, before any activity exists, so

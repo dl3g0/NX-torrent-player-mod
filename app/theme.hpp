@@ -27,6 +27,57 @@ struct Scheme
     NVGcolor bgOuter;   // ... and its far edge
 };
 
+// ---- light / dark ---------------------------------------------------------
+//
+// config::themeVariant is "dark", "light" or "system". Read the console's own
+// preference ONCE at startup, before anything calls setThemeVariant: on Switch
+// that setter overwrites the very field getThemeVariant() reads back (it caches
+// the ColorSetId at construction), so afterwards the console's choice is gone.
+void captureSystemVariant();
+
+// Resolves config + the console into the variant for this session, latches it,
+// and pushes it into the platform. Startup only, and it is the ONLY reader of
+// config::themeVariant: borealis states the variant is not expected to change
+// while running, and views that copied a theme colour when they were built would
+// keep it. Latching is what makes that true -- while the palette below read the
+// config live, everything drawn per-frame switched the instant the setting
+// changed while everything else kept its old colours: a half-converted UI.
+void applyVariant();
+
+// The variant in force *this session* -- not what config currently says.
+bool isLight();
+
+// ---- palette -------------------------------------------------------------
+//
+// The surfaces the app paints itself, as semantic roles rather than literals:
+// borealis' own chrome follows the variant on its own, everything we draw does
+// not. Each returns the dark or light value for the variant in force.
+//
+// In the light variant the background field is derived from the accent (a light
+// tint of it) instead of being hand-picked per scheme, unlike the dark values in
+// the table above: it is near *black* that the perceptual step from a hue varies
+// enough to need tuning by hand, while light tints of the same strength read
+// consistently across hues.
+NVGcolor accent();      // never varies -- it carries white text in both
+NVGcolor gradTop();     // Stremio tab gradient, start
+NVGcolor gradBottom();  // ... and end (black when dark, white when light)
+NVGcolor bgInner();
+NVGcolor bgOuter();
+
+NVGcolor text();        // strongest app-drawn text
+NVGcolor textBody();    // descriptions, meta lines
+NVGcolor textDim();     // secondary labels
+NVGcolor textMuted();   // captions, empty states, Options hints
+NVGcolor textFaint();   // the faintest tier (a disabled search result)
+NVGcolor textWarn();    // an unavailable / error line
+
+NVGcolor surface();        // a card sitting on the field
+NVGcolor surfaceSunken();  // a thumbnail well, one step below a card
+
+// A neutral veil at alpha `a`: white over dark, black over light. Progress-bar
+// tracks and input wells, which must read as "the surface, slightly lifted".
+NVGcolor scrim(int a);
+
 // Every scheme offered, default first. Ids and labels are index-matched with
 // schemeIds()/schemeLabels(), which exist for the Options selector.
 const std::vector<Scheme>& schemes();
@@ -50,6 +101,12 @@ void applyAccent();
 // popActivity then dereferences.
 void setRepaintHook(std::function<void()> fn);
 
+// Draws the Stremio mark -- the rotated rounded square with a play glyph in it --
+// into a `size` x `size` box at (x, y), in the current accent instead of the
+// artwork's fixed blue-violet gradient. That is the whole reason it is drawn
+// rather than loaded from romfs:/stremio-icon.png.
+void drawStremioMark(NVGcontext* vg, float x, float y, float size);
+
 // A Box / Label that is always the current accent, by re-reading it as it draws
 // rather than copying it once at construction. Both setters are plain field
 // assignments, so this costs nothing per frame and needs no hook.
@@ -59,7 +116,7 @@ class AccentBox : public brls::Box
     void draw(NVGcontext* vg, float x, float y, float w, float h,
               brls::Style style, brls::FrameContext* ctx) override
     {
-        this->setBackgroundColor(current().accent);
+        this->setBackgroundColor(accent());
         brls::Box::draw(vg, x, y, w, h, style, ctx);
     }
 };
@@ -70,7 +127,7 @@ class AccentLabel : public brls::Label
     void draw(NVGcontext* vg, float x, float y, float w, float h,
               brls::Style style, brls::FrameContext* ctx) override
     {
-        this->setTextColor(current().accent);
+        this->setTextColor(accent());
         brls::Label::draw(vg, x, y, w, h, style, ctx);
     }
 };
