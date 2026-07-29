@@ -15,6 +15,7 @@
 
 #include "config.hpp"
 #include "player.hpp"
+#include "theme.hpp"
 
 namespace
 {
@@ -662,31 +663,34 @@ std::string clampText(const std::string& s, size_t max)
 // whole frame -- header gap, content and (transparent) footer alike -- so the
 // footer no longer falls back to the flat theme colour. Everything on top draws
 // over it; the content box is left transparent so the gradient shows through.
-// The detail screens' navy background, defined once so the edge fades can sample
-// the exact same field and blend into it seamlessly (see FadeHScrollingFrame).
-const NVGcolor kBgInner = nvgRGB(0x25, 0x25, 0x4e);
-const NVGcolor kBgOuter = nvgRGB(0x07, 0x07, 0x14);
-
+// The detail screens' background field. Read from the colour scheme at draw
+// time, not cached, so the edge fades below always sample the exact same pair
+// the field was painted with -- including right after it is changed in Options.
 NVGpaint bgGradient(NVGcontext* vg, float x, float y, float w, float h)
 {
     return nvgRadialGradient(vg, x + w * 0.60f, y + h * 0.30f, h * 0.15f,
-                             w * 0.90f, kBgInner, kBgOuter);
+                             w * 0.90f, theme::current().bgInner,
+                             theme::current().bgOuter);
 }
 
 // The background colour at an absolute screen point, matching bgGradient over the
-// full 1280x720 frame -- nvgRadialGradient interpolates linearly in
+// full frame -- nvgRadialGradient interpolates linearly in
 // (distance - inner)/(outer - inner), which this reproduces so the fade lands on
-// the true background colour rather than a guessed one.
+// the true background colour rather than a guessed one. The frame is borealis'
+// logical size, which is not a constant: it follows the configured UI size and
+// the dock state (see applyUiScale), and sampling the wrong one puts a visibly
+// off-colour scrim at the scroller edges.
 NVGcolor bgColorAt(float px, float py)
 {
-    const float W = 1280.0f, H = 720.0f;
+    const float W = brls::Application::contentWidth,
+                H = brls::Application::contentHeight;
     float cx = W * 0.60f, cy = H * 0.30f, inr = H * 0.15f, outr = W * 0.90f;
     float d  = std::sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
     float t  = (d - inr) / (outr - inr);
     t        = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
-    return nvgRGBAf(kBgInner.r + (kBgOuter.r - kBgInner.r) * t,
-                    kBgInner.g + (kBgOuter.g - kBgInner.g) * t,
-                    kBgInner.b + (kBgOuter.b - kBgInner.b) * t, 1.0f);
+    const NVGcolor in = theme::current().bgInner, out = theme::current().bgOuter;
+    return nvgRGBAf(in.r + (out.r - in.r) * t, in.g + (out.g - in.g) * t,
+                    in.b + (out.b - in.b) * t, 1.0f);
 }
 
 class GradientAppletFrame : public brls::AppletFrame

@@ -5,6 +5,7 @@
 #include <switch.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -34,6 +35,19 @@ bool readBool(const std::string& body, const char* key, bool dflt)
     if (body.compare(v, 4, "true") == 0) return true;
     if (body.compare(v, 5, "false") == 0) return false;
     return dflt;
+}
+
+int readInt(const std::string& body, const char* key, int dflt)
+{
+    std::string pat = std::string("\"") + key + "\"";
+    size_t k        = body.find(pat);
+    if (k == std::string::npos) return dflt;
+    size_t colon = body.find(':', k + pat.size());
+    if (colon == std::string::npos) return dflt;
+    // strtol skips leading space itself, and yields 0 on anything that is not a
+    // number -- which every caller has to reject anyway, since 0 is never a
+    // valid value for the settings stored this way.
+    return (int)std::strtol(body.c_str() + colon + 1, nullptr, 10);
 }
 
 std::string readStr(const std::string& body, const char* key,
@@ -73,6 +87,36 @@ const Lang kLangs[] = {
     { "ko", "Korean", "ko,kor" },
     { "zh", "Chinese", "zh,chi,zho" },
 };
+
+// The UI sizes offered, as the logical width borealis lays out in. The label is
+// that width relative to 1280 (the stock logical width), because that is what
+// is actually perceived: a 1600-wide logical space draws everything at 80% of
+// its stock size. Deliberately expressed against 1280 rather than against the
+// output, so one list serves both docked and handheld.
+struct UiScale
+{
+    int width;
+    const char* label;
+};
+
+const UiScale kUiScales[] = {
+    { 1152, "111%" },
+    { 1280, "100%" },
+    { 1440, "89%" },
+    { 1600, "80%" },
+    { 1760, "73%" },
+    { 1920, "67%" },
+};
+
+// A stored width, rejected unless we actually offer it: these go straight into
+// the layout engine, so a hand-edited (or truncated) config.json must not be
+// able to leave the UI unusable -- and the setting therefore unreachable.
+int knownWidth(int w, int dflt)
+{
+    for (const auto& s : kUiScales)
+        if (s.width == w) return w;
+    return dflt;
+}
 
 } // namespace
 
@@ -121,6 +165,26 @@ const std::vector<std::string>& langLabels()
     return v;
 }
 
+const std::vector<int>& uiWidths()
+{
+    static std::vector<int> v = [] {
+        std::vector<int> o;
+        for (const auto& s : kUiScales) o.push_back(s.width);
+        return o;
+    }();
+    return v;
+}
+
+const std::vector<std::string>& uiWidthLabels()
+{
+    static std::vector<std::string> v = [] {
+        std::vector<std::string> o;
+        for (const auto& s : kUiScales) o.push_back(s.label);
+        return o;
+    }();
+    return v;
+}
+
 void load()
 {
     FILE* f = std::fopen(kPath, "rb");
@@ -149,6 +213,14 @@ void load()
     cfg.subtitles    = readBool(body, "subtitles", cfg.subtitles);
     cfg.hwDecode     = readBool(body, "hwDecode", cfg.hwDecode);
 
+    cfg.accent = readStr(body, "accent", cfg.accent);
+
+    cfg.dockedUiWidth = knownWidth(readInt(body, "dockedUiWidth", cfg.dockedUiWidth),
+                                   cfg.dockedUiWidth);
+    cfg.handheldUiWidth =
+        knownWidth(readInt(body, "handheldUiWidth", cfg.handheldUiWidth),
+                   cfg.handheldUiWidth);
+
     brls::Logger::info(
         "[config] startupTab={} logging={} hide4k={} checkUpdates={}",
         cfg.startupTab == Tab::STREMIO ? "stremio" : "local", cfg.logging,
@@ -174,7 +246,10 @@ bool save()
                  "  \"audioLang\": \"%s\",\n"
                  "  \"subLang\": \"%s\",\n"
                  "  \"subtitles\": %s,\n"
-                 "  \"hwDecode\": %s\n"
+                 "  \"hwDecode\": %s,\n"
+                 "  \"dockedUiWidth\": %d,\n"
+                 "  \"handheldUiWidth\": %d,\n"
+                 "  \"accent\": \"%s\"\n"
                  "}\n",
                  cfg.startupTab == Tab::STREMIO ? "stremio" : "local",
                  cfg.logging ? "true" : "false", cfg.hide4k ? "true" : "false",
@@ -182,7 +257,8 @@ bool save()
                  cfg.ramStream ? "true" : "false",
                  cfg.checkUpdates ? "true" : "false", cfg.audioLang.c_str(),
                  cfg.subLang.c_str(), cfg.subtitles ? "true" : "false",
-                 cfg.hwDecode ? "true" : "false");
+                 cfg.hwDecode ? "true" : "false", cfg.dockedUiWidth,
+                 cfg.handheldUiWidth, cfg.accent.c_str());
     std::fclose(f);
     return true;
 }

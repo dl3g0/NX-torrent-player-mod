@@ -33,6 +33,7 @@
 #include "browse.hpp"
 #include "http.hpp"
 #include "json.hpp"
+#include "theme.hpp"
 
 namespace
 {
@@ -2021,12 +2022,13 @@ brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
         track->setBackgroundColor(nvgRGBA(255, 255, 255, 40));
         track->setMarginTop(10.0f);
 
-        auto* fill = new brls::Box();
+        // AccentBox, not a Box with the accent copied in: these rows live on the
+        // main screen for as long as the tab does, so a colour change in Options
+        // has to reach them without the tab being rebuilt.
+        auto* fill = new theme::AccentBox();
         fill->setWidthPercentage((float)(prog * 100.0));
         fill->setHeight(5.0f);
         fill->setCornerRadius(2.5f);
-        fill->setBackgroundColor(
-            brls::Application::getTheme().getColor("brls/accent"));
         track->addView(fill);
         textCol->addView(track);
     }

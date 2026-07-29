@@ -16,6 +16,12 @@ enum class Tab
     STREMIO = 1,
 };
 
+// The default UI sizes, named so the Options screen can mark them in the list.
+// Docked defaults smaller than handheld: the same logical size that fills a 6"
+// panel leaves most of a TV empty.
+constexpr int kDefaultDockedUiWidth   = 1600;
+constexpr int kDefaultHandheldUiWidth = 1280;
+
 struct Config
 {
     // Which category the browser opens on.
@@ -58,6 +64,18 @@ struct Config
     // anyway. Never touches streams that struggle to keep up.
     bool rateGovernor = false;
 
+    // UI size, as the logical width borealis lays its views out in: windowScale
+    // is the output width over this, so a *wider* logical space means a
+    // *smaller* UI. Stored per mode because the right answer differs -- 1280
+    // (borealis' own default) fills a 6" panel but wastes most of a TV.
+    int dockedUiWidth   = kDefaultDockedUiWidth;
+    int handheldUiWidth = kDefaultHandheldUiWidth;
+
+    // Colour scheme, as a theme::Scheme id. Purple is what the app has always
+    // looked like. An id we do not know falls back to it at read time (see
+    // theme::current()), so this is not validated here.
+    std::string accent = "purple";
+
     // RAM streaming (torrentfs_set_ram_stream): keep verified pieces in a
     // bounded RAM window instead of writing them to the SD card. On by default
     // -- it removes the per-piece playback stutter (the SD write of a finished
@@ -83,6 +101,13 @@ std::string mpvLangList(const std::string& code);
 // index-matched.
 const std::vector<std::string>& langCodes();
 const std::vector<std::string>& langLabels();
+
+// The UI sizes the Options screen offers: logical widths (what dockedUiWidth /
+// handheldUiWidth store) and their labels, index-matched. One list for both
+// modes -- a label is the size relative to 1280, which does not depend on the
+// output it is drawn to.
+const std::vector<int>& uiWidths();
+const std::vector<std::string>& uiWidthLabels();
 
 // Reads config.json. Called once at startup, before the UI is built. Missing
 // file / unreadable keys keep their default.

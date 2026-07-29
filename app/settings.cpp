@@ -12,6 +12,7 @@
 #include <cstdio>
 
 #include "config.hpp"
+#include "theme.hpp"
 #include "update.hpp"
 #include "stremio.hpp"
 
@@ -30,6 +31,33 @@ void note(const std::string& msg)
 }
 
 } // namespace
+
+void applyUiScale()
+{
+    // borealis lays out in a fixed 1280x720 logical space and multiplies it by
+    // windowScale to fill the output, so the UI keeps the same relative size
+    // whatever it is drawn to -- docked it is simply 1.5x bigger, with no more
+    // content on screen. Widening the logical space shrinks the UI instead; how
+    // far is the user's call, separately per mode, since a 1080p TV metres away
+    // and a 6" panel at arm's length do not want the same thing.
+    bool docked = brls::Application::windowWidth >= 1920;
+    uint32_t w  = (uint32_t)(docked ? config::get().dockedUiWidth
+                                    : config::get().handheldUiWidth);
+    uint32_t h  = w * 9 / 16;  // every offered width is 16:9, so this is exact
+
+    if (brls::Application::ORIGINAL_WINDOW_WIDTH == w) return;
+
+    brls::Application::ORIGINAL_WINDOW_WIDTH  = w;
+    brls::Application::ORIGINAL_WINDOW_HEIGHT = h;
+
+    // Recomputes windowScale/contentWidth and relayouts the activity stack.
+    // Safe to call from the window-size-changed listener: that event is fired by
+    // onWindowResized *after* its own setWindowSize call, and setWindowSize does
+    // not fire it again -- so this is one extra layout pass, not a loop, and it
+    // lands before the next frame is drawn.
+    brls::Application::setWindowSize(brls::Application::windowWidth,
+                                     brls::Application::windowHeight);
+}
 
 brls::View* SettingsActivity::createContentView()
 {
@@ -72,6 +100,71 @@ brls::View* SettingsActivity::createContentView()
                       config::save();
                   });
     list->addView(startup);
+
+    auto* accent = new brls::SelectorCell();
+    accent->init(
+        "Accent colour",
+        [] {
+            std::vector<std::string> v = theme::schemeLabels();
+            if (!v.empty()) v[0] += " (default)";  // schemes() is default-first
+            return v;
+        }(),
+        [] {
+            const auto& ids = theme::schemeIds();
+            for (size_t i = 0; i < ids.size(); i++)
+                if (ids[i] == config::get().accent) return (int)i;
+            return 0;
+        }(),
+        [](int sel) {
+            config::get().accent = theme::schemeIds()[sel];
+            config::save();
+            // The backgrounds follow on the next frame by themselves (they read
+            // the scheme as they draw); this repaints the theme colours that
+            // views copy out of it.
+            theme::applyAccent();
+        });
+    list->addView(accent);
+
+    // Index of the stored width in the offered list. load() rejects anything it
+    // does not offer, so the fallback only matters if the table is ever changed
+    // without the defaults following it.
+    auto uiIndex = [](int width) {
+        const auto& ws = config::uiWidths();
+        for (size_t i = 0; i < ws.size(); i++)
+            if (ws[i] == width) return (int)i;
+        return 0;
+    };
+    // The list is shared between the two modes, but they do not default to the
+    // same size -- so mark the default in each cell rather than in the table.
+    auto uiLabels = [](int dflt) {
+        std::vector<std::string> v = config::uiWidthLabels();
+        const auto& ws             = config::uiWidths();
+        for (size_t i = 0; i < ws.size(); i++)
+            if (ws[i] == dflt) v[i] += " (default)";
+        return v;
+    };
+
+    auto* dockedUi = new brls::SelectorCell();
+    dockedUi->init("UI size when docked", uiLabels(config::kDefaultDockedUiWidth),
+                   uiIndex(config::get().dockedUiWidth), [](int sel) {
+                       config::get().dockedUiWidth = config::uiWidths()[sel];
+                       config::save();
+                       // Next frame, not now: the selector's dropdown is still
+                       // closing, and relaying out the activity stack from under
+                       // it is asking for trouble.
+                       brls::sync([] { applyUiScale(); });
+                   });
+    list->addView(dockedUi);
+
+    auto* handheldUi = new brls::SelectorCell();
+    handheldUi->init("UI size in handheld",
+                     uiLabels(config::kDefaultHandheldUiWidth),
+                     uiIndex(config::get().handheldUiWidth), [](int sel) {
+                         config::get().handheldUiWidth = config::uiWidths()[sel];
+                         config::save();
+                         brls::sync([] { applyUiScale(); });
+                     });
+    list->addView(handheldUi);
 
     auto* logging = new brls::BooleanCell();
     logging->init("Log file", cfg.logging, [](bool on) {
@@ -140,13 +233,20 @@ brls::View* SettingsActivity::createContentView()
     langHint->setLineHeight(1.4f);
     list->addView(langHint);
 
-    auto* governor = new brls::BooleanCell();
-    governor->init("Limit download rate", cfg.rateGovernor, [](bool on) {
-        config::get().rateGovernor = on;
-        config::save();
-        // Takes effect immediately, even for a stream already playing.
-        torrentfs_set_governor(on ? 1 : 0);
-    });
+    // A SelectorCell rather than a BooleanCell for the two settings whose value
+    // needs saying more than "On"/"Off": BooleanCell hardcodes those two strings
+    // in a private, non-virtual updateUI() that also re-runs 200ms after every
+    // toggle (the end of its scale animation), so its text cannot be overridden
+    // from here.
+    auto* governor = new brls::SelectorCell();
+    governor->init("Limit download rate", { "Off (default)", "On" },
+                   cfg.rateGovernor ? 1 : 0, [](int sel) {
+                       config::get().rateGovernor = sel == 1;
+                       config::save();
+                       // Takes effect immediately, even for a stream already
+                       // playing.
+                       torrentfs_set_governor(sel == 1 ? 1 : 0);
+                   });
     list->addView(governor);
 
     auto* governorHint = new brls::Label();
@@ -162,12 +262,15 @@ brls::View* SettingsActivity::createContentView()
     governorHint->setLineHeight(1.4f);
     list->addView(governorHint);
 
-    auto* ramStream = new brls::BooleanCell();
-    ramStream->init("Stream to RAM (no SD cache)", cfg.ramStream, [](bool on) {
-        config::get().ramStream = on;
-        config::save();
-        // Latched when the engine opens, so it takes effect on the next video.
-    });
+    auto* ramStream = new brls::SelectorCell();
+    ramStream->init("Stream to RAM (no SD cache)",
+                    { "Off (Not recommended)", "On (Recommended)" },
+                    cfg.ramStream ? 1 : 0, [](int sel) {
+                        config::get().ramStream = sel == 1;
+                        config::save();
+                        // Latched when the engine opens, so it takes effect on
+                        // the next video.
+                    });
     list->addView(ramStream);
 
     auto* ramHint = new brls::Label();

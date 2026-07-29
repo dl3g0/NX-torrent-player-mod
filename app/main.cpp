@@ -15,6 +15,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <map>
+#include <memory>
 #include <set>
 #include <vector>
 
@@ -33,6 +34,7 @@
 #include "config.hpp"
 #include "player.hpp"
 #include "settings.hpp"
+#include "theme.hpp"
 #include "update.hpp"
 #include "stremio.hpp"
 
@@ -855,10 +857,9 @@ brls::View* buildEmptyState()
     hint->setMargins(0, 0, 10, 0);
     box->addView(hint);
 
-    auto* path = new brls::Label();
+    auto* path = new theme::AccentLabel();
     path->setText("/switch/NX-torrent-player/torrents/");
     path->setFontSize(21);
-    path->setTextColor(brls::Application::getTheme().getColor("brls/accent"));
     path->setHorizontalAlign(brls::HorizontalAlign::CENTER);
     box->addView(path);
 
@@ -1131,6 +1132,8 @@ class BrowserFrame : public brls::AppletFrame
     // so clearing every bridge here makes those late calls harmless no-ops.
     ~BrowserFrame() override
     {
+        // Same reasoning for the repaint hook: it captures the header's two bars.
+        theme::setRepaintHook(nullptr);
         stremio::setViewTabSink(nullptr);
         stremio::setViewSelector(nullptr);
         stremio::setViewCycler(nullptr);
@@ -1146,7 +1149,7 @@ class BrowserFrame : public brls::AppletFrame
         if (this->stremioGradient)
         {
             NVGpaint gradient = nvgLinearGradient(
-                vg, x + width, y, x, y + height, nvgRGB(0x1A, 0x17, 0x3E),
+                vg, x + width, y, x, y + height, theme::current().gradTop,
                 nvgRGB(0x00, 0x00, 0x00));
             nvgBeginPath(vg);
             nvgRect(vg, x, y, width, height);
@@ -1210,30 +1213,11 @@ class IconLabel : public brls::Label
 // Hand-built: borealis' TabFrame is sidebar-only.
 void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
 {
-    // The purple used for the active tab (BUTTONSTYLE_PRIMARY reads brls/accent)
-    // and, matching it, the focus highlight -- borealis' default glow is cyan,
-    // which clashes with the purple. color2 is the border stroke, color1 the
-    // pulsating glow; both to the accent gives a clean solid-purple focus. These
-    // are global theme values, so the highlight is purple app-wide.
-    //
-    // Set on BOTH variants: getTheme() returns the light OR dark table depending
-    // on the console's system theme, and drawing may well use the one we did not
-    // touch -- which would keep borealis' default cyan. (That was the bug: only
-    // the startup variant was patched.)
-    NVGcolor accent = nvgRGB(0x60, 0x3c, 0xf3);
-    NVGcolor white  = nvgRGB(0xff, 0xff, 0xff);
-    for (brls::Theme* t : { &brls::Theme::getLightTheme(),
-                            &brls::Theme::getDarkTheme() })
-    {
-        t->addColor("brls/accent", accent);
-        t->addColor("brls/highlight/color1", accent);
-        t->addColor("brls/highlight/color2", accent);
-        // The selected tab is BUTTONSTYLE_PRIMARY: its fill is this color, and
-        // its label goes white so it stays readable on the purple (the dark
-        // theme's default primary text is near-black, made for a light fill).
-        t->addColor("brls/button/primary_enabled_background", accent);
-        t->addColor("brls/button/primary_enabled_text", white);
-    }
+    // The accent drives the active tab (BUTTONSTYLE_PRIMARY reads brls/accent)
+    // and the focus highlight; main() has already applied it, but the tab bar is
+    // also rebuilt on a colour change, and re-applying costs nothing.
+    theme::applyAccent();
+
     auto* bar = new brls::Box();
     bar->setAxis(brls::Axis::ROW);
     bar->setAlignItems(brls::AlignItems::CENTER);
@@ -1243,13 +1227,32 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     // library and in-flight requests.
     auto* localBtn   = new brls::Button();
     auto* stremioBtn = new brls::Button();
-    auto select      = [content, localBtn, stremioBtn, frame](config::Tab tab) {
-        localBtn->setStyle(tab == config::Tab::LOCAL
+
+    // Which tab is up, held in a shared cell rather than a capture so the
+    // repaint hook below can restyle without knowing how we got here.
+    auto curTab = std::make_shared<config::Tab>(config::get().startupTab);
+
+    // The style carries the accent: a Button copies it out of the theme when a
+    // style is applied and keeps it, so this has to be re-run (not the tab
+    // rebuilt) when the colour changes.
+    auto restyleTabs = [localBtn, stremioBtn, curTab]() {
+        localBtn->setStyle(*curTab == config::Tab::LOCAL
                                ? &brls::BUTTONSTYLE_PRIMARY
                                : &brls::BUTTONSTYLE_BORDERLESS);
-        stremioBtn->setStyle(tab == config::Tab::STREMIO
+        stremioBtn->setStyle(*curTab == config::Tab::STREMIO
                                  ? &brls::BUTTONSTYLE_PRIMARY
                                  : &brls::BUTTONSTYLE_BORDERLESS);
+    };
+
+    auto select = [content, localBtn, stremioBtn, frame, curTab,
+                   restyleTabs](config::Tab tab) {
+        *curTab = tab;
+        restyleTabs();
+        // L and R only cycle the Stremio views, so the "View" chip has no
+        // business in the footer on the Local tab.
+        bool stremioUp = tab == config::Tab::STREMIO;
+        frame->setActionAvailable(brls::BUTTON_LB, stremioUp);
+        frame->setActionAvailable(brls::BUTTON_RB, stremioUp);
         content->clearViews();  // deletes the previous tab
         brls::View* v = buildTab(tab);
         v->setGrow(1.0f);
@@ -1341,7 +1344,10 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     // active >= 0: show the bar and mark that view PRIMARY. active < 0: fold it
     // away and take its buttons out of the focus ring (a GONE box keeps its
     // children focusable otherwise -- the same trap as the sign-in form).
-    auto applyViewBar = [viewBar, viewBtns, viewIcons, stremioBtn](int active) {
+    auto curView      = std::make_shared<int>(-1);
+    auto applyViewBar = [viewBar, viewBtns, viewIcons, stremioBtn,
+                         curView](int active) {
+        *curView  = active;
         bool show = active >= 0;
         viewBar->setVisibility(show ? brls::Visibility::VISIBLE
                                     : brls::Visibility::GONE);
@@ -1389,6 +1395,15 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     stremio::setLibraryUpTarget(stremioBtn);
 
     select(config::get().startupTab);
+
+    // Both header bars hold their colours until restyled, so an accent change in
+    // Options would otherwise only show up on the next tab switch. Restyle in
+    // place -- rebuilding the tab from here would free views that are focused, or
+    // on the focus stack while Options sits on top of us.
+    theme::setRepaintHook([restyleTabs, applyViewBar, curView]() {
+        restyleTabs();
+        applyViewBar(*curView);
+    });
 }
 
 brls::View* buildBrowser()
@@ -1429,6 +1444,13 @@ brls::View* buildBrowser()
         stremio::cycleActiveView(+1);
         return true;
     }, true, false, brls::SOUND_NONE);
+
+    // select() keeps these in step from here on, but its first call ran inside
+    // attachTopTabBar -- i.e. before the actions existed, where setActionAvailable
+    // finds nothing to set. Seed them for the startup tab.
+    bool stremioUp = config::get().startupTab == config::Tab::STREMIO;
+    frame->setActionAvailable(brls::BUTTON_LB, stremioUp);
+    frame->setActionAvailable(brls::BUTTON_RB, stremioUp);
 
     return frame;
 }
@@ -1518,6 +1540,18 @@ int main(int argc, char* argv[])
     brls::Application::createWindow("NX Torrent Player");
     brls::Application::getPlatform()->setThemeVariant(brls::ThemeVariant::DARK);
     brls::Application::setGlobalQuit(true);
+
+    // Before anything is built: plenty of views read the accent once, as they
+    // are constructed, and keep the colour they got.
+    theme::applyAccent();
+
+    // The window was sized inside createWindow, before any activity exists, so
+    // fix the logical size now -- the first layout then happens at the user's
+    // scale instead of being redone. (config::load() has already run.)
+    applyUiScale();
+    // Docking/undocking mid-session swaps the framebuffer between 720p and
+    // 1080p, and the two modes have their own UI size; follow it.
+    brls::Application::getWindowSizeChangedEvent()->subscribe(applyUiScale);
 
     brls::Application::pushActivity(new brls::Activity(buildBrowser()));
 
