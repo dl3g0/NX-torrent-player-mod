@@ -82,6 +82,14 @@ struct Config
     // "dark" (see theme::isLight()).
     std::string themeVariant = "dark";
 
+    // How the Stremio tab draws its movies and shows: "posters" (upright cards
+    // in a horizontally scrolling strip, the default), "cards" (a column of
+    // rows, poster beside a raised panel with the title, the episode or the
+    // year, the position and the progress bar) or "classic" (the flat row the
+    // app shipped with). Anything unrecognised behaves as "cards" -- the style
+    // is compared against the other two, never validated at read time.
+    std::string listStyle = "posters";
+
     // RAM streaming (torrentfs_set_ram_stream): keep verified pieces in a
     // bounded RAM window instead of writing them to the SD card. On by default
     // -- it removes the per-piece playback stutter (the SD write of a finished

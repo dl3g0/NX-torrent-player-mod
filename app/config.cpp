@@ -99,8 +99,9 @@ struct UiScale
     const char* label;
 };
 
+// No size above 100%: the header does not fit at 111% (the centred view bar
+// runs into the category buttons), and nothing else gained from it.
 const UiScale kUiScales[] = {
-    { 1152, "111%" },
     { 1280, "100%" },
     { 1440, "89%" },
     { 1600, "80%" },
@@ -215,6 +216,7 @@ void load()
 
     cfg.accent       = readStr(body, "accent", cfg.accent);
     cfg.themeVariant = readStr(body, "themeVariant", cfg.themeVariant);
+    cfg.listStyle    = readStr(body, "listStyle", cfg.listStyle);
 
     cfg.dockedUiWidth = knownWidth(readInt(body, "dockedUiWidth", cfg.dockedUiWidth),
                                    cfg.dockedUiWidth);
@@ -251,7 +253,8 @@ bool save()
                  "  \"dockedUiWidth\": %d,\n"
                  "  \"handheldUiWidth\": %d,\n"
                  "  \"accent\": \"%s\",\n"
-                 "  \"themeVariant\": \"%s\"\n"
+                 "  \"themeVariant\": \"%s\",\n"
+                 "  \"listStyle\": \"%s\"\n"
                  "}\n",
                  cfg.startupTab == Tab::STREMIO ? "stremio" : "local",
                  cfg.logging ? "true" : "false", cfg.hide4k ? "true" : "false",
@@ -261,7 +264,7 @@ bool save()
                  cfg.subLang.c_str(), cfg.subtitles ? "true" : "false",
                  cfg.hwDecode ? "true" : "false", cfg.dockedUiWidth,
                  cfg.handheldUiWidth, cfg.accent.c_str(),
-                 cfg.themeVariant.c_str());
+                 cfg.themeVariant.c_str(), cfg.listStyle.c_str());
     std::fclose(f);
     return true;
 }

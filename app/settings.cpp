@@ -30,7 +30,21 @@ void note(const std::string& msg)
     d->open();
 }
 
+std::function<void()> uiScaleHook;
+
+// A Label an outstanding background job can safely give up on: the Options
+// screen is popped long before a slow SD-card scan of the poster cache is
+// necessarily over, and the callback would write into a freed view.
+class AsyncLabel : public brls::Label
+{
+  public:
+    ~AsyncLabel() override { *alive = false; }
+    std::shared_ptr<bool> alive = std::make_shared<bool>(true);
+};
+
 } // namespace
+
+void setUiScaleHook(std::function<void()> fn) { uiScaleHook = std::move(fn); }
 
 void applyUiScale()
 {
@@ -57,6 +71,11 @@ void applyUiScale()
     // lands before the next frame is drawn.
     brls::Application::setWindowSize(brls::Application::windowWidth,
                                      brls::Application::windowHeight);
+
+    // ... and because it does not fire it again, anything that keys off the UI
+    // size has to be told here. Editing the setting in Options reaches the
+    // header this way and no other.
+    if (uiScaleHook) uiScaleHook();
 }
 
 brls::View* SettingsActivity::createContentView()
@@ -153,6 +172,25 @@ brls::View* SettingsActivity::createContentView()
             theme::applyAccent();
         });
     list->addView(accent);
+
+    // Index-matched with the cell's labels. The library rows are built once and
+    // kept for the life of the tab, so marking it stale is what re-renders them
+    // -- on the next return to the list.
+    static const std::vector<std::string> kListStyles = { "posters", "cards",
+                                                          "classic" };
+    auto* listStyle = new brls::SelectorCell();
+    listStyle->init("List style", { "Posters (default)", "Cards", "Classic" },
+                    [&] {
+                        for (size_t i = 0; i < kListStyles.size(); i++)
+                            if (kListStyles[i] == cfg.listStyle) return (int)i;
+                        return 0;
+                    }(),
+                    [](int sel) {
+                        config::get().listStyle = kListStyles[sel];
+                        config::save();
+                        stremio::markLibraryStale();
+                    });
+    list->addView(listStyle);
 
     // Index of the stored width in the offered list. load() rejects anything it
     // does not offer, so the fallback only matters if the table is ever changed
@@ -340,62 +378,52 @@ brls::View* SettingsActivity::createContentView()
         std::snprintf(buf, sizeof(buf), "%.1f MB", b / (1024.0 * 1024.0));
         return std::string(buf);
     };
-    auto* cacheLbl = new brls::Label();
-    cacheLbl->setText("Poster cache: " + humanMB(stremio::posterCacheBytes()));
+    auto* cacheLbl = new AsyncLabel();
+    cacheLbl->setText("Poster cache: reading...");
     cacheLbl->setFontSize(16.0f);
     cacheLbl->setTextColor(theme::textDim());
     cacheLbl->setMargins(12.0f, 20.0f, 4.0f, 20.0f);
     list->addView(cacheLbl);
 
+    // Off the UI thread: the size is a stat() per cached poster, and on a full
+    // cache that SD-card walk is most of a second -- long enough that Options
+    // took visibly too long to appear, since nothing is drawn until this whole
+    // function returns. The label fills itself in a moment later instead.
+    auto readCacheSize = [cacheLbl, humanMB]() {
+        auto live = cacheLbl->alive;
+        brls::async([cacheLbl, live, humanMB]() {
+            int64_t bytes = stremio::posterCacheBytes();
+            brls::sync([cacheLbl, live, humanMB, bytes]() {
+                if (*live)
+                    cacheLbl->setText("Poster cache: " + humanMB(bytes));
+            });
+        });
+    };
+    readCacheSize();
+
     auto* clearCache = new brls::Button();
     clearCache->setText("Clear poster cache");
     clearCache->setMargins(4.0f, 20.0f, 18.0f, 20.0f);
-    clearCache->registerClickAction([cacheLbl, humanMB](brls::View*) {
-        stremio::clearPosterCache();
-        stremio::markLibraryStale();  // library reloads on return
-        cacheLbl->setText("Poster cache: " + humanMB(stremio::posterCacheBytes()));
-        note("Poster cache cleared. The library reloads when you go back to it.");
+    clearCache->registerClickAction([cacheLbl, readCacheSize](brls::View*) {
+        auto live = cacheLbl->alive;
+        // Deleting them is the same walk, so it goes off the thread too --
+        // otherwise the whole UI stops until the card is done.
+        cacheLbl->setText("Poster cache: clearing...");
+        brls::async([live, readCacheSize]() {
+            stremio::clearPosterCache();
+            brls::sync([live, readCacheSize]() {
+                stremio::markLibraryStale();  // library reloads on return
+                note("Poster cache cleared. The library reloads when you go "
+                     "back to it.");
+                if (*live) readCacheSize();
+            });
+        });
         return true;
     });
     list->addView(clearCache);
 
-    // Account (belongs in the Stremio section).
-    std::string key = stremio::loadAuthKey();
-    if (!key.empty())
-    {
-        std::string who = stremio::loadEmail();
-        auto* account   = new brls::Label();
-        account->setText(who.empty() ? "Logged in" : "Logged in as: " + who);
-        account->setFontSize(17.0f);
-        account->setTextColor(theme::textDim());
-        account->setMargins(12.0f, 20.0f, 4.0f, 20.0f);
-        list->addView(account);
-
-        auto* logout = new brls::Button();
-        logout->setText("Sign out of Stremio");
-        logout->setMargins(16.0f, 20.0f, 0.0f, 20.0f);
-        logout->registerClickAction([logout](brls::View*) {
-            stremio::clearAuthKey();
-            // The addon collection belongs to that account.
-            stremio::clearAddonCache();
-            // The tab holds the key in memory and is only rebuilt when it is
-            // re-entered, so say what actually has to happen.
-            note("Signed out. Restart the app to get back to the sign-in "
-                 "screen.");
-            logout->setState(brls::ButtonState::DISABLED);
-            return true;
-        });
-        list->addView(logout);
-    }
-    else
-    {
-        auto* signedOut = new brls::Label();
-        signedOut->setText("No account signed in.");
-        signedOut->setFontSize(16.0f);
-        signedOut->setTextColor(theme::textMuted());
-        signedOut->setMargins(10.0f, 20.0f, 0.0f, 20.0f);
-        list->addView(signedOut);
-    }
+    // The account itself is not here: it has its own screen, off the header's
+    // profile button (see AccountActivity).
 
     // ---- updates ---------------------------------------------------------
     auto* updHdr = new brls::Header();
@@ -465,5 +493,71 @@ brls::View* SettingsActivity::createContentView()
     frame->pushContentView(box);
     // After pushContentView: it overwrites the title with the content view's.
     frame->setTitle("Options");
+    return frame;
+}
+
+brls::View* AccountActivity::createContentView()
+{
+    auto* box = new brls::Box();
+    box->setAxis(brls::Axis::COLUMN);
+    box->setGrow(1.0f);
+    box->setPadding(20.0f, 60.0f, 40.0f, 60.0f);
+
+    std::string key = stremio::loadAuthKey();
+
+    auto* hdr = new brls::Header();
+    hdr->setTitle("Stremio account");
+    box->addView(hdr);
+
+    if (key.empty())
+    {
+        auto* signedOut = new brls::Label();
+        signedOut->setText(
+            "No account signed in. The sign-in form is on the Stremio tab.");
+        signedOut->setFontSize(18.0f);
+        signedOut->setTextColor(theme::textMuted());
+        signedOut->setMargins(20.0f, 0.0f, 0.0f, 4.0f);
+        signedOut->setLineHeight(1.4f);
+        box->addView(signedOut);
+    }
+    else
+    {
+        std::string who = stremio::loadEmail();
+
+        auto* label = new brls::Label();
+        label->setText("Signed in as");
+        label->setFontSize(16.0f);
+        label->setTextColor(theme::textMuted());
+        label->setMargins(20.0f, 0.0f, 2.0f, 4.0f);
+        box->addView(label);
+
+        auto* email = new brls::Label();
+        // The address is only kept so this screen can name the account -- the
+        // API has no use for it once there is an authKey.
+        email->setText(who.empty() ? "this console" : who);
+        email->setFontSize(24.0f);
+        email->setTextColor(theme::text());
+        email->setMargins(0.0f, 0.0f, 24.0f, 4.0f);
+        box->addView(email);
+
+        auto* logout = new brls::Button();
+        logout->setText("Sign out of Stremio");
+        logout->registerClickAction([logout](brls::View*) {
+            stremio::clearAuthKey();
+            // The addon collection belongs to that account.
+            stremio::clearAddonCache();
+            // The tab holds the key in memory and is only rebuilt when it is
+            // re-entered, so say what actually has to happen.
+            note("Signed out. Restart the app to get back to the sign-in "
+                 "screen.");
+            logout->setState(brls::ButtonState::DISABLED);
+            return true;
+        });
+        box->addView(logout);
+    }
+
+    auto* frame = new brls::AppletFrame();
+    frame->pushContentView(box);
+    frame->setTitle("Account");
     return frame;
 }

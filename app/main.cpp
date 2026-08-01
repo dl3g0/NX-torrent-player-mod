@@ -1377,19 +1377,63 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     });
     bar->addView(localBtn);
 
-    // The Stremio sub-view switcher, top-right of the header: one button per
-    // view (Continue / Movies / Shows / Library / Search). It says where you are
-    // and clicking one jumps straight there, alongside the L/R cycle. The live
-    // StremioTab drives it -- setViewTabSink highlights the active view, or hides
-    // the whole bar (index -1) on the Local tab and the sign-in screen.
+    // The Stremio sub-view switcher, centred in the header: one button per view
+    // (Continue / Movies / Shows / Library). It says where you are and clicking
+    // one jumps straight there, alongside the L/R cycle. The live StremioTab
+    // drives it -- setViewTabSink highlights the active view, or hides the whole
+    // bar (index -1) on the Local tab and the sign-in screen.
     auto* viewBar = new brls::Box();
     viewBar->setAxis(brls::Axis::ROW);
     viewBar->setAlignItems(brls::AlignItems::CENTER);
+    viewBar->setJustifyContent(brls::JustifyContent::CENTER);
+
+    // The right-hand cluster: Search (the fifth view, pulled out of the group
+    // and kept as its own icon), the account button and Options.
+    auto* rightBar = new brls::Box();
+    rightBar->setAxis(brls::Axis::ROW);
+    rightBar->setAlignItems(brls::AlignItems::CENTER);
 
     std::vector<brls::Button*> viewBtns;
     std::vector<brls::Label*>  viewIcons;
     const float btnFont    = brls::Application::getStyle()["brls/button/text_size"];
+
+    // A Label measured by its own font makes its button a different size: the
+    // vertical bounds nanovg reports are the FONT's line height, and Material
+    // Icons' is far taller than the text face's, so an icon button came out
+    // taller than "Stremio" / "Local" beside it -- and wider, since the same
+    // measure includes the glyph's side bearings. Pinning the icon to a box of
+    // its own settles both: a height under the text label's leaves the button
+    // sized by the text exactly as a plain one, and an exact width drops the
+    // bearings. The glyph is then drawn centred in that box, whatever its size
+    // -- which is what lets the bare icons below be bigger than the text.
+    // withText: the glyph has to sit level with a text label beside it, which is
+    // not the same thing as sitting in the middle of the button. "Middle"
+    // anchors the ink halfway between the font's OWN ascender and descender, and
+    // the text face puts its ink higher above that point than the icon face
+    // does -- so an icon centred like its neighbour reads as low. Opposite
+    // margins lift it by that difference without changing the box's outer height
+    // (and so the button's). A bare icon has nothing to line up with and simply
+    // stays centred, where its cursor and background are.
+    auto sizeIcon = [btnFont](brls::Label* ic, float size, bool withText) {
+        ic->setFontSize(size);
+        ic->setWidth(size);
+        ic->setHeight(btnFont);
+        ic->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+        ic->setVerticalAlign(brls::VerticalAlign::CENTER);
+        float nudge = withText ? size / 9.0f : 0.0f;
+        ic->setMargins(-nudge, 0.0f, nudge, 0.0f);
+    };
+
+    // Standing alone, an icon reads as small at the buttons' text size -- so the
+    // ones with no label beside them (Search, account, Options) are drawn half
+    // again as big. Only the glyph grows: their box is the same height, so the
+    // buttons stay level with the rest of the header.
+    const float bareIcon = btnFont * 1.5f;
+
     const auto& viewLabels = stremio::viewLabels();
+    // Search is last in the view cycle (and so in the labels, which are
+    // index-matched to it). It is the one view shown as a bare icon.
+    const size_t searchIdx = viewLabels.size() - 1;
     for (size_t i = 0; i < viewLabels.size(); i++)
     {
         // Each label is "<material-glyph> <text>". Rendered as one Button string
@@ -1400,20 +1444,17 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
         size_t      sp    = full.find(' ');
         std::string glyph = sp == std::string::npos ? std::string() : full.substr(0, sp);
         std::string text  = sp == std::string::npos ? full : full.substr(sp + 1);
+        bool iconOnly     = i == searchIdx;
 
         auto* b = new brls::Button();
-        b->setText(text);
+        if (!iconOnly) b->setText(text);
         b->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
-        if (i) b->setMarginLeft(2.0f);
+        if (i && !iconOnly) b->setMarginLeft(2.0f);
 
         auto* ic = new IconLabel();
         ic->setText(glyph);
-        ic->setFontSize(btnFont);
-        ic->setMarginRight(5.0f);
-        // The icon font centres a touch low against the text; a small bottom
-        // margin nudges it back up (a centred row shifts content up by ~half the
-        // bottom margin).
-        ic->setMarginBottom(4.0f);
+        sizeIcon(ic, iconOnly ? bareIcon : btnFont, !iconOnly);
+        if (!iconOnly) ic->setMarginRight(6.0f);
         b->addView(ic, 0);   // before the text label
         viewIcons.push_back(ic);
 
@@ -1422,9 +1463,43 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
             stremio::selectActiveView(idx);
             return true;
         });
-        viewBar->addView(b);
+        (iconOnly ? rightBar : viewBar)->addView(b);
         viewBtns.push_back(b);
     }
+
+    // An icon-only borderless button, built like the ones above: an IconLabel
+    // in front of the Button's own (empty) label, which leaves the style's side
+    // padding around the glyph.
+    auto makeIconButton = [bareIcon, sizeIcon](const char* glyph) {
+        auto* b = new brls::Button();
+        b->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+        auto* ic = new IconLabel();
+        ic->setText(glyph);
+        sizeIcon(ic, bareIcon, false);
+        // A bare Label defaults to the app's text colour, not the button's --
+        // which is a different value in the light variant.
+        ic->setTextColor(
+            brls::Application::getTheme()["brls/button/default_enabled_text"]);
+        b->addView(ic, 0);
+        return b;
+    };
+
+    // Material "account_circle": who is signed in to Stremio, and the way out.
+    auto* profileBtn = makeIconButton("");
+    profileBtn->registerClickAction([](brls::View*) {
+        brls::Application::pushActivity(new AccountActivity());
+        return true;
+    });
+    rightBar->addView(profileBtn);
+
+    // Material "settings". The only header button that belongs to BOTH tabs --
+    // it is X in the footer as well, but that hint is easy to miss.
+    auto* settingsBtn = makeIconButton("");
+    settingsBtn->registerClickAction([](brls::View*) {
+        brls::Application::pushActivity(new SettingsActivity());
+        return true;
+    });
+    rightBar->addView(settingsBtn);
 
     // active >= 0: show the bar and mark that view PRIMARY. active < 0: fold it
     // away and take its buttons out of the focus ring (a GONE box keeps its
@@ -1437,14 +1512,48 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     // bar this way, so one explicit route is enough to beat that heuristic.
     if (!viewBtns.empty())
         viewBtns[0]->setCustomNavigationRoute(brls::FocusDirection::LEFT, localBtn);
+    // ... and the two bars are separate absolute boxes now, so the step between
+    // the group and the detached Search icon needs saying too.
+    viewBtns[searchIdx - 1]->setCustomNavigationRoute(brls::FocusDirection::RIGHT,
+                                                     viewBtns[searchIdx]);
+    viewBtns[searchIdx]->setCustomNavigationRoute(brls::FocusDirection::LEFT,
+                                                  viewBtns[searchIdx - 1]);
+
+    // Where the centred group starts. At the 100% UI size the header is at its
+    // most crowded and the group comes up against "Local"; inset it there so it
+    // centres in the space beside the category bar instead. Every smaller UI has
+    // room to spare, and true centring reads better, so they keep it. The size
+    // is stored per mode, hence the docked check -- and hence recomputing this
+    // when the console is docked or undocked.
+    auto insetViewBar = [viewBar]() {
+        bool docked = brls::Application::windowWidth >= 1920;
+        int  w      = docked ? config::get().dockedUiWidth
+                             : config::get().handheldUiWidth;
+        viewBar->setPositionLeft(w <= config::kDefaultHandheldUiWidth ? 120.0f
+                                                                     : 0.0f);
+    };
+    brls::Application::getWindowSizeChangedEvent()->subscribe(insetViewBar);
+    // Docking fires the event above; editing the UI size in Options does not
+    // (applyUiScale resizes the logical space itself), hence the second route.
+    setUiScaleHook(insetViewBar);
 
     auto curView      = std::make_shared<int>(-1);
-    auto applyViewBar = [viewBar, viewBtns, viewIcons, stremioBtn,
-                         curView](int active) {
+    auto applyViewBar = [viewBar, viewBtns, viewIcons, stremioBtn, localBtn,
+                         profileBtn, settingsBtn, searchIdx, curView,
+                         insetViewBar](int active) {
         *curView  = active;
         bool show = active >= 0;
+        // Also here, not only on the window event: changing the UI size in
+        // Options resizes the logical space without firing that event (see
+        // applyUiScale), and this runs on the way back into a view.
+        insetViewBar();
         viewBar->setVisibility(show ? brls::Visibility::VISIBLE
                                     : brls::Visibility::GONE);
+        // The account button is Stremio's, so it folds away with the bar --
+        // Options does not, it belongs to both tabs and stays.
+        profileBtn->setVisibility(show ? brls::Visibility::VISIBLE
+                                       : brls::Visibility::GONE);
+        profileBtn->setFocusable(show);
         brls::Theme theme = brls::Application::getTheme();
         for (size_t i = 0; i < viewBtns.size(); i++)
         {
@@ -1452,12 +1561,27 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
             viewBtns[i]->setFocusable(show);
             viewBtns[i]->setStyle(isActive ? &brls::BUTTONSTYLE_PRIMARY
                                            : &brls::BUTTONSTYLE_BORDERLESS);
+            // Search sits outside the bar that gets hidden, so it has to be
+            // folded away by itself.
+            if (i == searchIdx)
+                viewBtns[i]->setVisibility(show ? brls::Visibility::VISIBLE
+                                                : brls::Visibility::GONE);
             // The icon lives in its own Label, so it does not inherit the button's
             // per-state text colour on its own -- keep it in step here.
             viewIcons[i]->setTextColor(
                 theme[isActive ? "brls/button/primary_enabled_text"
                                : "brls/button/default_enabled_text"]);
         }
+        // What is left of the header depends on the tab, and a custom route to a
+        // hidden view is a dead end (application.cpp only follows one to a
+        // VISIBLE view, and does not fall back) -- so re-aim these two here.
+        // Local: the only thing right of the category bar is Options.
+        localBtn->setCustomNavigationRoute(brls::FocusDirection::RIGHT,
+                                           show ? (brls::View*)viewBtns[0]
+                                                : (brls::View*)settingsBtn);
+        settingsBtn->setCustomNavigationRoute(brls::FocusDirection::LEFT,
+                                              show ? (brls::View*)profileBtn
+                                                   : (brls::View*)localBtn);
         // Up from the Stremio list lands on the ACTIVE view button (Continue /
         // Movies / ...), not the "Stremio" category tab. reportView runs before
         // the list is (re)built, so finishList picks this up. Falls back to the
@@ -1469,19 +1593,33 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     applyViewBar(-1);
     stremio::setViewTabSink(applyViewBar);
 
-    // Hard-anchor both bars in the header: the category switcher top-left, next
-    // to the icon; the Stremio view switcher top-right.
+    // Hard-anchor the three bars in the header: the category switcher top-left,
+    // next to the icon; the Stremio view switcher centred; Search / account /
+    // Options top-right.
     if (auto* header = frame->getHeader())
     {
+        // Left AND right pinned: that is what gives an absolute box a width to
+        // centre its buttons in -- there is no "centre me" for one. So this box
+        // spans the whole header, and it goes in FIRST on purpose: Box::hitTest
+        // walks its children in reverse and a box that contains the point
+        // returns ITSELF when no child matches, so a full-width box added last
+        // swallowed every touch in the header -- the category buttons under it
+        // stopped responding to the touchscreen. Tested last, it only catches
+        // the taps nothing else wanted. (insetViewBar owns its left edge.)
+        viewBar->setPositionType(brls::PositionType::ABSOLUTE);
+        viewBar->setPositionRight(0.0f);
+        viewBar->setPositionTop(20.0f);
+        header->addView(viewBar);
+
         bar->setPositionType(brls::PositionType::ABSOLUTE);
         bar->setPositionLeft(105.0f);
         bar->setPositionTop(20.0f);
         header->addView(bar);
 
-        viewBar->setPositionType(brls::PositionType::ABSOLUTE);
-        viewBar->setPositionRight(30.0f);
-        viewBar->setPositionTop(20.0f);
-        header->addView(viewBar);
+        rightBar->setPositionType(brls::PositionType::ABSOLUTE);
+        rightBar->setPositionRight(30.0f);
+        rightBar->setPositionTop(20.0f);
+        header->addView(rightBar);
     }
 
     // The library list cannot walk focus back out to the header on its own; hand
@@ -1519,10 +1657,8 @@ brls::View* buildBrowser()
     // stays in the header.
     stremio::setLibraryCountSink([](const std::string&) {});
 
-    frame->registerAction("Options", brls::BUTTON_X, [](brls::View*) {
-        brls::Application::pushActivity(new SettingsActivity());
-        return true;
-    });
+    // No X shortcut for Options: the header carries a gear now, and a chip in
+    // the footer for something already on screen is noise.
 
     // R/L cycle the Stremio view. On the frame (not the tab) so they work with
     // focus on the header tab bar too; a no-op when the Stremio tab is not live.

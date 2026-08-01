@@ -1427,7 +1427,8 @@ class SeriesDetailActivity : public brls::Activity
 
     ~SeriesDetailActivity() override
     {
-        *alive = false;
+        *alive      = false;
+        *cardsAlive = false;  // the cards go with us, not only with a season
         if (focusSubbed)
             brls::Application::getGlobalFocusChangeEvent()->unsubscribe(focusSub);
     }
@@ -1688,6 +1689,10 @@ class SeriesDetailActivity : public brls::Activity
     {
         parkFocusOffEpisodes();
         episodesRow->setFocusable(false);
+        // Tell the thumbnail fetches still in flight that their Images are
+        // about to be freed, then hand the new cards a fresh flag.
+        *cardsAlive = false;
+        cardsAlive  = std::make_shared<bool>(true);
         episodesRow->clearViews();
         firstEpisode = nullptr;
 
@@ -1776,7 +1781,9 @@ class SeriesDetailActivity : public brls::Activity
         thumb->addView(img);
         if (!v.thumbnail.empty())
         {
-            auto live = alive;
+            // cardsAlive, not alive: switching season frees this Image while the
+            // activity lives on (see the member).
+            auto live = cardsAlive;
             stremio::fetchPosterAsync(
                 v.id, v.thumbnail, [img, live](std::string p) {
                     if (*live && !p.empty()) img->setImageFromFile(p);
@@ -1896,6 +1903,11 @@ class SeriesDetailActivity : public brls::Activity
     uint32_t seenGen     = 0;
 
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
+    // Per-season: buildEpisodeCards frees the previous season's cards, but the
+    // thumbnail fetches it started are still running and hold their Image. The
+    // activity flag above is no help -- the activity is very much alive, it is
+    // the views that are gone. Flipped and replaced on every rebuild.
+    std::shared_ptr<bool> cardsAlive = std::make_shared<bool>(true);
 };
 
 } // namespace

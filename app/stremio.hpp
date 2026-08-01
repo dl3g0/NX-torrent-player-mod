@@ -29,6 +29,10 @@ struct LibItem
     std::string name;
     std::string type;    // "movie" / "series"
     std::string poster;  // artwork URL, may be empty
+    // Release year as the account or the catalog spells it: "2016", or a range
+    // ("2013-2019") for a show. Display only, never parsed. Empty when whoever
+    // sent the item did not say.
+    std::string year;
 
     // Watch state, from the item's "state" object. For a film videoId is the
     // item id; for a series it is the LAST WATCHED episode ("tt123:1:3") --
@@ -320,7 +324,45 @@ class StremioTab : public brls::Box
     brls::Box* addItemRow(const stremio::LibItem& it);  // one poster row into libList
     // Builds a poster row without parenting it (Search's split columns place it
     // themselves). showType appends the "Movie"/"Show" tag; a one-type column hides it.
+    // Dispatches on config::listStyle to one of the two builders below.
     brls::Box* buildItemRow(const stremio::LibItem& it, bool showType);
+    brls::Box* buildCardRow(const stremio::LibItem& it, bool showType);
+    brls::Box* buildClassicRow(const stremio::LibItem& it, bool showType);
+    // The poster style: one horizontally scrolling strip of upright cards,
+    // instead of a column of rows. Built as a whole rather than item by item --
+    // the strip is a single child of the list.
+    // upToHeader: this is the first strip on the page, so its cards route UP to
+    // the header. A strip below one walks up the page instead.
+    brls::View* buildPosterStrip(const std::vector<stremio::LibItem>& items,
+                                 bool upToHeader, brls::Box* seeMore = nullptr);
+    brls::Box*  buildPosterCard(const stremio::LibItem& it, bool upToHeader);
+    // A titled strip into libList ("Popular", "Movies", ...); returns the strip,
+    // for finishList's bottom inset.
+    brls::View* addStripSection(const std::string& title,
+                                const std::vector<stremio::LibItem>& items,
+                                brls::Box* seeMore);
+    // Catalog views show a screenful and put the rest behind a See More tile,
+    // shaped like the items it follows, which opens the section full-screen.
+    bool capped() const;
+    brls::Box* buildSeeMoreCard(const std::string& title,
+                                std::vector<stremio::LibItem> all);
+    brls::Box* buildSeeMoreRow(const std::string& title,
+                               std::vector<stremio::LibItem> all);
+    void openSection(std::string title, std::vector<stremio::LibItem> items);
+    void addHeading(const std::string& title, float top, float bottom, float left);
+    float headingInset() const;  // where a heading starts, per style
+    // What the heading over the current view's strip says.
+    const char* sectionTitle() const;
+    // Cinemeta's second catalog for the view we are on, or nullptr where there
+    // is no second section (everything but Popular Movies / Shows).
+    const std::vector<stremio::LibItem>* featuredCache();
+    void loadFeatured(const char* type);  // one attempt per type per session
+    // Shared by both styles: the focusable row shell (size, click, tap) and the
+    // poster that fills in once the artwork lands.
+    brls::Box* newRowShell(const stremio::LibItem& it, float height);
+    brls::Image* newPoster(const stremio::LibItem& it, float w, float h,
+                           float marginRight);
+    void attachPoster(brls::Image* art, const stremio::LibItem& it);
     void finishList(brls::View* lastRow);  // focus/reset/slide after (re)building
     void renderSearch();       // the Search view: a search bar + results
     void promptSearch();       // opens the keyboard, runs the query
@@ -336,6 +378,11 @@ class StremioTab : public brls::Box
     // Popular catalogs, fetched lazily on first view and cached after.
     std::vector<stremio::LibItem> popMovies, popSeries;
     bool popMoviesLoaded = false, popSeriesLoaded = false;
+    // The "Featured" strip under them (Cinemeta's other catalog). Tried once per
+    // type per session -- the flag means "asked", not "got something", so a
+    // failing addon costs one request rather than one per visit.
+    std::vector<stremio::LibItem> featMovies, featSeries;
+    bool featMoviesAsked = false, featSeriesAsked = false;
 
     std::string email;
     std::string password;
@@ -367,6 +414,11 @@ class StremioTab : public brls::Box
     // diving into the list the way an R/L cycle does. Lets you click through the
     // view buttons without being thrown back down each time.
     bool suppressFocusMove = false;
+
+    // The current render laid its items out in two columns (Search's two types,
+    // or Popular next to Featured). Left/Right then belong to the list first and
+    // only cycle the view at the outer edge -- see the actions in the ctor.
+    bool columnsShown = false;
 
     // Horizontal slide-in when the view changes: cycleView records the direction
     // (R = +1 enters from the right, L = -1 from the left); showItems starts the

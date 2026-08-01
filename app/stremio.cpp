@@ -31,12 +31,88 @@
 
 #include "appdata.hpp"
 #include "browse.hpp"
+#include "config.hpp"
 #include "http.hpp"
 #include "json.hpp"
 #include "theme.hpp"
 
 namespace
 {
+
+// config::listStyle, as compared here -- the list builders further down, and
+// the Left/Right handling in the tab, which has to leave the directions alone
+// when the titles are laid out horizontally. Anything else means the default.
+constexpr const char* kStyleClassic = "classic";
+constexpr const char* kStylePosters = "posters";
+
+bool posterStyle() { return config::get().listStyle == kStylePosters; }
+
+// The screen inset the list gives up in the poster style so the strips can run
+// to the edge: carried by the first card of a strip, and by everything else on
+// the page (the search bar, the section headings).
+constexpr float kPosterInset = 60.0f;
+
+// The row styles' own left padding (newRowShell), so a heading lines up with
+// the posters under it rather than sitting inside them.
+constexpr float kRowInset = 16.0f;
+
+// The card style's two shared measures: the height the poster, the panel and
+// the row all share (the cursor wraps them, so they must agree), and the radius
+// the poster, the panel and that cursor are all drawn with.
+constexpr float kCardHeight = 132.0f;
+constexpr float kCardRadius = 12.0f;
+
+// The poster style: an upright card, artwork on top and the text under it. The
+// art is exactly 2:3, the shape a poster is drawn in, so filling the box takes
+// nothing off the sides and next to nothing off the top and bottom (the usual
+// source is 680x1000, a hair short of 2:3). The whole card fits the shortest
+// screen the app runs on: 720 logical minus the header, the footer and the
+// insets finishList adds.
+constexpr float kPosterCardW = 210.0f;
+constexpr float kPosterArtH  = 315.0f;
+constexpr float kPosterCardH = 434.0f;
+
+// How much of a catalog a section shows before the See More tile. A Cinemeta
+// catalog is a hundred titles; building all of them (and asking for a hundred
+// posters) is what made Movies and Shows slow to appear.
+constexpr size_t kSectionMax = 15;
+
+// The Stremio tab's field, painted behind a pushed page so it does not land on
+// borealis' flat theme colour. Same gradient as BrowserFrame draws (top-right
+// to bottom-left), read from the scheme as it draws so it follows the accent.
+class GradientFrame : public brls::AppletFrame
+{
+  public:
+    void draw(NVGcontext* vg, float x, float y, float w, float h,
+              brls::Style style, brls::FrameContext* ctx) override
+    {
+        nvgBeginPath(vg);
+        nvgRect(vg, x, y, w, h);
+        nvgFillPaint(vg, nvgLinearGradient(vg, x + w, y, x, y + h,
+                                           theme::gradTop(), theme::gradBottom()));
+        nvgFill(vg);
+        brls::AppletFrame::draw(vg, x, y, w, h, style, ctx);
+    }
+};
+
+// Holds a page the tab has already built -- the full contents of a section.
+// Footer only: the header would repeat the title the page already carries.
+class SectionActivity : public brls::Activity
+{
+  public:
+    explicit SectionActivity(brls::View* content) : content(content) {}
+
+    brls::View* createContentView() override
+    {
+        auto* frame = new GradientFrame();
+        frame->pushContentView(content);
+        frame->setHeaderVisibility(brls::Visibility::GONE);
+        return frame;
+    }
+
+  private:
+    brls::View* content;
+};
 
 constexpr const char* kLoginUrl   = "https://api.strem.io/api/login";
 constexpr const char* kLibraryUrl = "https://api.strem.io/api/datastoreGet";
@@ -507,6 +583,7 @@ void fetchLibraryAsync(const std::string& authKey,
                     it.name   = json::str(o, "name");
                     it.type   = json::str(o, "type");
                     it.poster = json::str(o, "poster");
+                    it.year   = json::str(o, "year");
                     it.mtime  = json::str(o, "_mtime");
                     // Watch state: read from the "state" object's own text, not
                     // the whole item -- the flat json scan takes the first key
@@ -1121,6 +1198,10 @@ void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
                 it.type   = json::str(o, "type");
                 if (it.type.empty()) it.type = type;
                 it.poster = json::str(o, "poster");
+                // Cinemeta says the year in "releaseInfo" ("2016", "2013-2019");
+                // other addons may only carry "year".
+                it.year   = json::str(o, "releaseInfo");
+                if (it.year.empty()) it.year = json::str(o, "year");
                 if (it.id.empty() || it.name.empty()) continue;
                 r.items.push_back(it);
             }
@@ -1152,6 +1233,8 @@ void fetchSearchAsync(const std::string& query,
                 it.type   = json::str(o, "type");
                 if (it.type.empty()) it.type = type;
                 it.poster = json::str(o, "poster");
+                it.year   = json::str(o, "releaseInfo");
+                if (it.year.empty()) it.year = json::str(o, "year");
                 if (it.id.empty() || it.name.empty()) continue;
                 r.items.push_back(it);
             }
@@ -1333,12 +1416,17 @@ StremioTab::StremioTab()
     this->registerAction(
         "View", brls::BUTTON_RIGHT,
         [this](brls::View*) {
-            // Search lays results in two columns (Movies | Shows). Left/Right moves
-            // between them when there IS a neighbour in that direction (return
-            // false = not consumed, so borealis runs its focus navigation); at the
-            // outer edge -- or on the search bar, which has no neighbour -- it falls
-            // through to cycling the category instead.
-            if (view == View::Search)
+            // The poster style lays the titles out horizontally, so Left/Right
+            // belong to it entirely -- never consumed here, whether or not there
+            // is a card that way (at the end of the strip the cursor should say
+            // so, not jump to another category). L/R still cycle the views.
+            if (posterStyle()) return false;
+            // Two columns on screen (Search's Movies | Shows, or Popular next to
+            // Featured): Left/Right moves between them when there IS a neighbour
+            // that way (return false = not consumed, so borealis runs its focus
+            // navigation); at the outer edge -- or on the search bar, which has no
+            // neighbour -- it falls through to cycling the category instead.
+            if (columnsShown)
             {
                 brls::View* cur = brls::Application::getCurrentFocus();
                 if (cur && cur->getNextFocus(brls::FocusDirection::RIGHT, cur))
@@ -1351,7 +1439,8 @@ StremioTab::StremioTab()
     this->registerAction(
         "View", brls::BUTTON_LEFT,
         [this](brls::View*) {
-            if (view == View::Search)
+            if (posterStyle()) return false;  // see the RIGHT action above
+            if (columnsShown)
             {
                 brls::View* cur = brls::Application::getCurrentFocus();
                 if (cur && cur->getNextFocus(brls::FocusDirection::LEFT, cur))
@@ -1402,12 +1491,23 @@ StremioTab::~StremioTab()
 
 void StremioTab::onGlobalFocus(brls::View* focused)
 {
-    // Focus landing back on a library row after playback pushed new progress:
-    // reload once so the bars are current. Tracking the generation we last
-    // rendered (rather than a shared flag) means the reload -- which re-fires
-    // focus events -- does not loop, and a deeper list consuming the signal
-    // does not rob us of it.
-    if (!libList || !focused || !isUnder(focused, libList)) return;
+    // Focus landing back anywhere in OUR activity after something marked the
+    // library stale: playback pushing new progress, or Options changing the list
+    // style. Reload once so what is on screen is current. Tracking the
+    // generation we last rendered (rather than a shared flag) means the reload
+    // -- which re-fires focus events -- does not loop, and a deeper list
+    // consuming the signal does not rob us of it.
+    //
+    // Our activity, not just our list: coming back from Options lands the cursor
+    // on the header gear, which is outside the list but still on this screen --
+    // waiting for the list itself to be focused meant the new style only
+    // appeared after a manual reload. The test is the root of the tree we are
+    // in: an activity stacked on top of us has a tree of its own, and rebuilding
+    // the rows under one would free views its focus stack still points at.
+    if (!libList || !focused) return;
+    brls::View* root = this;
+    while (root->getParent()) root = root->getParent();
+    if (!isUnder(focused, root)) return;
     if (stremio::libraryGen() == seenGen) return;
     seenGen = stremio::libraryGen();
     // Defer the actual reload: we are inside a focus-change dispatch (the
@@ -1560,7 +1660,27 @@ void StremioTab::draw(NVGcontext* vg, float x, float y, float width, float heigh
                 int dir = sx > 0 ? 1 : -1;
                 auto live = alive;
                 brls::sync([this, live, dir]() {
-                    if (*live && libLoaded && !authKey.empty()) cycleView(dir);
+                    if (!*live) return;
+                    // Nothing to do in the poster style: Left/Right are no
+                    // longer consumed there, so the push borealis turns into a
+                    // navigation event already walks the strip -- moving focus
+                    // here as well stepped two cards at a time.
+                    if (posterStyle()) return;
+                    // Same rule as the Left/Right actions when two columns are
+                    // on screen (Popular | Featured, Search's two types): the
+                    // flick belongs to the list while there is a column that
+                    // way -- and borealis' own navigation is what moves it --
+                    // and only cycles the category at the outer edge.
+                    if (columnsShown)
+                    {
+                        brls::View* cur = brls::Application::getCurrentFocus();
+                        if (cur &&
+                            cur->getNextFocus(dir > 0 ? brls::FocusDirection::RIGHT
+                                                      : brls::FocusDirection::LEFT,
+                                              cur))
+                            return;
+                    }
+                    if (libLoaded && !authKey.empty()) cycleView(dir);
                 });
             }
             else if (sx > -0.3f && sx < 0.3f)
@@ -1641,16 +1761,16 @@ void StremioTab::cycleView(int dir)
     renderView();
 }
 
-// A header tab-bar pick: jump straight to `v`. Like cycleView but it keeps focus
-// on the header button (suppressFocusMove) so a run of clicks does not bounce in
-// and out of the list, and the slide direction follows the index delta.
+// A header tab-bar pick: jump straight to `v`. Like cycleView, and it hands the
+// cursor to the first item of the new view rather than leaving it on the button
+// -- picking a category is a step INTO it, and having to press Down afterwards
+// made the header feel like a dead end. The slide follows the index delta.
 void StremioTab::selectView(View v)
 {
     if (v == view) return;
     pendingSlide = static_cast<int>(v) > static_cast<int>(view) ? 1 : -1;
     view = v;
-    resetOnShow       = true;
-    suppressFocusMove = true;
+    resetOnShow = true;
     renderView();
 }
 
@@ -1660,6 +1780,15 @@ void StremioTab::selectView(View v)
 void StremioTab::renderView()
 {
     stremio::reportView(static_cast<int>(view));  // light up the header tab bar
+    // The list's left inset belongs to the rows in every style but the poster
+    // strip, which runs to the screen edge instead: with the inset, a card being
+    // scrolled out was cut short of the edge with a band of background beside
+    // it, which reads as clipped rather than as sliding away. The strip carries
+    // that inset on its first card, and Search on its bar and its headings.
+    libraryBox->setPaddingLeft(posterStyle() ? 0.0f : kPosterInset);
+    // No scroll indicator in the poster style: a page of strips is meant to be
+    // read across, and the bar pinned to the right edge sat over the artwork.
+    if (libScroll) libScroll->setScrollingIndicatorVisible(!posterStyle());
     switch (view)
     {
         case View::ContinueWatching:
@@ -1710,6 +1839,7 @@ void StremioTab::renderView()
             break;
         }
         case View::PopularMovies:  //  movie
+            loadFeatured("movie");  // the second section, in every style
             if (popMoviesLoaded)
                 showItems(popMovies, "  Popular Movies", "No popular movies");
             else
@@ -1717,6 +1847,7 @@ void StremioTab::renderView()
                             "  Popular Movies");
             break;
         case View::PopularSeries:  //  tv (E02C renders as a TV here)
+            loadFeatured("series");
             if (popSeriesLoaded)
                 showItems(popSeries, "  Popular Shows", "No popular shows");
             else
@@ -1743,6 +1874,11 @@ void StremioTab::renderSearch()
     stremio::setLibraryCount(searchQuery.empty() ? "  Search"
                                                  : "  Search · " + searchQuery);
 
+    // In the poster style the list gives up its screen inset so the strips can
+    // run to the edge (see renderView), so everything else on this page carries
+    // it instead.
+    const float inset = posterStyle() ? kPosterInset : 0.0f;
+
     // The search bar cell.
     auto* bar = new brls::Box();
     bar->setAxis(brls::Axis::ROW);
@@ -1750,7 +1886,8 @@ void StremioTab::renderSearch()
     bar->setHeight(72.0f);
     bar->setPaddingLeft(20.0f);
     bar->setPaddingRight(24.0f);
-    bar->setMarginRight(40.0f);
+    bar->setMarginLeft(inset);
+    bar->setMarginRight(40.0f + inset);
     bar->setCornerRadius(6.0f);
     bar->setBackgroundColor(theme::scrim(20));
     bar->setFocusable(true);
@@ -1777,6 +1914,7 @@ void StremioTab::renderSearch()
     libList->addView(bar);
 
     brls::View* lastRow = bar;
+    columnsShown        = false;  // set below, only by the two-column layout
     if (!searchQuery.empty())
     {
         if (!searchLoaded || searchResults.empty())
@@ -1786,14 +1924,28 @@ void StremioTab::renderSearch()
                                      : "No results for \"" + searchQuery + "\"");
             l->setFontSize(20.0f);
             l->setTextColor(theme::textMuted());
-            l->setMargins(24.0f, 0.0f, 8.0f, 20.0f);
+            l->setMargins(24.0f, 0.0f, 8.0f, 20.0f + inset);
             libList->addView(l);
             lastRow = l;
+        }
+        else if (posterStyle())
+        {
+            // One strip per type, stacked: films first, then shows, and a type
+            // with no hits gets no section at all rather than an empty strip.
+            auto section = [&](const char* title, bool series) {
+                std::vector<stremio::LibItem> sel;
+                for (const auto& it : searchResults)
+                    if ((it.type == "series") == series) sel.push_back(it);
+                if (!sel.empty()) lastRow = addStripSection(title, sel, nullptr);
+            };
+            section("Movies", false);
+            section("Shows", true);
         }
         else
         {
             // Split the results: movies on the left, shows on the right.
-            auto* split = new brls::Box();
+            columnsShown = true;
+            auto* split  = new brls::Box();
             split->setAxis(brls::Axis::ROW);
             split->setAlignItems(brls::AlignItems::FLEX_START);
 
@@ -1805,7 +1957,9 @@ void StremioTab::renderSearch()
                 h->setText(title);
                 h->setFontSize(20.0f);
                 h->setTextColor(theme::textMuted());
-                h->setMargins(0.0f, 0.0f, 10.0f, 20.0f);
+                // 16, the rows' own left padding: the heading lines up with the
+                // posters under it instead of sitting inside them.
+                h->setMargins(0.0f, 0.0f, 10.0f, 16.0f);
                 col->addView(h);
                 return col;
             };
@@ -1895,6 +2049,237 @@ void StremioTab::loadCatalog(const char* type,
         });
 }
 
+// The heading over the current view's strip. Plain words, unlike the header
+// line at the top of the screen, which carries a glyph and a count.
+const char* StremioTab::sectionTitle() const
+{
+    switch (view)
+    {
+        case View::ContinueWatching: return "Continue watching";
+        case View::PopularMovies:
+        case View::PopularSeries:    return "Popular";
+        case View::Library:          return "Library";
+        default:                     return "";
+    }
+}
+
+const std::vector<stremio::LibItem>* StremioTab::featuredCache()
+{
+    if (view == View::PopularMovies) return &featMovies;
+    if (view == View::PopularSeries) return &featSeries;
+    return nullptr;
+}
+
+// Cinemeta's second catalog ("year", its newest releases) for `type`, shown as
+// the Featured strip. Fired alongside the popular one and folded in when it
+// lands; a failure just means no second section.
+void StremioTab::loadFeatured(const char* type)
+{
+    bool series   = std::string(type) == "series";
+    auto& cache   = series ? featSeries : featMovies;
+    bool& asked   = series ? featSeriesAsked : featMoviesAsked;
+    if (asked) return;
+    asked = true;
+
+    View want = view;
+    stremio::fetchCatalogAsync(
+        "https://v3-cinemeta.strem.io", type, "year",
+        [this, live = alive, want, &cache](stremio::LibraryResult r) {
+            if (!*live || !r.ok || r.items.empty()) return;
+            cache = r.items;
+            // Only if the user is still on the view that asked for it: the
+            // render folds the new section in.
+            if (view == want) renderView();
+        });
+}
+
+// A heading and the strip under it, both into libList. Returns the strip: the
+// bottom inset finishList adds belongs on the last thing on the page.
+brls::View* StremioTab::addStripSection(const std::string& title,
+                                        const std::vector<stremio::LibItem>& items,
+                                        brls::Box* seeMore)
+{
+    bool first = libList->getChildren().empty();
+    if (!title.empty())
+    {
+        // Nothing under it: the strip carries its own slack for the cursor's
+        // glow, and that slack is the gap.
+        addHeading(title, first ? 0.0f : 22.0f, 0.0f, headingInset());
+        first = false;  // ... the heading is on the page now
+    }
+    brls::View* strip =
+        buildPosterStrip(items, libList->getChildren().size() <= 1, seeMore);
+    libList->addView(strip);
+    return strip;
+}
+
+// Whether the current view's items are a catalog we cap (see kSectionMax).
+bool StremioTab::capped() const
+{
+    return view == View::PopularMovies || view == View::PopularSeries;
+}
+
+// The tile that ends a capped section, shaped like the items it follows so the
+// row/strip keeps its rhythm: a poster-sized card in the poster style, a row in
+// the others. Both open the whole section full-screen.
+brls::Box* StremioTab::buildSeeMoreCard(const std::string& title,
+                                        std::vector<stremio::LibItem> all)
+{
+    auto* card = new brls::Box();
+    card->setAxis(brls::Axis::COLUMN);
+    card->setJustifyContent(brls::JustifyContent::CENTER);
+    card->setAlignItems(brls::AlignItems::CENTER);
+    card->setWidth(kPosterCardW);
+    card->setHeight(kPosterCardH);
+    card->setMargins(0.0f, 16.0f, 0.0f, 8.0f);
+    card->setCornerRadius(kCardRadius);
+    card->setBackgroundColor(theme::scrim(16));
+    card->setFocusable(true);
+    card->setHighlightCornerRadius(
+        kCardRadius +
+        brls::Application::getStyle()["brls/highlight/stroke_width"] / 2);
+    card->registerClickAction([this, title, all](brls::View*) {
+        openSection(title, all);
+        return true;
+    });
+    card->addGestureRecognizer(new brls::TapGestureRecognizer(card));
+
+    auto* icon = new brls::Label();
+    icon->setText("");  // Material "chevron_right" (borealis fallback font)
+    icon->setFontSize(52.0f);
+    icon->setTextColor(theme::textDim());
+    card->addView(icon);
+
+    auto* label = new brls::Label();
+    label->setText("See More");
+    label->setFontSize(21.0f);
+    label->setTextColor(theme::textDim());
+    label->setMarginTop(6.0f);
+    card->addView(label);
+    return card;
+}
+
+brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
+                                       std::vector<stremio::LibItem> all)
+{
+    auto* row = new brls::Box();
+    row->setAxis(brls::Axis::ROW);
+    row->setAlignItems(brls::AlignItems::CENTER);
+    row->setJustifyContent(brls::JustifyContent::CENTER);
+    row->setHeight(72.0f);
+    row->setMarginRight(40.0f);
+    row->setMarginTop(6.0f);
+    row->setCornerRadius(kCardRadius);
+    row->setBackgroundColor(theme::scrim(16));
+    row->setFocusable(true);
+    row->setHighlightCornerRadius(
+        kCardRadius +
+        brls::Application::getStyle()["brls/highlight/stroke_width"] / 2);
+    row->registerClickAction([this, title, all](brls::View*) {
+        openSection(title, all);
+        return true;
+    });
+    row->addGestureRecognizer(new brls::TapGestureRecognizer(row));
+
+    auto* label = new brls::Label();
+    label->setText("See More");
+    label->setFontSize(21.0f);
+    label->setTextColor(theme::textDim());
+    row->addView(label);
+
+    auto* icon = new brls::Label();
+    icon->setText("");  // Material "chevron_right"
+    icon->setFontSize(30.0f);
+    icon->setTextColor(theme::textDim());
+    icon->setMarginLeft(6.0f);
+    row->addView(icon);
+    return row;
+}
+
+// The whole of a section, full screen: title, then every item in the style the
+// list is in -- a grid of cards under the poster style, the same rows under the
+// others. Only the footer sits around it; the header would just repeat the
+// title. Built here rather than by the activity because the card and row
+// builders (and the account key they need) live on the tab.
+void StremioTab::openSection(std::string title, std::vector<stremio::LibItem> items)
+{
+    auto* root = new brls::Box();
+    root->setAxis(brls::Axis::COLUMN);
+    root->setGrow(1.0f);
+    root->setPaddingTop(28.0f);
+
+    auto* h = new brls::Label();
+    h->setText(title + "  ·  " + std::to_string(items.size()));
+    h->setFontSize(28.0f);
+    h->setMargins(0.0f, 0.0f, 16.0f, 60.0f);
+    root->addView(h);
+
+    auto* scroll = new brls::ScrollingFrame();
+    scroll->setGrow(1.0f);
+    // CENTERED for the same reason the library list uses it: one step per press,
+    // scrolled to keep the cursor in view.
+    scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
+    auto* list = new brls::Box();
+    list->setAxis(brls::Axis::COLUMN);
+
+    if (posterStyle())
+    {
+        // As many cards per line as the logical width takes -- which is not a
+        // constant, it follows the UI-size setting and the dock state.
+        const float step = kPosterCardW + 24.0f;
+        int perRow = (int)((brls::Application::contentWidth - 2 * kPosterInset) / step);
+        if (perRow < 1) perRow = 1;
+
+        brls::Box* line = nullptr;
+        for (size_t i = 0; i < items.size(); i++)
+        {
+            if (i % (size_t)perRow == 0)
+            {
+                line = new brls::Box();
+                line->setAxis(brls::Axis::ROW);
+                line->setMarginLeft(kPosterInset - 8.0f);  // the cards' own left margin
+                line->setMarginBottom(16.0f);
+                list->addView(line);
+            }
+            line->addView(buildPosterCard(items[i], false));
+        }
+    }
+    else
+    {
+        list->setPaddingLeft(kPosterInset);
+        for (const auto& it : items) list->addView(buildItemRow(it, false));
+    }
+
+    scroll->setContentView(list);
+    root->addView(scroll);
+    brls::Application::pushActivity(new SectionActivity(root));
+}
+
+// A section heading into libList. `left` is the inset the style needs -- see
+// headingInset(); `bottom` is nothing over a poster strip, which carries slack
+// of its own, and a real gap over rows, which start immediately.
+void StremioTab::addHeading(const std::string& title, float top, float bottom,
+                            float left)
+{
+    auto* h = new brls::Label();
+    h->setText(title);
+    h->setFontSize(20.0f);
+    h->setTextColor(theme::textMuted());
+    h->setMargins(top, 0.0f, bottom, left);
+    libList->addView(h);
+}
+
+// Where a heading has to start to sit over the artwork rather than inside it.
+// The three styles put their poster in three different places: the strips run
+// to the screen edge and carry the inset themselves, a classic row keeps the
+// shell's own left padding, and a card row has none at all -- the cursor hugs
+// the card, so the poster starts at the list's edge.
+float StremioTab::headingInset() const
+{
+    if (posterStyle()) return kPosterInset;
+    return config::get().listStyle == kStyleClassic ? kRowInset : 0.0f;
+}
+
 void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
                            const std::string& header, const char* emptyMsg)
 {
@@ -1920,10 +2305,98 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
     loadingBox->setVisibility(brls::Visibility::GONE);
     stremio::setLibraryCount(header);
 
-    brls::Box* lastRow = nullptr;
-    for (const auto& it : items)
-        lastRow = addItemRow(it);
-    finishList(lastRow);
+    // A catalog is a hundred titles, and building a hundred cards (each with an
+    // artwork request behind it) is what made these views take seconds to come
+    // up. Show a screenful; the rest is one press away behind See More. Only the
+    // catalogs are capped -- Continue Watching and Library are the user's own
+    // lists, and they are as long as they are.
+    const size_t cap = capped() ? kSectionMax : 0;
+    auto head = [cap](const std::vector<stremio::LibItem>& v) {
+        return cap && v.size() > cap
+                   ? std::vector<stremio::LibItem>(v.begin(), v.begin() + cap)
+                   : v;
+    };
+    auto overflows = [cap](const std::vector<stremio::LibItem>& v) {
+        return cap && v.size() > cap;
+    };
+
+    columnsShown = false;  // the strips are one row of cards, not two columns
+    if (posterStyle())
+    {
+        // Straight into the list, top-aligned like the rows: a wrapper sized to
+        // the viewport to centre the strip crashed on a UI-size change (setting
+        // a height from inside onLayout re-enters the layout) and left the list
+        // one pixel too tall, which put a scrollbar on a page that does not
+        // scroll.
+        brls::View* last = addStripSection(
+            sectionTitle(), head(items),
+            overflows(items) ? buildSeeMoreCard(sectionTitle(), items) : nullptr);
+        // Popular Movies / Shows carry a second strip under the first. It is
+        // absent until Cinemeta's second catalog lands (loadFeatured re-renders
+        // when it does), and stays absent if that request fails.
+        const std::vector<stremio::LibItem>* feat = featuredCache();
+        if (feat && !feat->empty())
+            last = addStripSection(
+                "Featured", head(*feat),
+                overflows(*feat) ? buildSeeMoreCard("Featured", *feat) : nullptr);
+        finishList(last);
+        return;
+    }
+
+    const float ins = headingInset();
+    const std::vector<stremio::LibItem>* feat = featuredCache();
+    columnsShown = feat && !feat->empty();
+
+    // Two sections in the row styles sit SIDE BY SIDE -- Popular left, Featured
+    // right -- the way Search lays its two types out. Stacked, the second one
+    // was a scroll away and easy to miss.
+    if (feat && !feat->empty())
+    {
+        auto* split = new brls::Box();
+        split->setAxis(brls::Axis::ROW);
+        split->setAlignItems(brls::AlignItems::FLEX_START);
+
+        auto makeCol = [&](const std::string& title) {
+            auto* col = new brls::Box();
+            col->setAxis(brls::Axis::COLUMN);
+            col->setWidthPercentage(50.0f);  // hard 50/50, not content-sized
+            auto* h = new brls::Label();
+            h->setText(title);
+            h->setFontSize(20.0f);
+            h->setTextColor(theme::textMuted());
+            h->setMargins(0.0f, 0.0f, 10.0f, ins);
+            col->addView(h);
+            return col;
+        };
+        auto* popCol  = makeCol(sectionTitle());
+        auto* featCol = makeCol("Featured");
+        // No type tag on these rows: both columns are the one type this view is
+        // about, and half a row is narrow enough already.
+        for (const auto& it : head(items)) popCol->addView(buildItemRow(it, false));
+        for (const auto& it : head(*feat)) featCol->addView(buildItemRow(it, false));
+        if (overflows(items))
+            popCol->addView(buildSeeMoreRow(sectionTitle(), items));
+        if (overflows(*feat))
+            featCol->addView(buildSeeMoreRow("Featured", *feat));
+
+        split->addView(popCol);
+        split->addView(featCol);
+        libList->addView(split);
+        finishList(split);
+        return;
+    }
+
+    // One section: still titled, so Continue Watching and Library say what they
+    // are here as well as in the poster style.
+    addHeading(sectionTitle(), 0.0f, 10.0f, ins);
+    brls::View* last = nullptr;
+    for (const auto& it : head(items)) last = addItemRow(it);
+    if (overflows(items))
+    {
+        last = buildSeeMoreRow(sectionTitle(), items);
+        libList->addView(last);
+    }
+    finishList(last);
 }
 
 // Builds one poster/title/progress row for `it`, adds it to libList, returns it.
@@ -1934,12 +2407,94 @@ brls::Box* StremioTab::addItemRow(const stremio::LibItem& it)
     return row;
 }
 
+namespace
+{
+
+// "1h 59m" / "47m" -- a runtime, or what is left of one. Empty under half a
+// minute, which is what tells the progress line to fall back to a clock.
+std::string humanRuntime(double ms)
+{
+    int mins = (int)(ms / 60000.0 + 0.5);
+    if (mins <= 0) return "";
+    char buf[32];
+    if (mins >= 60)
+        std::snprintf(buf, sizeof(buf), "%dh %02dm", mins / 60, mins % 60);
+    else
+        std::snprintf(buf, sizeof(buf), "%dm", mins);
+    return buf;
+}
+
+// A position on the clock: "15:34", or "1:02:11" once it runs past an hour.
+std::string clockTime(double ms)
+{
+    int secs = ms > 0 ? (int)(ms / 1000.0) : 0;
+    char buf[32];
+    if (secs >= 3600)
+        std::snprintf(buf, sizeof(buf), "%d:%02d:%02d", secs / 3600,
+                      (secs / 60) % 60, secs % 60);
+    else
+        std::snprintf(buf, sizeof(buf), "%d:%02d", secs / 60, secs % 60);
+    return buf;
+}
+
+// The year as a row should read it. A show still running comes back as an open
+// range ("2013-"), which reads as a sentence someone forgot to finish -- say
+// what it means instead. The trailing dash may be an en dash: some addons send
+// that where Cinemeta sends a hyphen.
+std::string yearLine(std::string y)
+{
+    static const std::string kEnDash = "–";
+    while (!y.empty() && (y.back() == ' ' || y.back() == '\t')) y.pop_back();
+
+    bool open = false;
+    if (!y.empty() && y.back() == '-')
+    {
+        y.pop_back();
+        open = true;
+    }
+    else if (y.size() > kEnDash.size() &&
+             y.compare(y.size() - kEnDash.size(), kEnDash.size(), kEnDash) == 0)
+    {
+        y.erase(y.size() - kEnDash.size());
+        open = true;
+    }
+    if (!open) return y;
+
+    while (!y.empty() && y.back() == ' ') y.pop_back();
+    return y.empty() ? y : y + " – present";
+}
+
+// "Season 17 · Episode 7" from a state video_id ("tt123:17:7"), "" if it is not
+// one -- a film's video_id is just the item id. The episode's own title would
+// need a meta fetch per row, which the list does not do.
+std::string episodeLine(const std::string& videoId)
+{
+    size_t p2 = videoId.rfind(':');
+    if (p2 == std::string::npos || p2 == 0) return "";
+    size_t p1 = videoId.rfind(':', p2 - 1);
+    if (p1 == std::string::npos) return "";
+    return "Season " + videoId.substr(p1 + 1, p2 - p1 - 1) + " · Episode " +
+           videoId.substr(p2 + 1);
+}
+
+} // namespace
+
+// The poster style has no row of its own: Search lays its results out in two
+// narrow columns, where an upright card does not fit. Those keep the card row.
 brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
+{
+    return config::get().listStyle == kStyleClassic ? buildClassicRow(it, showType)
+                                                   : buildCardRow(it, showType);
+}
+
+// The focusable row both styles are built on: its size, its click action and
+// its tap gesture. Empty -- the caller fills it.
+brls::Box* StremioTab::newRowShell(const stremio::LibItem& it, float height)
 {
     auto* row = new brls::Box();
     row->setAxis(brls::Axis::ROW);
     row->setAlignItems(brls::AlignItems::CENTER);
-    row->setHeight(140.0f);  // sized off the poster, not the text
+    row->setHeight(height);  // sized off the poster, not the text
     row->setPaddingLeft(16.0f);
     row->setPaddingRight(24.0f);
     // Margin, not padding, and on the row rather than the list: the focus
@@ -1959,22 +2514,483 @@ brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
     });
     // Tap gesture so the touchscreen works too (A-only otherwise).
     row->addGestureRecognizer(new brls::TapGestureRecognizer(row));
+    return row;
+}
 
-    // Poster. Posters are 2:3, so fit rather than stretch. It arrives
-    // asynchronously: the row draws immediately with an empty slot and the
-    // artwork fills in, instead of the whole list waiting on the network.
+// Posters are 2:3, so fit rather than stretch. The artwork arrives
+// asynchronously: the row draws immediately with an empty slot and it fills in,
+// instead of the whole list waiting on the network.
+brls::Image* StremioTab::newPoster(const stremio::LibItem& it, float w, float h,
+                                   float marginRight)
+{
     auto* art = new brls::Image();
-    art->setDimensions(80.0f, 120.0f);  // 2:3, the poster aspect
+    art->setDimensions(w, h);
     art->setScalingType(brls::ImageScalingType::FIT);
     art->setCornerRadius(6.0f);  // rounded poster corners (borealis clips it)
-    art->setMarginRight(22.0f);
-    row->addView(art);
+    art->setMarginRight(marginRight);
+    attachPoster(art, it);
+    return art;
+}
 
+// Fills `art` in once the artwork lands: the row draws immediately with an
+// empty slot instead of the whole list waiting on the network.
+void StremioTab::attachPoster(brls::Image* art, const stremio::LibItem& it)
+{
     auto alive = rowsAlive;  // list may be rebuilt before the art lands
     stremio::fetchPosterAsync(it.id, it.poster, [art, alive](std::string path) {
         if (!*alive || path.empty()) return;
         art->setImageFromFile(path);
     });
+}
+
+// The tab's background colour at a screen point. The field is one linear
+// gradient across the whole frame, from the top-RIGHT corner to the bottom-left
+// (see BrowserFrame::draw), so this reproduces nanovg's own parameter -- the
+// projection of the point onto that axis -- and interpolates the same pair. The
+// frame is borealis' logical size, which follows the UI-size setting and the
+// dock state, so it is read live rather than cached.
+NVGcolor tabBgAt(float px, float py)
+{
+    const float W = brls::Application::contentWidth,
+                H = brls::Application::contentHeight;
+    // Axis: (W, 0) -> (0, H).
+    float dx = -W, dy = H;
+    float len2 = dx * dx + dy * dy;
+    float t    = len2 > 0.0f ? ((px - W) * dx + py * dy) / len2 : 0.0f;
+    t          = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    const NVGcolor a = theme::gradTop(), b = theme::gradBottom();
+    return nvgRGBAf(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t,
+                    a.b + (b.b - a.b) * t, 1.0f);
+}
+
+// A strip that fades its cards out at whichever edge still has content beyond
+// it, so they dissolve into the background instead of being cut off -- the same
+// treatment the episode and addon scrollers get. The scrim is the background
+// colour sampled AT the edge, fading to transparent inward; an edge with
+// nothing past it is left alone, so the first card at rest is never dimmed.
+class FadeStrip : public brls::HScrollingFrame
+{
+  public:
+    void setContentView(brls::View* view)
+    {
+        content = view;
+        brls::HScrollingFrame::setContentView(view);
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float w, float h,
+              brls::Style style, brls::FrameContext* ctx) override
+    {
+        brls::HScrollingFrame::draw(vg, x, y, w, h, style, ctx);
+
+        const float fade = 64.0f;
+        float offset     = getContentOffsetX();
+        float rightLimit = content ? content->getWidth() - w : 0.0f;
+        float midY       = y + h * 0.5f;
+
+        if (offset > 2.0f)  // scrolled: cards run off the left
+        {
+            NVGcolor edge = tabBgAt(x, midY);
+            NVGcolor gone = edge;
+            gone.a        = 0.0f;
+            nvgBeginPath(vg);
+            nvgRect(vg, x, y, fade, h);
+            nvgFillPaint(vg, nvgLinearGradient(vg, x, y, x + fade, y, edge, gone));
+            nvgFill(vg);
+        }
+        if (offset < rightLimit - 2.0f)  // more cards off the right
+        {
+            NVGcolor edge = tabBgAt(x + w, midY);
+            NVGcolor gone = edge;
+            gone.a        = 0.0f;
+            nvgBeginPath(vg);
+            nvgRect(vg, x + w - fade, y, fade, h);
+            nvgFillPaint(vg,
+                         nvgLinearGradient(vg, x + w - fade, y, x + w, y, gone, edge));
+            nvgFill(vg);
+        }
+    }
+
+  private:
+    brls::View* content = nullptr;
+};
+
+// A poster with only its top corners rounded: it meets the card's footer flush,
+// and a rounded bottom edge cut two notches of card background out of the
+// artwork. brls::Image rounds all four corners, so this repeats its draw with a
+// varying-radius rect -- everything it needs is protected, not private.
+class TopRoundedImage : public brls::Image
+{
+  public:
+    void draw(NVGcontext* vg, float x, float y, float w, float h,
+              brls::Style style, brls::FrameContext* ctx) override
+    {
+        if (this->texture == 0) return;
+
+        float ix = x + this->imageX;
+        float iy = y + this->imageY;
+        this->paint.xform[4] = ix;
+        this->paint.xform[5] = iy;
+
+        float r = this->getCornerRadius();
+        nvgBeginPath(vg);
+        if (this->getClipsToBounds())
+            nvgRoundedRectVarying(vg, x, y, w, h, r, r, 0.0f, 0.0f);
+        else
+            nvgRoundedRectVarying(vg, ix, iy, this->imageWidth,
+                                  this->imageHeight, r, r, 0.0f, 0.0f);
+        nvgFillPaint(vg, a(this->paint));
+        nvgFill(vg);
+    }
+};
+
+// The card's panel: the surface the title, the meta line and the progress bar
+// sit on. It drops its own fill while the row is focused -- the cursor draws a
+// background of its own behind the whole row, and the two stacked surfaces read
+// as a paler rectangle floating inside the highlight rather than as one lit
+// card. Read as it draws rather than switched on a focus event: nothing has to
+// find these rows to keep them in step.
+class CardPanel : public brls::Box
+{
+  public:
+    void draw(NVGcontext* vg, float x, float y, float w, float h,
+              brls::Style style, brls::FrameContext* ctx) override
+    {
+        // Only while the cursor is actually drawn: View::drawHighlight bails out
+        // on touch input, so under a finger there is no highlight to take over
+        // the fill -- the card would just go hollow, and worse, the row keeps
+        // its focus while a touch scroll carries it away, so the wrong card
+        // stays hollow. Same test as drawHighlight's, so the two cannot drift.
+        brls::View* row = this->getParent();
+        bool cursor     = brls::Application::getInputType() != brls::InputType::TOUCH;
+        this->setBackgroundColor(cursor && row && row->isFocused()
+                                     ? nvgRGBA(0, 0, 0, 0)
+                                     : theme::scrim(16));
+        brls::Box::draw(vg, x, y, w, h, style, ctx);
+    }
+};
+
+// The card style: the poster stands on the background, everything else sits on
+// a raised panel next to it -- title, the episode or the runtime under it, how
+// much is left, and the progress bar across the bottom, with the type as a pill
+// and a chevron on the right.
+brls::Box* StremioTab::buildCardRow(const stremio::LibItem& it, bool showType)
+{
+    // The highlight hugs the row's padding box: no padding at all, and a row
+    // exactly as tall as its content, so the cursor sits ON the poster and the
+    // card rather than around them. The gap between rows therefore has to be a
+    // margin (finishList overrides the last row's with the bottom inset).
+    auto* row = newRowShell(it, kCardHeight);
+    row->setPadding(0.0f, 0.0f, 0.0f, 0.0f);
+    row->setMarginBottom(14.0f);
+    // One radius for the cursor, the card and the poster -- they are drawn on
+    // top of each other, so three different corners read as sloppy. The cursor
+    // needs saying separately: it is NOT the view's cornerRadius but its own
+    // highlightCornerRadius, which defaults to the style's 6. And it is stroked
+    // centred on a rect inflated by half the stroke width, so its radius has to
+    // grow by the same to stay concentric with the card underneath.
+    row->setCornerRadius(kCardRadius);
+    row->setHighlightCornerRadius(
+        kCardRadius + brls::Application::getStyle()["brls/highlight/stroke_width"] / 2);
+
+    auto* art = newPoster(it, 88.0f, kCardHeight, 18.0f);
+    art->setCornerRadius(kCardRadius);
+    row->addView(art);
+
+    auto* card = new CardPanel();
+    card->setAxis(brls::Axis::ROW);
+    card->setAlignItems(brls::AlignItems::CENTER);
+    card->setGrow(1.0f);
+    card->setHeight(kCardHeight);  // the poster's height, so they line up
+    card->setCornerRadius(kCardRadius);
+    card->setPaddingLeft(22.0f);
+    card->setPaddingRight(18.0f);
+    row->addView(card);
+
+    auto* textCol = new brls::Box();
+    textCol->setAxis(brls::Axis::COLUMN);
+    textCol->setJustifyContent(brls::JustifyContent::CENTER);
+    textCol->setGrow(1.0f);
+
+    auto* name = new brls::Label();
+    name->setText(it.name);
+    name->setFontSize(26.0f);
+    name->setSingleLine(true);
+    textCol->addView(name);
+
+    double prog    = it.progress();
+    bool   watched = prog > 0.005;
+
+    // Under the title: which episode the account is on for a show, and the year
+    // for everything else. (A show that has not been started would rather say
+    // how many seasons it has, but that is a meta request per row -- a whole
+    // extra fetch per title for one number.) Last resort, the runtime, if
+    // playing it ever told us: better than an empty line.
+    std::string meta;
+    if (watched && it.type == "series") meta = episodeLine(it.videoId);
+    if (meta.empty()) meta = yearLine(it.year);
+    if (meta.empty()) meta = humanRuntime(it.durationMs);
+    if (!meta.empty())
+    {
+        auto* metaLbl = new brls::Label();
+        metaLbl->setText(meta);
+        metaLbl->setFontSize(18.0f);
+        metaLbl->setTextColor(theme::textMuted());
+        metaLbl->setSingleLine(true);
+        metaLbl->setMarginTop(5.0f);
+        textCol->addView(metaLbl);
+    }
+
+    if (watched)
+    {
+        // The same clock for films and episodes -- where you are over how long
+        // it runs. What is left of a film is said on the meta line above.
+        //
+        // AccentLabel/AccentBox, not the accent copied in: these rows live on
+        // the main screen for as long as the tab does, so a colour change in
+        // Options has to reach them without the tab being rebuilt.
+        auto* posLbl = new theme::AccentLabel();
+        posLbl->setText(clockTime(it.timeOffsetMs) + " / " +
+                        clockTime(it.durationMs));
+        posLbl->setFontSize(18.0f);
+        posLbl->setSingleLine(true);
+        posLbl->setMarginTop(7.0f);
+        textCol->addView(posLbl);
+
+        auto* track = new brls::Box();
+        track->setWidthPercentage(100.0f);
+        track->setHeight(6.0f);
+        track->setCornerRadius(3.0f);
+        track->setBackgroundColor(theme::scrim(40));
+        track->setMarginTop(9.0f);
+
+        auto* fill = new theme::AccentBox();
+        fill->setWidthPercentage((float)(prog * 100.0));
+        fill->setHeight(6.0f);
+        fill->setCornerRadius(3.0f);
+        track->addView(fill);
+        textCol->addView(track);
+    }
+    card->addView(textCol);
+
+    if (showType)
+    {
+        auto* pill = new brls::Box();
+        pill->setAxis(brls::Axis::ROW);
+        pill->setAlignItems(brls::AlignItems::CENTER);
+        pill->setCornerRadius(14.0f);
+        pill->setBackgroundColor(theme::scrim(30));
+        // setPadding(top, right, bottom, left). Not even top/bottom: a Label's
+        // box sits lower than its ink (the line box carries the descender), so
+        // equal padding leaves a visibly thinner band above the text.
+        pill->setPadding(9.0f, 14.0f, 5.0f, 14.0f);
+        pill->setMarginLeft(18.0f);
+        // Hold its width: the full-width progress bar in textCol otherwise
+        // squeezes it until the label wraps.
+        pill->setShrink(0.0f);
+
+        auto* type = new brls::Label();
+        type->setText(it.type == "series" ? "Show" : "Movie");
+        type->setFontSize(18.0f);
+        type->setTextColor(theme::textDim());
+        type->setSingleLine(true);
+        pill->addView(type);
+        card->addView(pill);
+    }
+
+    // Material "chevron_right", U+E5CC (borealis' fallback font): says the row
+    // opens something rather than toggling in place. Careful next to it: U+E5CB
+    // is chevron_LEFT.
+    auto* chevron = new brls::Label();
+    chevron->setText("");
+    chevron->setFontSize(32.0f);
+    chevron->setTextColor(theme::textMuted());
+    // The glyph sits high in its line box, so centring that box on the card
+    // leaves the arrow above the pill beside it. setMargins(top, right, bottom,
+    // left): the row centres the box *with* its margins, so the arrow moves down
+    // by half of the top one.
+    chevron->setMargins(12.0f, 0.0f, 0.0f, 14.0f);
+    chevron->setShrink(0.0f);
+    card->addView(chevron);
+
+    return row;
+}
+
+// The poster style's strip: one horizontally scrolling row of cards. It is a
+// single view in the (vertical) list, so the list itself has nothing left to
+// scroll -- moving through the titles is the strip's job.
+brls::View* StremioTab::buildPosterStrip(const std::vector<stremio::LibItem>& items,
+                                         bool upToHeader, brls::Box* seeMore)
+{
+    // Taller than the cards: the frame scissors to its own bounds, and the
+    // cursor's glow is drawn OUTSIDE the card it belongs to. Without the slack
+    // it would be shaved off top and bottom. Kept tight -- it doubles as the gap
+    // under the section heading.
+    const float stripH = kPosterCardH + 16.0f;
+
+    auto* strip = new FadeStrip();
+    strip->setHeight(stripH);
+    // CENTERED, not the default NATURAL: NATURAL free-scrolls by the pixel and
+    // hands focus to the FRAME to do it, which slid the strip under its own left
+    // edge and left half a card showing. CENTERED moves card by card and scrolls
+    // to keep the focused one in view -- the same fix the vertical list uses.
+    strip->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
+
+    auto* row = new brls::Box();
+    row->setAxis(brls::Axis::ROW);
+    row->setAlignItems(brls::AlignItems::CENTER);  // the slack, split evenly
+    for (const auto& it : items)
+    {
+        auto* card = buildPosterCard(it, upToHeader);
+        // The screen inset the list gives up in this style (see renderView), so
+        // the first card starts where the rows do.
+        if (row->getChildren().empty()) card->setMarginLeft(kPosterInset);
+        row->addView(card);
+    }
+    // The tail of a capped section: the rest of it, one press away.
+    if (seeMore) row->addView(seeMore);
+    // setContentView forces the content view's height and detaches it, so any
+    // margin here would be dropped -- the insets live on the cards.
+    strip->setContentView(row);
+    return strip;
+}
+
+brls::Box* StremioTab::buildPosterCard(const stremio::LibItem& it, bool upToHeader)
+{
+    auto* card = new brls::Box();
+    card->setAxis(brls::Axis::COLUMN);
+    card->setWidth(kPosterCardW);
+    card->setHeight(kPosterCardH);
+    // setMargins(top, right, bottom, left): the gap between cards, and enough
+    // on the left for the first card's glow to clear the frame's edge.
+    card->setMargins(0.0f, 16.0f, 0.0f, 8.0f);
+    card->setCornerRadius(kCardRadius);
+    card->setBackgroundColor(theme::scrim(16));
+    card->setFocusable(true);
+    card->setHighlightCornerRadius(
+        kCardRadius +
+        brls::Application::getStyle()["brls/highlight/stroke_width"] / 2);
+
+    std::string key = authKey;
+    card->registerClickAction([key, it](brls::View*) {
+        openLibraryItem(key, it);
+        return true;
+    });
+    card->addGestureRecognizer(new brls::TapGestureRecognizer(card));
+    // A card in the page's FIRST strip cannot walk focus out on its own (the
+    // frames keep it inside while they can still scroll), so it is handed the
+    // way back to the header. Any strip below one has somewhere to go on its
+    // own -- the section above it, or the search bar -- and routing those to the
+    // header too made UP skip the whole page.
+    if (upToHeader && stremio::libraryUpTarget)
+        card->setCustomNavigationRoute(brls::FocusDirection::UP,
+                                       stremio::libraryUpTarget);
+
+    // The artwork, with the type tag dropped into its bottom-right corner: on a
+    // card this narrow the tag was taking half the title's line and truncating
+    // most names.
+    auto* artBox = new brls::Box();
+    artBox->setWidth(kPosterCardW);
+    artBox->setHeight(kPosterArtH);
+
+    auto* art = new TopRoundedImage();
+    art->setDimensions(kPosterCardW, kPosterArtH);
+    art->setScalingType(brls::ImageScalingType::FILL);  // fill, crop the excess
+    art->setClipsToBounds(true);   // ... which is what keeps the crop inside
+    art->setCornerRadius(kCardRadius);
+    attachPoster(art, it);
+    artBox->addView(art);
+
+    auto* pill = new brls::Box();
+    pill->setAxis(brls::Axis::ROW);
+    pill->setAlignItems(brls::AlignItems::CENTER);
+    pill->setCornerRadius(11.0f);
+    // Fixed translucent black with light text, not the theme's scrim: this one
+    // sits on artwork rather than on a surface, so it has to hold up over a
+    // bright poster as well as a dark one, in either variant.
+    pill->setBackgroundColor(nvgRGBA(0, 0, 0, 170));
+    pill->setPadding(7.0f, 10.0f, 3.0f, 10.0f);  // see buildCardRow: not even
+    pill->setPositionType(brls::PositionType::ABSOLUTE);
+    pill->setPositionBottom(10.0f);
+    pill->setPositionRight(10.0f);
+
+    auto* type = new brls::Label();
+    type->setText(it.type == "series" ? "Show" : "Movie");
+    type->setFontSize(15.0f);
+    type->setTextColor(nvgRGBA(255, 255, 255, 235));
+    type->setSingleLine(true);
+    pill->addView(type);
+    artBox->addView(pill);
+
+    card->addView(artBox);
+
+    auto* foot = new brls::Box();
+    foot->setAxis(brls::Axis::COLUMN);
+    foot->setJustifyContent(brls::JustifyContent::CENTER);
+    foot->setGrow(1.0f);
+    foot->setPaddingLeft(14.0f);
+    foot->setPaddingRight(14.0f);
+
+    // The title now has the line to itself -- the type tag lives on the poster.
+    auto* name = new brls::Label();
+    name->setText(it.name);
+    name->setFontSize(21.0f);
+    name->setSingleLine(true);
+    foot->addView(name);
+
+    double prog    = it.progress();
+    bool   watched = prog > 0.005;
+
+    // The same line as the row style: the episode for a show being watched, the
+    // year otherwise.
+    std::string meta;
+    if (watched && it.type == "series") meta = episodeLine(it.videoId);
+    if (meta.empty()) meta = yearLine(it.year);
+    if (meta.empty()) meta = humanRuntime(it.durationMs);
+    if (!meta.empty())
+    {
+        auto* metaLbl = new brls::Label();
+        metaLbl->setText(meta);
+        metaLbl->setFontSize(16.0f);
+        metaLbl->setTextColor(theme::textMuted());
+        metaLbl->setSingleLine(true);
+        metaLbl->setMarginTop(7.0f);
+        foot->addView(metaLbl);
+    }
+
+    if (watched)
+    {
+        auto* posLbl = new theme::AccentLabel();
+        posLbl->setText(clockTime(it.timeOffsetMs) + " / " +
+                        clockTime(it.durationMs));
+        posLbl->setFontSize(16.0f);
+        posLbl->setSingleLine(true);
+        posLbl->setMarginTop(7.0f);
+        foot->addView(posLbl);
+
+        auto* track = new brls::Box();
+        track->setWidthPercentage(100.0f);
+        track->setHeight(5.0f);
+        track->setCornerRadius(2.5f);
+        track->setBackgroundColor(theme::scrim(40));
+        track->setMarginTop(9.0f);
+
+        auto* fill = new theme::AccentBox();
+        fill->setWidthPercentage((float)(prog * 100.0));
+        fill->setHeight(5.0f);
+        fill->setCornerRadius(2.5f);
+        track->addView(fill);
+        foot->addView(track);
+    }
+    card->addView(foot);
+
+    return card;
+}
+
+// The flat style the app shipped with: poster, title, progress bar, type.
+brls::Box* StremioTab::buildClassicRow(const stremio::LibItem& it, bool showType)
+{
+    auto* row = newRowShell(it, 140.0f);
+    row->addView(newPoster(it, 80.0f, 120.0f, 22.0f));
 
     // Name over an optional watch-progress bar (where the account is in this
     // film / the show's last watched episode, from the library state).
@@ -1991,26 +3007,18 @@ brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
 
     double prog = it.progress();
 
-    // For a show mid-episode, name the episode under the title: the videoId is
-    // "ttID:season:episode", so the last two ':'-parts are what we show. (The
-    // episode's own title needs a meta fetch we do not do per row.)
-    if (prog > 0.005 && it.type == "series" && !it.videoId.empty())
+    // For a show mid-episode, name the episode under the title.
+    std::string ep = prog > 0.005 && it.type == "series" ? episodeLine(it.videoId)
+                                                         : std::string();
+    if (!ep.empty())
     {
-        std::string se = it.videoId;
-        size_t p2 = se.rfind(':');
-        size_t p1 = p2 == std::string::npos ? p2 : se.rfind(':', p2 - 1);
-        if (p1 != std::string::npos && p2 != std::string::npos)
-        {
-            std::string ep = "Season " + se.substr(p1 + 1, p2 - p1 - 1) +
-                             " · Episode " + se.substr(p2 + 1);
-            auto* epl = new brls::Label();
-            epl->setText(ep);
-            epl->setFontSize(18.0f);
-            epl->setTextColor(theme::textMuted());
-            epl->setSingleLine(true);
-            epl->setMarginTop(4.0f);
-            textCol->addView(epl);
-        }
+        auto* epl = new brls::Label();
+        epl->setText(ep);
+        epl->setFontSize(18.0f);
+        epl->setTextColor(theme::textMuted());
+        epl->setSingleLine(true);
+        epl->setMarginTop(4.0f);
+        textCol->addView(epl);
     }
 
     if (prog > 0.005)
@@ -2061,6 +3069,17 @@ void StremioTab::finishList(brls::View* lastRow)
         // right under the header otherwise.
         libList->getChildren()[0]->setMarginTop(20.0f);
 
+        // The first thing on the page that can actually take the cursor -- NOT
+        // simply the first child: with a section heading above it, that child is
+        // a Label, giveFocus() on a view that resolves to nothing is a silent
+        // no-op, and Application::currentFocus was left parked on libraryBox,
+        // which this function then makes unfocusable. Everything after that is
+        // navigating from a view that is not in the running, and the boxes it
+        // walks still hold lastFocusedView pointers into the list we just freed.
+        brls::View* first = nullptr;
+        for (brls::View* child : libList->getChildren())
+            if ((first = child->getDefaultFocus())) break;
+
         brls::View* focus = brls::Application::getCurrentFocus();
         bool parked = !focus || focus == libraryBox || isUnder(focus, loginBox);
         libraryBox->setFocusable(false);
@@ -2068,14 +3087,14 @@ void StremioTab::finishList(brls::View* lastRow)
         // list back to the top, regardless of where focus was in the old list --
         // unless suppressFocusMove (a header tab-bar pick) asked to leave focus
         // where it is, up on the bar.
-        if ((parked || resetOnShow) && !suppressFocusMove)
-            brls::Application::giveFocus(libList->getChildren()[0]);
+        if (first && (parked || resetOnShow) && !suppressFocusMove)
+            brls::Application::giveFocus(first);
         if (resetOnShow && libScroll)
             libScroll->setContentOffsetY(0.0f, false);
 
-        if (stremio::libraryUpTarget)
-            libList->getChildren()[0]->setCustomNavigationRoute(
-                brls::FocusDirection::UP, stremio::libraryUpTarget);
+        if (first && stremio::libraryUpTarget)
+            first->setCustomNavigationRoute(brls::FocusDirection::UP,
+                                            stremio::libraryUpTarget);
     }
     resetOnShow       = false;
     suppressFocusMove = false;
