@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "player.hpp"   // PlayerArt / WatchInfo, handed to the screens below
 #include "stremio.hpp"
 
 // The Stremio drill-down: series -> seasons -> episodes -> addons -> streams.
@@ -71,3 +72,25 @@ class ListActivity : public brls::Activity
 // Entry point: opens a library item. Films skip straight to the addon list;
 // series go through season/episode pickers first.
 void openLibraryItem(const std::string& authKey, const stremio::LibItem& item);
+
+// Opens one episode's detail screen (synopsis + source cards) straight from its
+// id, without going through the series/season pickers. For the player's
+// end-of-episode card: it only ever knew the next episode's id, so everything
+// else -- the title, the still, the episode AFTER that one -- has to be fetched,
+// which is one Cinemeta round trip behind a loading screen. `art` carries the
+// show's poster over; the episode's own still replaces the background.
+//
+// Declared here rather than being reached through a hook because the player
+// already includes this header's neighbours, and a hook would only hide which
+// screen actually opens.
+// `replaceCurrent` says the caller is itself an episode screen being walked
+// away from (the prev/next chevrons): no loading page is shown and the current
+// activity is swapped out once the meta lands. False -- the player's card,
+// which has already popped itself -- puts a loading page up meanwhile.
+// `onFail` runs on the UI thread when the episode cannot be opened, so a
+// caller that changed its own appearance to say "working" can put it back --
+// success replaces the screen, so only failure ever returns.
+void openEpisodeById(const std::string& authKey, const std::string& seriesId,
+                     const std::string& videoId, const PlayerArt& art,
+                     bool replaceCurrent          = false,
+                     std::function<void()> onFail = nullptr);

@@ -109,7 +109,13 @@ void updateHighlightAnimation()
     // Update variables
     highlightGradientX = (cos((double)currentTime / HIGHLIGHT_SPEED / 3.0) + 1.0) / 2.0;
     highlightGradientY = (sin((double)currentTime / HIGHLIGHT_SPEED / 3.0) + 1.0) / 2.0;
-    highlightColor     = (sin((double)currentTime / HIGHLIGHT_SPEED * 2.0) + 1.0) / 2.0;
+    // LOCAL PATCH (see VENDORED.md): "/ 3.0", where upstream has "* 2.0".
+    // Upstream runs the colour six times faster than the orbit -- a 0.4s cycle,
+    // roughly two and a half pulses a second. Nobody saw it because
+    // View::drawHighlight multiplied the term out (color1 mixed with color1),
+    // so it only became visible once that was fixed, and it strobed. At the
+    // orbit's own rate it is a ~2.4s breath, which is what Horizon does.
+    highlightColor     = (sin((double)currentTime / HIGHLIGHT_SPEED / 3.0) + 1.0) / 2.0;
 }
 
 void getHighlightAnimation(float* gradientX, float* gradientY, float* color)

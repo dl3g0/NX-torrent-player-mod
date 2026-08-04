@@ -41,6 +41,15 @@ struct Config
     // Show subtitles at all. Off means mpv loads none rather than picking one.
     bool subtitles = true;
 
+    // Lift the loudness of a 5.1 track downmixed to stereo (mpv's dynaudnorm).
+    // On by default -- a 5.1 master folded to stereo sits well below a native
+    // stereo track, and the console's own speakers have no headroom left to
+    // make that up. Only ever applied in handheld for that reason: docked, the
+    // TV or receiver does the amplifying and the compression is just a
+    // flattened dynamic range nobody asked for. Applied live, so docking
+    // mid-film drops it (see MpvView::pumpEvents).
+    bool audioBoost = true;
+
     // Hardware video decoding (nvtegra). On by default. Turn it off to decode in
     // software instead -- slower and it may stutter on 1080p, but it sidesteps the
     // GPU decode path, which helps tell whether the random freezes come from it.
@@ -115,6 +124,16 @@ std::string mpvLangList(const std::string& code);
 // index-matched.
 const std::vector<std::string>& langCodes();
 const std::vector<std::string>& langLabels();
+
+// A language tag as somebody else spelled it -- a track's "lang" ("fre"), a
+// Stremio subtitle addon's ("fr", "eng", sometimes "French") -- turned into a
+// name to show. Unknown tags come back capitalised but otherwise untouched,
+// which is the honest answer for the long tail of what addons send.
+std::string langLabelFor(const std::string& tag);
+
+// The subtitle language actually preferred right now: the setting, with "auto"
+// resolved to the console's own language. ISO-639-1.
+std::string preferredSubLang();
 
 // The UI sizes the Options screen offers: logical widths (what dockedUiWidth /
 // handheldUiWidth store) and their labels, index-matched. One list for both

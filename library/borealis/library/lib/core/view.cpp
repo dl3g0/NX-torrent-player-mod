@@ -619,25 +619,43 @@ void View::drawHighlight(NVGcontext* vg, Theme theme, float alpha, Style style, 
         getHighlightAnimation(&gradientX, &gradientY, &color);
 
         NVGcolor highlightColor1 = theme["brls/highlight/color1"];
+        NVGcolor highlightColor2 = theme["brls/highlight/color2"];
 
-        NVGcolor pulsationColor = RGBAf((color * highlightColor1.r) + (1 - color) * highlightColor1.r,
-            (color * highlightColor1.g) + (1 - color) * highlightColor1.g,
-            (color * highlightColor1.b) + (1 - color) * highlightColor1.b,
+        // LOCAL PATCH (see VENDORED.md): mix color1 with color2. Upstream mixes
+        // color1 with color1, which is the identity -- so the "pulsation" never
+        // pulsed and the ring only ever moved through the two gradients below.
+        // That is what left the highlight looking dead on anything too small for
+        // those gradients to read on.
+        NVGcolor pulsationColor = RGBAf((color * highlightColor1.r) + (1 - color) * highlightColor2.r,
+            (color * highlightColor1.g) + (1 - color) * highlightColor2.g,
+            (color * highlightColor1.b) + (1 - color) * highlightColor2.b,
             alpha);
 
-        NVGcolor borderColor = theme["brls/highlight/color2"];
+        NVGcolor borderColor = highlightColor2;
         borderColor.a        = 0.5f * alpha * this->getAlpha();
 
         float strokeWidth = style["brls/highlight/stroke_width"];
 
+        // LOCAL PATCH (see VENDORED.md): size the travelling gradients off the
+        // ring they travel around instead of off a constant. Upstream's fixed
+        // 50/200 radius is about right for a full-width list row, but it swamps
+        // anything small -- a poster card or a section button sits entirely
+        // inside one blob, so the whole ring lights uniformly and the motion
+        // cannot be seen. 8% of the perimeter keeps the lit arc the same
+        // FRACTION of the border at any size; the min() means a long row keeps
+        // exactly the radius it had.
+        float perimeter   = 2.0f * (width + height);
+        float outerRadius = std::min(strokeWidth * 40.0f, perimeter * 0.08f);
+        float innerRadius = outerRadius * 0.25f;
+
         NVGpaint border1Paint = nvgRadialGradient(vg,
             x + gradientX * width, y + gradientY * height,
-            strokeWidth * 10, strokeWidth * 40,
+            innerRadius, outerRadius,
             borderColor, TRANSPARENT);
 
         NVGpaint border2Paint = nvgRadialGradient(vg,
             x + (1 - gradientX) * width, y + (1 - gradientY) * height,
-            strokeWidth * 10, strokeWidth * 40,
+            innerRadius, outerRadius,
             borderColor, TRANSPARENT);
 
         nvgBeginPath(vg);

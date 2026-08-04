@@ -362,21 +362,13 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
 std::vector<stremio::Addon> usableStreamAddons(
     const std::vector<stremio::Addon>& all, const std::string& type)
 {
-    // Addons we never show: the first three can't serve a torrent we can play;
-    // the Public Domain ones work but are noise in the source list (the user
-    // asked to hide them). Matched as a substring of the addon's name.
-    static const char* kHidden[] = {
-        "WatchHub", "Local Files", "Peario",
-        "Public Domain Movies", "Public Domain Foreign Movies",
-    };
+    // The blocklist itself is stremio::isStreamAddonHidden -- the Account
+    // screen marks the same addons, so it cannot live here.
     std::vector<stremio::Addon> out;
     for (const auto& a : all)
     {
         if (!a.hasStream || !a.supportsType(type)) continue;
-        bool skip = false;
-        for (const char* bad : kHidden)
-            if (a.name.find(bad) != std::string::npos) { skip = true; break; }
-        if (skip) continue;
+        if (stremio::isStreamAddonHidden(a.name)) continue;
         out.push_back(a);
     }
     return out;
@@ -386,10 +378,16 @@ std::vector<stremio::Addon> usableStreamAddons(
 // the richer MovieDetailActivity instead; this is the episode/series path.)
 void showAddons(const std::string& authKey, const std::string& type,
                 const std::string& videoId, const std::string& label,
-                const PlayerArt& art, const WatchInfo& watch)
+                const PlayerArt& art, const WatchInfo& inWatch)
 {
     brls::Application::pushActivity(
         new LoadingActivity("Addons...", label, art.posterPath));
+
+    // The player asks the subtitle addons for this same (type, id) pair, so it
+    // travels on the WatchInfo (see AddonSourcePicker::startAddonSources, which
+    // does the same for the detail screens).
+    WatchInfo watch = inWatch;
+    watch.type      = type;
 
     stremio::fetchAddonsAsync(authKey, [type, videoId, label, art, watch](
                                            stremio::AddonsResult r) {
@@ -814,7 +812,15 @@ class AddonSourcePicker : public brls::Activity
     brls::HScrollingFrame* sourcesScroll = nullptr;  // the frame wrapping sourcesRow
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 
-    void startAddonSources() { loadAddons(); }
+    void startAddonSources()
+    {
+        // The player asks the subtitle addons for the same (type, id) pair the
+        // stream addons were asked for, so carry it on the WatchInfo it is
+        // already handed. Set here rather than in each subclass constructor:
+        // both set `type` right before this runs.
+        watch.type = type;
+        loadAddons();
+    }
 
     // One button per usable addon, the first selected. selectAddon does the
     // per-addon work (highlight + load its sources).
@@ -1077,6 +1083,62 @@ class AddonSourcePicker : public brls::Activity
     bool focusSourcesOnBuild = false;
 };
 
+// The library toggle: "+" when the account does not hold this title, "-" when
+// it does. Small and square, so it reads as an action on the line it sits on
+// rather than as another navigation button.
+//
+// The label follows stremio::inLibrary, which flips the instant the press is
+// made -- the write goes on in the background and the button only moves again
+// if the API refuses it.
+// A Button whose own callbacks can outlive it: the request it fires can land
+// after B has popped the screen, and touching a freed button is a crash. Same
+// guard as the Options screen's AsyncLabel.
+class AsyncButton : public brls::Button
+{
+  public:
+    ~AsyncButton() override { *alive = false; }
+    std::shared_ptr<bool> alive = std::make_shared<bool>(true);
+};
+
+// Binds X on a detail screen to adding/removing the title. No on-screen
+// control: borealis already draws every registered action in the footer, so the
+// binding IS the affordance -- and it costs the screen no layout, which matters
+// on a page that is already poster + synopsis + two scrolling rows.
+//
+// `host` must be the view the cursor lives under; actions are dispatched up the
+// focused view's parents, so registering on the content root reaches everything.
+void bindLibraryToggle(brls::View* host, const std::string& authKey,
+                       const stremio::LibItem& item)
+{
+    auto hint = [](const std::string& id) {
+        return stremio::inLibrary(id) ? "Remove from library"
+                                      : "Add to library";
+    };
+
+    host->registerAction(
+        hint(item.id), brls::BUTTON_X,
+        [authKey, item, hint](brls::View* v) {
+            bool add = !stremio::inLibrary(item.id);
+            // The footer follows immediately -- inLibrary has already flipped,
+            // the write goes on in the background -- and only moves back if the
+            // account refuses it.
+            auto repaint = [v, hint, id = item.id]() {
+                v->updateActionHint(brls::BUTTON_X, hint(id));
+                brls::Application::getGlobalHintsUpdateEvent()->fire();
+            };
+            stremio::setLibraryMemberAsync(
+                authKey, item, add, [repaint, add](bool ok) {
+                    repaint();
+                    if (!ok)
+                        dialog(add ? "Could not add it to your library."
+                                   : "Could not remove it from your library.");
+                });
+            repaint();
+            return true;
+        },
+        false, false, brls::SOUND_CLICK);
+}
+
 // The film detail screen: a large, full-resolution poster on the left; the
 // title, year, runtime and rating over a synopsis on the right; then the addon
 // switcher + its sources (from AddonSourcePicker) filling the right column.
@@ -1178,6 +1240,8 @@ class MovieDetailActivity : public AddonSourcePicker
 
         root->addView(right);
 
+        bindLibraryToggle(root, authKey, item);
+
         auto* frame = new GradientAppletFrame();
         frame->pushContentView(root);
         // No header bar: the title lives in the panel (Horizon-immersive, as
@@ -1240,9 +1304,17 @@ class MovieDetailActivity : public AddonSourcePicker
 class EpisodeDetailActivity : public AddonSourcePicker
 {
   public:
+    // prevId/nextId are the episodes either side of this one in (season,
+    // episode) order, "" where there is none. Passed in rather than worked out
+    // here: both callers already hold the ordered list, and this screen only
+    // ever knows about its own episode.
     EpisodeDetailActivity(std::string ak, stremio::Video episode,
-                          std::string seriesRating, PlayerArt ar, WatchInfo w)
-        : ep(std::move(episode)), seriesRating(std::move(seriesRating))
+                          std::string seriesRating, PlayerArt ar, WatchInfo w,
+                          std::string prevId = "", std::string nextId = "")
+        : ep(std::move(episode))
+        , seriesRating(std::move(seriesRating))
+        , prevId(std::move(prevId))
+        , nextId(std::move(nextId))
     {
         authKey = std::move(ak);
         art     = std::move(ar);
@@ -1301,6 +1373,7 @@ class EpisodeDetailActivity : public AddonSourcePicker
         };
         add(formatYear(ep.released));
         add("Season " + std::to_string(ep.season));
+        add("Episode " + std::to_string(ep.episode));
         if (!seriesRating.empty()) add(kStar + " " + seriesRating);
         metaLine->setText(line);
         metaLine->setFontSize(18.0f);
@@ -1317,6 +1390,113 @@ class EpisodeDetailActivity : public AddonSourcePicker
             desc->setMarginTop(12.0f);
             meta->addView(desc);
         }
+
+        // Walk the season without going back through the series screen.
+        if (!prevId.empty() || !nextId.empty())
+        {
+            auto* nav = new brls::Box();
+            nav->setAxis(brls::Axis::ROW);
+            nav->setAlignItems(brls::AlignItems::CENTER);
+            nav->setMarginTop(18.0f);
+
+            std::string series = watch.itemId;
+            PlayerArt showArt  = art;
+            std::string ak     = authKey;
+
+            // Material chevrons U+E5CB / U+E5CC, the pair the See More tile
+            // uses. In their OWN label rather than inside the button's text: a
+            // Material glyph sits high in its em, so on the text's baseline it
+            // reads as raised however small it is, and only a separate label
+            // can be nudged back down without taking the words with it.
+            // `before` puts it left of them (Previous) or right (Next).
+            // What both the button and its shoulder shortcut do. The button
+            // itself is the progress report: nothing else on this screen tells
+            // you the meta is loading, and it deliberately stays up meanwhile.
+            // The label only comes back on failure -- success replaces the
+            // screen.
+            // One at a time: both chevrons and both shoulder buttons share this,
+            // and two navigations in flight would each swap the screen out.
+            auto busy    = std::make_shared<bool>(false);
+            auto trigger = [ak, series, showArt, busy](AsyncButton* b,
+                                                       const std::string& id,
+                                                       const std::string& text) {
+                if (*busy) return;
+                *busy      = true;
+                auto alive = b->alive;
+                b->setText("...");
+                openEpisodeById(ak, series, id, showArt, true,
+                                [b, alive, text, busy]() {
+                                    *busy = false;
+                                    if (*alive) b->setText(text);
+                                });
+            };
+
+            auto arrow = [&](const char* glyph, bool before,
+                             const std::string& text, const std::string& id,
+                             float marginRight) {
+                auto* b = new AsyncButton();
+                b->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+                b->setText(text);
+                b->setFontSize(21.0f);
+                b->setMarginRight(marginRight);
+
+                auto* g = new brls::Label();
+                g->setText(glyph);
+                g->setFontSize(23.0f);
+                g->setTextColor(
+                    brls::Application::getTheme()["brls/button/default_enabled_text"]);
+                g->setMarginTop(6.0f);  // off the high bearing, onto the baseline
+                // Not the same gap either side: chevron_left carries its ink
+                // against the right of its box and chevron_right against the
+                // left, so an equal margin looks tight on one and loose on the
+                // other.
+                if (before)
+                    g->setMarginRight(16.0f);
+                else
+                    g->setMarginLeft(8.0f);
+                // The button is a Box holding one label; index 0 puts the glyph
+                // ahead of it, past the end puts it after.
+                b->addView(g, before ? 0 : 1);
+                b->registerClickAction([trigger, b, id, text](brls::View*) {
+                    trigger(b, id, text);
+                    return true;
+                });
+                return b;
+            };
+
+            // L / R do the same from anywhere on the screen, so walking a
+            // season does not mean travelling to these two buttons each time.
+            // Registered on the root: actions are dispatched up the focused
+            // view's parents, and the cursor is usually down in the sources.
+            if (!prevId.empty())
+            {
+                auto* b = arrow("\xEE\x97\x8B", true, "Previous episode",
+                                prevId, 8.0f);
+                nav->addView(b);
+                root->registerAction(
+                    "Previous episode", brls::BUTTON_LB,
+                    [trigger, b, id = prevId](brls::View*) {
+                        trigger(b, id, "Previous episode");
+                        return true;
+                    },
+                    false, false, brls::SOUND_CLICK);
+            }
+            if (!nextId.empty())
+            {
+                auto* b = arrow("\xEE\x97\x8C", false, "Next episode", nextId,
+                                0.0f);
+                nav->addView(b);
+                root->registerAction(
+                    "Next episode", brls::BUTTON_RB,
+                    [trigger, b, id = nextId](brls::View*) {
+                        trigger(b, id, "Next episode");
+                        return true;
+                    },
+                    false, false, brls::SOUND_CLICK);
+            }
+            meta->addView(nav);
+        }
+
         top->addView(meta);
         root->addView(top);
 
@@ -1356,6 +1536,7 @@ class EpisodeDetailActivity : public AddonSourcePicker
   private:
     stremio::Video ep;
     std::string seriesRating;
+    std::string prevId, nextId;
 };
 
 // An episode still (the focusable card). While it holds the focus, its caption
@@ -1501,6 +1682,8 @@ class SeriesDetailActivity : public brls::Activity
         showEpisodesMessage("Loading...", true);
 
         root->addView(right);
+
+        bindLibraryToggle(root, authKey, item);
 
         auto* frame = new GradientAppletFrame();
         frame->pushContentView(root);
@@ -1818,9 +2001,11 @@ class SeriesDetailActivity : public brls::Activity
             epArt.blurBg = false;  // a still is already busy and low-contrast
         }
         WatchInfo w;
+        std::string prevId;
         w.authKey      = authKey;
         w.itemId       = item.id;
         w.videoId      = v.id;
+        w.type         = "series";
         w.displayTitle = (v.title.empty() ? item.name : v.title) + "  (" +
                          std::to_string(v.season) + " \xC2\xB7 " +
                          std::to_string(v.episode) + ")";
@@ -1841,9 +2026,11 @@ class SeriesDetailActivity : public brls::Activity
                       });
             for (size_t i = 0; i + 1 < ord.size(); i++)
                 if (ord[i]->id == v.id) { w.nextVideoId = ord[i + 1]->id; break; }
+            for (size_t i = 1; i < ord.size(); i++)
+                if (ord[i]->id == v.id) { prevId = ord[i - 1]->id; break; }
         }
-        brls::Application::pushActivity(
-            new EpisodeDetailActivity(authKey, v, seriesRating, epArt, w));
+        brls::Application::pushActivity(new EpisodeDetailActivity(
+            authKey, v, seriesRating, epArt, w, prevId, w.nextVideoId));
     }
 
     void parkFocusOffEpisodes()
@@ -2097,4 +2284,83 @@ void openLibraryItem(const std::string& authKey, const stremio::LibItem& item)
     // that season's episodes as still cards (SeriesDetailActivity fetches the
     // meta/episodes itself).
     brls::Application::pushActivity(new SeriesDetailActivity(authKey, item, art));
+}
+
+void openEpisodeById(const std::string& authKey, const std::string& seriesId,
+                     const std::string& videoId, const PlayerArt& art,
+                     bool replaceCurrent, std::function<void()> onFail)
+{
+    if (seriesId.empty() || videoId.empty())
+    {
+        if (onFail) onFail();
+        return;
+    }
+
+    // Two callers, two shapes. The player's end-of-episode card has already
+    // popped itself, so there is nothing on screen and a loading page is right.
+    // The prev/next chevrons are pressed FROM the episode screen: pushing a
+    // loading page there flashes the old list-style screen over a gradient one
+    // for a second. So that path stays put and swaps only once the meta is in.
+    if (!replaceCurrent)
+        brls::Application::pushActivity(
+            new LoadingActivity("Next episode...", "Stremio", art.posterPath));
+
+    // Cinemeta keys on the IMDB id and carries the whole episode list, which is
+    // also where the one AFTER this comes from -- so the card keeps working
+    // episode after episode instead of only once.
+    stremio::fetchMetaAsync(
+        "https://v3-cinemeta.strem.io", "series", seriesId,
+        [authKey, seriesId, videoId, art, replaceCurrent,
+         onFail](stremio::MetaResult r) {
+            const stremio::Video* v = nullptr;
+            for (const auto& e : r.videos)
+                if (e.id == videoId) { v = &e; break; }
+            if (!r.ok || !v)
+            {
+                if (!replaceCurrent) closeLoading();
+                if (onFail) onFail();
+                dialog("Could not open that episode.");
+                return;
+            }
+
+            PlayerArt epArt = art;
+            if (!v->thumbnail.empty())
+            {
+                epArt.bgId   = v->id;
+                epArt.bgUrl  = v->thumbnail;
+                epArt.blurBg = false;  // a still is already busy and low-contrast
+            }
+
+            WatchInfo w;
+            w.authKey = authKey;
+            w.itemId  = seriesId;
+            w.videoId = v->id;
+            w.type    = "series";
+            w.displayTitle = (v->title.empty() ? "Episode" : v->title) + "  (" +
+                             std::to_string(v->season) + " \xC2\xB7 " +
+                             std::to_string(v->episode) + ")";
+
+            // The one after this, in (season, episode) order -- same rule the
+            // series screen uses when it opens an episode.
+            std::vector<const stremio::Video*> ord;
+            for (const auto& e : r.videos)
+                if (e.season >= 0) ord.push_back(&e);
+            std::sort(ord.begin(), ord.end(),
+                      [](const stremio::Video* a, const stremio::Video* b) {
+                          return a->season != b->season ? a->season < b->season
+                                                        : a->episode < b->episode;
+                      });
+            std::string prevId;
+            for (size_t i = 0; i + 1 < ord.size(); i++)
+                if (ord[i]->id == v->id) { w.nextVideoId = ord[i + 1]->id; break; }
+            for (size_t i = 1; i < ord.size(); i++)
+                if (ord[i]->id == v->id) { prevId = ord[i - 1]->id; break; }
+
+            auto* next = new EpisodeDetailActivity(
+                authKey, *v, r.imdbRating, epArt, w, prevId, w.nextVideoId);
+            // Either way one activity comes off and one goes on -- the loading
+            // page in the first case, the episode screen we were called from in
+            // the second.
+            swapLoading(next);
+        });
 }

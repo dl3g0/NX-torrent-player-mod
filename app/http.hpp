@@ -6,10 +6,11 @@
 // The app's HTTP calls. Blocking: every caller here already runs them off the
 // UI thread (brls::async) and syncs the result back.
 //
-// TLS certificates are NOT verified: the Switch ships no CA bundle, so there is
-// nothing to check a chain against. Anything sensitive crossing these calls (the
-// Stremio sign-in) is exposed to a MITM on the same network. Fixing this means
-// bundling a CA store in the romfs -- see the README's known limitations.
+// TLS certificates ARE verified, against a CA store the app ships itself at
+// romfs:/cacert.pem -- the console mounts none of its own. A rejected chain on
+// device usually means the clock, not an attacker: see verifyTls/tlsAwareErr in
+// http.cpp. The tracker announces in engine/torrent.c deliberately stay
+// unverified; the comment there says why.
 namespace http
 {
 

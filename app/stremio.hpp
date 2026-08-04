@@ -100,8 +100,9 @@ struct Addon
 {
     std::string name;
     std::string base;
-    bool hasMeta   = false;  // serves /meta/...
-    bool hasStream = false;  // serves /stream/...
+    bool hasMeta      = false;  // serves /meta/...
+    bool hasStream    = false;  // serves /stream/...
+    bool hasSubtitles = false;  // serves /subtitles/...
     std::vector<std::string> types;  // "movie", "series", ...
 
     bool supportsType(const std::string& t) const
@@ -135,10 +136,27 @@ struct Stream
                            // -1 = not given, fall back to the largest file
 };
 
+// One subtitle file an addon offers for a video.
+struct Subtitle
+{
+    std::string url;    // the .srt/.vtt itself
+    std::string lang;   // as the addon spells it: "eng", "fr", sometimes "French"
+    std::string id;     // addon-side id; names the cache file when present
+    std::string addon;  // which addon served it, so the picker can say
+};
+
 struct AddonsResult
 {
     bool ok = false;
     std::vector<Addon> addons;
+    std::string error;
+};
+struct SubtitlesResult
+{
+    // ok means at least one addon answered. No subtitle addon installed is
+    // ok with an empty list -- nothing failed, there was just nothing to ask.
+    bool ok = false;
+    std::vector<Subtitle> subs;
     std::string error;
 };
 struct MetaResult
@@ -180,10 +198,31 @@ void fetchStreamsAsync(const std::string& addonBase, const std::string& type,
                        const std::string& id,
                        std::function<void(StreamsResult)> done);
 
+// Every installed subtitle addon asked for one video id, merged into a single
+// list (duplicate URLs dropped, the preferred subtitle language first). One
+// addon failing does not sink the rest. `type` is "movie" or "series".
+void fetchSubtitlesAsync(const std::string& authKey, const std::string& type,
+                         const std::string& videoId,
+                         std::function<void(SubtitlesResult)> done);
+
+// Downloads one subtitle into the app's subtitle cache and calls back on the UI
+// thread with the on-disk path, or "" on failure. A file already there is
+// returned without touching the network, so re-picking a subtitle is free.
+void downloadSubtitleAsync(const Subtitle& sub,
+                           std::function<void(std::string)> done);
+
 // Full-text search against Cinemeta's catalog, movies then series, merged into
 // one LibItem list (id/name/type/poster). One background call, one UI callback.
 void fetchSearchAsync(const std::string& query,
                       std::function<void(LibraryResult)> done);
+
+// The "extra" props a catalog request can carry. The default is the plain
+// catalog: every genre, from the top.
+struct CatalogQuery
+{
+    std::string genre;  // "" = no genre filter
+    int skip = 0;       // items to skip -- this is how a Stremio catalog pages
+};
 
 // A meta catalog ("popular", "top", ...) from an addon (Cinemeta by default):
 // {base}/catalog/{type}/{catalogId}.json. The metas come back as LibItems
@@ -192,6 +231,51 @@ void fetchSearchAsync(const std::string& query,
 void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
                        const std::string& catalogId,
                        std::function<void(LibraryResult)> done);
+// The same, filtered and/or paged. An addon that does not support an extra
+// simply ignores it, so this is never worse than the call above.
+void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
+                       const std::string& catalogId, const CatalogQuery& query,
+                       std::function<void(LibraryResult)> done);
+
+// The genres an addon offers for one of its catalogs, read off its manifest
+// (catalogs[].extra where name is "genre"). Empty when the catalog does not
+// filter by genre -- and also when the manifest cannot be read, which amounts
+// to the same thing for the UI. Cached per (addon, type, catalog).
+void fetchCatalogGenresAsync(const std::string& addonBase,
+                             const std::string& type,
+                             const std::string& catalogId,
+                             std::function<void(std::vector<std::string>)> done);
+
+// Whether the app deliberately ignores this addon's STREAMS. Some of them
+// cannot serve a torrent it can play at all; the Public Domain ones can, but
+// they are noise in every source list. Matched on a substring of the name.
+// Says nothing about the addon's metadata or subtitles, which are still used.
+bool isStreamAddonHidden(const std::string& name);
+
+// How many titles the account holds, or -1 when the library has not been
+// fetched this session and the honest answer is "not known yet".
+int libraryCount();
+
+// Whether `itemId` is in the account's library right now. Reads the set the
+// last fetchLibraryAsync filled, plus whatever has been toggled since -- so a
+// screen opened from a catalog or a search, whose LibItem carries no membership
+// flags at all, still knows which way round its button goes.
+bool inLibrary(const std::string& itemId);
+
+// Adds `item` to the library, or removes it. Stremio deletes nothing: a removed
+// item is simply one with "removed": true, so both directions are the same
+// write. The local answer to inLibrary() flips immediately; `done` reports on
+// the UI thread whether the API actually accepted it.
+void setLibraryMemberAsync(const std::string& authKey, const LibItem& item,
+                           bool add, std::function<void(bool)> done);
+
+// Clears an item's watch state on the account, which is what takes it out of
+// Continue Watching -- that row is derived from the state, not from a list of
+// its own. A "temp" item (one the account only holds because it was watched,
+// never added on purpose) is dropped from the library at the same time, so it
+// does not sit there emptied out. Calls back on the UI thread.
+void clearWatchStateAsync(const std::string& authKey, const std::string& itemId,
+                          std::function<void(bool)> done);
 
 // authKey persistence, so a sign-in survives a restart.
 bool saveAuthKey(const std::string& key);
@@ -246,8 +330,13 @@ void selectActiveView(int index);
 std::string blurredPosterPath(const std::string& posterPath);
 
 // Drops the cached addon collection, so the next fetchAddonsAsync goes to the
-// network again. Sign out / sign in as another account.
+// network again. Sign out / sign in as another account. Also drops the meta
+// cache below.
 void clearAddonCache();
+
+// Forgets every cached meta answer. fetchMetaAsync keeps them for the session
+// so that walking a season costs no network -- see the note at its definition.
+void clearMetaCache();
 
 // Bumped whenever playback pushes newer progress to the account. A view stores
 // the value it last rendered and reloads when this differs, so stacked lists
@@ -298,6 +387,10 @@ class StremioTab : public brls::Box
   private:
     void promptEmail();
     void promptPassword();
+    // One row of the sign-in card: a caption over its value, the whole thing
+    // focusable and opening the keyboard. Returns the value label to fill in.
+    brls::Box* loginField(const char* caption, const char* placeholder,
+                          std::function<void()> onPress, brls::Label** value);
     void doLogin();
     void onAuthenticated(const std::string& key, bool announce);
     void loadLibrary();
@@ -344,11 +437,20 @@ class StremioTab : public brls::Box
     // Catalog views show a screenful and put the rest behind a See More tile,
     // shaped like the items it follows, which opens the section full-screen.
     bool capped() const;
+    // catType/catId identify the catalog the items came from, so the section
+    // page can keep querying it -- for another page as you scroll, or for a
+    // different genre. See openSection.
     brls::Box* buildSeeMoreCard(const std::string& title,
-                                std::vector<stremio::LibItem> all);
+                                std::vector<stremio::LibItem> all,
+                                std::string catType, std::string catId);
     brls::Box* buildSeeMoreRow(const std::string& title,
-                               std::vector<stremio::LibItem> all);
-    void openSection(std::string title, std::vector<stremio::LibItem> items);
+                               std::vector<stremio::LibItem> all,
+                               std::string catType, std::string catId);
+    void openSection(std::string title, std::vector<stremio::LibItem> items,
+                     std::string catType, std::string catId);
+    // "movie" or "series" for the view we are on -- the type half of every
+    // catalog request the Popular views make.
+    const char* catalogType() const;
     void addHeading(const std::string& title, float top, float bottom, float left);
     float headingInset() const;  // where a heading starts, per style
     // What the heading over the current view's strip says.
@@ -357,6 +459,11 @@ class StremioTab : public brls::Box
     // is no second section (everything but Popular Movies / Shows).
     const std::vector<stremio::LibItem>* featuredCache();
     void loadFeatured(const char* type);  // one attempt per type per session
+    // X on a Continue Watching tile takes it out of that row (by clearing its
+    // watch state, which is what the row is derived from). No-op in every other
+    // view -- the footer hint comes from the registered action, so registering
+    // it where it does nothing would advertise a key that does nothing.
+    void bindRemoveFromContinue(brls::Box* card, const stremio::LibItem& it);
     // Shared by both styles: the focusable row shell (size, click, tap) and the
     // poster that fills in once the artwork lands.
     brls::Box* newRowShell(const stremio::LibItem& it, float height);
@@ -391,6 +498,7 @@ class StremioTab : public brls::Box
     brls::Box* loginBox      = nullptr;  // the sign-in form
     brls::Box* libraryBox    = nullptr;  // the list, once signed in
     brls::Label* emailLabel  = nullptr;
+    brls::Label* passLabel   = nullptr;  // bullets, never the password
     brls::Label* statusLabel = nullptr;
     brls::Button* loginBtn   = nullptr;
     brls::Label* libStatus   = nullptr;
@@ -436,6 +544,12 @@ class StremioTab : public brls::Box
     // pointer to their Image; clearViews() deletes those, so a fetch that lands
     // afterwards must know not to touch it.
     std::shared_ptr<bool> rowsAlive = std::make_shared<bool>(true);
+
+    // Set, while a pushed page (openSection) builds cards, to that page's own
+    // token -- so its poster fetches die with the page rather than with the
+    // tab's list, which outlives it. Null the rest of the time, meaning "use
+    // rowsAlive". See attachPoster.
+    std::shared_ptr<bool> artToken;
 
     // Cleared by the destructor. Switching tabs deletes this view on the spot
     // (TabFrame::addTab removeView()s the old tab), so a login/library request

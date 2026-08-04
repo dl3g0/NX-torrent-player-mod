@@ -5,7 +5,11 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <set>
 #include <string>
+#include <vector>
+
+#include "stremio.hpp"  // stremio::Subtitle, for the addon subtitle picker
 
 struct mpv_handle;
 struct mpv_render_context;
@@ -48,6 +52,10 @@ struct WatchInfo
     std::string authKey;
     std::string itemId;   // library _id ("tt1234567")
     std::string videoId;  // what is playing: itemId for a film, "tt123:1:3" ep
+    // "movie" or "series": the other half of the (type, id) pair every addon
+    // resource is addressed by. Only the subtitle lookup needs it -- the stream
+    // was already picked by the browser before the player was pushed.
+    std::string type;
     // The episode after this one, in series order. When an episode plays to its
     // end, the library pointer is advanced to this so the show stays in Continue
     // Watching on the next episode instead of vanishing. Empty for films and the
@@ -103,6 +111,66 @@ class MpvView : public brls::Box
     // resumes), and reads the tracks straight off mpv.
     void openTrackMenu();
 
+    // Subtitles from the account's Stremio subtitle addons. The list is asked
+    // for once, in the background, as soon as mpv has opened the file -- so by
+    // the time anyone presses X it is there and the menu can just show it.
+    // Needs watch.authKey/type/videoId; a local .torrent has none of those and
+    // the row says so instead.
+    enum class SubFetch
+    {
+        Idle,    // not asked (no Stremio context, or the file is not open yet)
+        Busy,    // in flight
+        Done,    // answered; onlineSubs may still be empty
+        Failed,  // every addon errored -- onlineSubErr says why
+    };
+    void fetchOnlineSubs();
+    // Downloads `index` of onlineSubs and hands it to mpv, selected.
+    void loadOnlineSub(int index);
+    std::vector<stremio::Subtitle> onlineSubs;
+    SubFetch onlineSubState = SubFetch::Idle;
+    std::string onlineSubErr;
+    // Which of onlineSubs have been handed to mpv. They are mpv tracks from
+    // then on, so the menu lists them from the track list and skips them here
+    // -- the same subtitle must not appear twice in the one Subtitles list.
+    std::set<int> loadedSubs;
+
+    // Subtitle timing offset (mpv "sub-delay"), in seconds: positive shows a
+    // line later. L/R adjust it, but only while the settings panel is open --
+    // in the player itself those two buttons are the speed (see nudgeSpeed).
+    double subDelay = 0.0;
+    void setSubDelay(double seconds);  // clamps, pushes to mpv, reports
+    // Set by the settings panel to its delay row, so an L/R nudge updates the
+    // number on screen. Null when the panel is closed.
+    std::function<void(double)> subDelaySink;
+
+    // Playback speed, stepped through kSpeeds by L/R in the player.
+    double playSpeed = 1.0;
+    void nudgeSpeed(int dir);  // dir -1 slower, +1 faster
+
+    // The "next episode" card, shown over the last seconds of an episode that
+    // has one. A (while playing) or a tap on it leaves the player and opens the
+    // next episode's sources; ignoring it just lets the file end as before.
+    void updateNextCard();     // per frame: show/hide against the time left
+    void goToNextEpisode();    // pop out of the player and open the next one
+    brls::Box* nextCard      = nullptr;
+    brls::Label* nextCardSub = nullptr;  // "Season 1 . Episode 4"
+    bool nextCardShown       = false;
+
+    // The settings panel is up. Suppresses the per-frame stick scrub, which is
+    // polled straight off the controller and so would otherwise keep seeking
+    // the video from under a menu that has the cursor.
+    bool settingsOpen = false;
+
+    // A pill, top centre, that shows what an L/R press just did and fades out
+    // again. Text only: it says "Subtitles +0.10 s" or "Speed 1.25x", which
+    // needs no glyph to be understood.
+    void flashPill(const std::string& text);
+    void updatePill();  // hides it again after its moment
+    brls::Box* hintPill      = nullptr;
+    brls::Label* pillLabel   = nullptr;
+    bool pillFlashActive     = false;
+    std::chrono::steady_clock::time_point pillFlashUntil;
+
     // Touch controls: tap the video to play/pause (and reveal the bar), tap the
     // seek bar to jump to that point, tap the Options hint to open the track menu.
     void onPlayPause();                 // the A-button behaviour, reused by a tap
@@ -124,6 +192,12 @@ class MpvView : public brls::Box
     // of the ZR panel. Single snapshots hide the shape of the problem (a rate
     // read just before it collapses looks healthy); the trend is the evidence.
     void logStats();
+
+    // Whether mpv currently has the loudness-boost filter on its chain. The
+    // boost is handheld-only and the console can be docked mid-film, so this
+    // tracks what was pushed to mpv to keep pumpEvents from re-setting "af"
+    // every frame.
+    bool boostApplied = false;
 
     torrentfs* tfs = nullptr;
     mpv_handle* mpv = nullptr;

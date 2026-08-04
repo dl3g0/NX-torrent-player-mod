@@ -60,9 +60,12 @@ The entry point is `int main()` in `app/main.cpp`.
   The peer loop is a single `poll()`, so it needs ~5 — this is *not* what limits
   peer count (see the ENOBUFS patch in `library/borealis/VENDORED.md`).
 - **FAT32 caps a file at 4 GB**: the piece cache is chunked for this reason.
-- The Switch has **no CA bundle**: curl runs with `SSL_VERIFYPEER`/`VERIFYHOST`
-  off. A password and a persistent token cross that connection — worth fixing
-  (bundle a CA in the romfs) before doing more with the Stremio account.
+- The Switch mounts **no CA store**, so the app ships one: `assets/cacert.pem`
+  is copied into the romfs and `app/http.cpp` points `CURLOPT_CAINFO` at
+  `romfs:/cacert.pem` with verification on. curl here is 7.69/mbedTLS, so
+  `CURLOPT_CAINFO_BLOB` does not exist — the bundle has to be a real file. A
+  rejected chain on device is usually **the console clock**, not an attacker.
+  The tracker announces in `engine/torrent.c` stay unverified on purpose.
 - `ScrollingFrame::setContentView()` detaches the view and forces its width, so
   **margins on a content view are ignored** — put the inset on the rows.
 - A **GONE box's children stay focusable** (`Box::getDefaultFocus()` recurses

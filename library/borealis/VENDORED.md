@@ -74,6 +74,38 @@ truncated labels; three periods sit on the baseline like the rest of the text.
 
 The patch is marked with a `LOCAL PATCH` comment in the source.
 
+### 6. `library/lib/core/view.cpp` + `library/lib/core/animation.cpp` — focus highlight animation
+
+Three changes, all so the Horizon-style shimmer on the focus ring is actually
+visible. The first two are in `View::drawHighlight`:
+
+- **`pulsationColor` mixes `color1` with `color2`.** Upstream mixes `color1`
+  with `color1`, which is the identity — the animated `color` term cancels out
+  and the base stroke never pulses. All that was left of the effect were the two
+  radial gradients below.
+- **The gradient radii scale with the view.** Upstream uses a fixed
+  `strokeWidth * 10` / `strokeWidth * 40` (50 / 200 px), which is about right on
+  a full-width list row but swamps anything small: a poster card or a section
+  button sits entirely inside one blob, so the ring lights up uniformly and the
+  travel cannot be seen. They are now `min(original, perimeter * 0.08)`, so the
+  lit arc is the same fraction of the border at any size and a long row keeps
+  exactly the radius it had.
+
+...and the third is in `updateHighlightAnimation` (`animation.cpp`):
+
+- **The colour pulse runs at the orbit's rate.** Upstream drives it with
+  `/ HIGHLIGHT_SPEED * 2.0` against the gradients' `/ HIGHLIGHT_SPEED / 3.0` —
+  six times faster, a ~0.4 s cycle, which strobes. It was invisible upstream
+  because of the identity mix above, so nobody hit it. Now `/ 3.0` like the
+  gradients: a ~2.4 s breath.
+
+`app/theme.cpp` (`applyAccent`) is the other half of this: it sets `color1` to
+the accent and `color2` to a lighter tint of it. Setting both to the same colour
+— which it used to do, to kill borealis' default cyan — makes the gradients
+invisible however they are sized, since they then match what they travel over.
+
+Both patches are marked with a `LOCAL PATCH` comment in the source.
+
 ## Updating
 
 Re-cloning upstream **drops the patch** — re-apply it, and check this file's

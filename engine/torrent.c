@@ -619,7 +619,11 @@ static int announce_http(const char *tracker, const char *hash_enc,
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, curl_cancel_cb);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, cancel);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    // Pas de bundle CA sur Switch : on désactive la vérif TLS pour l'instant
+    // Deliberately unverified, unlike app/http.cpp (which checks against the CA
+    // bundle in romfs). An announce carries nothing private -- an info_hash and
+    // a peer id, both already public to the swarm -- while https trackers are
+    // full of expired and self-signed certificates. Turning the check on here
+    // would drop working trackers to protect nothing.
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "SwitchTorrent/0.1");

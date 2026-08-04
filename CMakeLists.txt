@@ -112,6 +112,10 @@ if (PLATFORM_SWITCH)
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/stremio-icon.png ${CMAKE_BINARY_DIR}/resources/stremio-icon.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/local-tab-icon.png ${CMAKE_BINARY_DIR}/resources/local-icon.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/SpaceGrotesk-Medium.ttf ${CMAKE_BINARY_DIR}/resources/SpaceGrotesk-Medium.ttf
+        # The CA store curl checks certificates against (Mozilla's roots, from
+        # curl.se/ca). The console mounts none, so it has to ride in the romfs --
+        # refresh it from there when roots rotate. See app/http.cpp.
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/cacert.pem ${CMAKE_BINARY_DIR}/resources/cacert.pem
         COMMAND ${NX_ELF2NRO_EXE} ${PROJECT_NAME}.elf ${PROJECT_NAME}.nro --icon=${PROJECT_ICON} --nacp=${PROJECT_NAME}.nacp --romfsdir=${CMAKE_BINARY_DIR}/resources
     )
 

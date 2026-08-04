@@ -4,6 +4,7 @@
 
 #include <switch.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -146,6 +147,43 @@ std::string mpvLangList(const std::string& code)
     return c.empty() ? "" : c;
 }
 
+std::string langLabelFor(const std::string& tag)
+{
+    if (tag.empty()) return "";
+    std::string t;
+    for (char c : tag) t += (char)std::tolower((unsigned char)c);
+
+    for (const auto& l : kLangs)
+    {
+        if (!std::strcmp(l.code, "auto")) continue;
+        // The mpv column is exactly the set of spellings that mean this
+        // language ("fr,fre,fra"), which is the same set an addon picks from.
+        std::string list = l.mpv;
+        for (size_t a = 0; a <= list.size();)
+        {
+            size_t b = list.find(',', a);
+            if (b == std::string::npos) b = list.size();
+            if (list.compare(a, b - a, t) == 0) return l.label;
+            a = b + 1;
+        }
+        // Some addons send the English name instead of a code.
+        std::string lbl;
+        for (const char* p = l.label; *p; p++)
+            lbl += (char)std::tolower((unsigned char)*p);
+        if (lbl == t) return l.label;
+    }
+
+    // Not one of ours: hand it back capitalised rather than inventing a name.
+    t[0] = (char)std::toupper((unsigned char)t[0]);
+    return t;
+}
+
+std::string preferredSubLang()
+{
+    const std::string& s = cfg.subLang;
+    return s == "auto" || s.empty() ? consoleLang() : s;
+}
+
 const std::vector<std::string>& langCodes()
 {
     static std::vector<std::string> v = [] {
@@ -213,6 +251,7 @@ void load()
     cfg.subLang      = readStr(body, "subLang", cfg.subLang);
     cfg.subtitles    = readBool(body, "subtitles", cfg.subtitles);
     cfg.hwDecode     = readBool(body, "hwDecode", cfg.hwDecode);
+    cfg.audioBoost   = readBool(body, "audioBoost", cfg.audioBoost);
 
     cfg.accent       = readStr(body, "accent", cfg.accent);
     cfg.themeVariant = readStr(body, "themeVariant", cfg.themeVariant);
@@ -250,6 +289,7 @@ bool save()
                  "  \"subLang\": \"%s\",\n"
                  "  \"subtitles\": %s,\n"
                  "  \"hwDecode\": %s,\n"
+                 "  \"audioBoost\": %s,\n"
                  "  \"dockedUiWidth\": %d,\n"
                  "  \"handheldUiWidth\": %d,\n"
                  "  \"accent\": \"%s\",\n"
@@ -262,7 +302,8 @@ bool save()
                  cfg.ramStream ? "true" : "false",
                  cfg.checkUpdates ? "true" : "false", cfg.audioLang.c_str(),
                  cfg.subLang.c_str(), cfg.subtitles ? "true" : "false",
-                 cfg.hwDecode ? "true" : "false", cfg.dockedUiWidth,
+                 cfg.hwDecode ? "true" : "false",
+                 cfg.audioBoost ? "true" : "false", cfg.dockedUiWidth,
                  cfg.handheldUiWidth, cfg.accent.c_str(),
                  cfg.themeVariant.c_str(), cfg.listStyle.c_str());
     std::fclose(f);

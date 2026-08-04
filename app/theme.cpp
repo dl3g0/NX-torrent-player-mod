@@ -187,8 +187,7 @@ void drawStremioMark(NVGcontext* vg, float x, float y, float size)
 void applyAccent()
 {
     // The focus highlight too: borealis' default glow is cyan, which clashes
-    // with every accent here. color2 is the border stroke, color1 the pulsating
-    // glow; both to the accent gives a clean solid focus ring.
+    // with every accent here.
     //
     // Set on BOTH variants: getTheme() returns the light OR dark table depending
     // on the console's system theme, and drawing may well use the one we did not
@@ -196,12 +195,26 @@ void applyAccent()
     // the startup variant was patched.)
     NVGcolor accent = current().accent;
     NVGcolor white  = nvgRGB(0xff, 0xff, 0xff);
+
+    // color1 is the flat border stroke; color2 paints the TWO radial gradients
+    // that orbit the ring every couple of seconds -- the Horizon shimmer. They
+    // used to both be the accent, which is why the ring sat there dead: the
+    // travelling gradients were the same colour as what they travel over, so
+    // there was nothing to see. A lighter tint of the accent keeps the ring on
+    // palette (no cyan) and gives the motion something to show.
+    //
+    // (borealis' own "pulsation" of the base stroke is a no-op upstream --
+    // view.cpp mixes color1 with color1 -- so color2 is the whole effect.)
+    NVGcolor glow = nvgRGBf(accent.r + (1.0f - accent.r) * 0.62f,
+                            accent.g + (1.0f - accent.g) * 0.62f,
+                            accent.b + (1.0f - accent.b) * 0.62f);
+
     for (brls::Theme* t : { &brls::Theme::getLightTheme(),
                             &brls::Theme::getDarkTheme() })
     {
         t->addColor("brls/accent", accent);
         t->addColor("brls/highlight/color1", accent);
-        t->addColor("brls/highlight/color2", accent);
+        t->addColor("brls/highlight/color2", glow);
         // The selected tab is BUTTONSTYLE_PRIMARY: its fill is this color, and
         // its label goes white so it stays readable on it (the dark theme's
         // default primary text is near-black, made for a light fill).

@@ -15,6 +15,40 @@ static size_t writeCb(char* ptr, size_t size, size_t nmemb, void* userdata)
     return size * nmemb;
 }
 
+// Turn certificate checking on, against the CA store we ship ourselves. The
+// console mounts none, so the roots ride along in the nro's romfs as
+// cacert.pem (Mozilla's, from curl.se/ca -- see the CMakeLists copy).
+//
+// It has to be a *file*: curl here is 7.69 with the mbedTLS backend, so
+// CURLOPT_CAINFO_BLOB (7.77+) does not exist. romfs goes through newlib's
+// devoptab, so mbedtls_x509_crt_parse_file fopen()s it like any other path.
+// It is re-parsed on every handshake -- an ASN.1 walk over ~120 roots, no
+// signature maths, which is small next to the handshake it precedes.
+static void verifyTls(CURL* curl)
+{
+#ifdef __SWITCH__
+    curl_easy_setopt(curl, CURLOPT_CAINFO, "romfs:/cacert.pem");
+#endif
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+}
+
+// curl's own words for a rejected chain ("SSL peer certificate ... not OK") send
+// people looking for a network fault. On a console the overwhelmingly likely
+// cause is the clock: a certificate is only valid between two dates, and a
+// Switch that lost its RTC charge boots in 2000 and fails every host at once.
+static std::string tlsAwareErr(CURLcode rc, const char* errbuf)
+{
+    if (rc == CURLE_PEER_FAILED_VERIFICATION)
+        return "could not verify the site's certificate -- check the console's "
+               "date and time, a wrong clock rejects every site";
+    // Not a network fault at all: the bundle is missing from the romfs, so the
+    // nro was built without the CMakeLists copy of assets/cacert.pem.
+    if (rc == CURLE_SSL_CACERT_BADFILE)
+        return "the bundled certificate store is missing or unreadable";
+    return errbuf[0] ? errbuf : curl_easy_strerror(rc);
+}
+
 // Shared POST-JSON helper. Returns the body, or sets err.
 bool postJson(const char* url, const std::string& body, std::string& resp,
               std::string& err)
@@ -40,10 +74,7 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    // The Switch has no CA bundle mounted, so libcurl cannot verify the chain.
-    // Explicit rather than silently inherited -- a password goes through here.
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    verifyTls(curl);  // the Stremio password goes through here
 
     CURLcode rc = curl_easy_perform(curl);
     curl_slist_free_all(hdrs);
@@ -51,7 +82,7 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
 
     if (rc != CURLE_OK)
     {
-        err = errbuf[0] ? errbuf : curl_easy_strerror(rc);
+        err = tlsAwareErr(rc, errbuf);
         return false;
     }
     return true;
@@ -85,14 +116,13 @@ bool get(const std::string& url, std::string& resp, std::string& err,
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    verifyTls(curl);
     CURLcode rc = curl_easy_perform(curl);
     if (hdrs) curl_slist_free_all(hdrs);
     curl_easy_cleanup(curl);
     if (rc != CURLE_OK)
     {
-        err = errbuf[0] ? errbuf : curl_easy_strerror(rc);
+        err = tlsAwareErr(rc, errbuf);
         return false;
     }
     return true;
@@ -161,8 +191,7 @@ bool download(const std::string& url, const std::string& path, std::string& err,
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 30L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);  // GitHub redirects to a CDN
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    verifyTls(curl);  // this one lands an executable nro on the SD card
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progressCb);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
@@ -176,8 +205,7 @@ bool download(const std::string& url, const std::string& path, std::string& err,
     if (rc != CURLE_OK)
     {
         std::remove(path.c_str());
-        err = ctx.aborted ? "cancelled"
-                          : (errbuf[0] ? errbuf : curl_easy_strerror(rc));
+        err = ctx.aborted ? "cancelled" : tlsAwareErr(rc, errbuf);
         return false;
     }
     // A 404 is a perfectly successful transfer of an error page, and would land

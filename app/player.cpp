@@ -1,5 +1,6 @@
 #include "player.hpp"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -20,8 +21,10 @@
 #include <cctype>
 
 #include "appdata.hpp"
+#include "browse.hpp"  // openEpisodeById, for the next-episode card
 #include "config.hpp"
 #include "stremio.hpp"  // cached artwork -> blurred background
+#include "theme.hpp"    // muted text for the in-menu hints
 
 extern "C" {
 #include "torrentfs.h"
@@ -51,6 +54,51 @@ void* getProcAddress(void*, const char* name)
 // screen reaches 100% / hands over to the video). Bump this for smoother
 // playback on scarce swarms at the cost of a longer wait.
 constexpr double kBufferSecs = 15.0;
+
+// The loudness boost (Options -> Boost quiet audio). Realtime normalisation to
+// a consistent target: quiet 5.1 dialogue comes up without clipping the loud
+// scenes, and a native stereo track is left roughly where it is.
+constexpr const char* kAudioBoostFilter = "dynaudnorm=f=200:g=11:p=0.9:m=10";
+
+// How long before the end the "next episode" card comes up.
+constexpr double kNextCardSecs = 30.0;
+
+// "tt1234567:1:4" -> "Season 1 \xC2\xB7 Episode 4", or "" when the id does not
+// carry the pair (a film, or a catalog whose ids are shaped differently).
+std::string episodeLabelOf(const std::string& videoId)
+{
+    size_t c1 = videoId.find(':');
+    if (c1 == std::string::npos) return "";
+    size_t c2 = videoId.find(':', c1 + 1);
+    if (c2 == std::string::npos) return "";
+    std::string s = videoId.substr(c1 + 1, c2 - c1 - 1);
+    std::string e = videoId.substr(c2 + 1);
+    if (s.empty() || e.empty()) return "";
+    if (s.find_first_not_of("0123456789") != std::string::npos) return "";
+    if (e.find_first_not_of("0123456789") != std::string::npos) return "";
+    return "Season " + s + " \xC2\xB7 Episode " + e;
+}
+
+// The playback speeds offered, in order. L/R in the player step through this
+// list and the panel's Speed row lists it -- one definition so the two cannot
+// disagree. mpv resamples the audio to keep the pitch at any of them.
+const std::vector<double> kSpeeds = { 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0 };
+const std::vector<std::string> kSpeedLabels = { "0.5x",  "0.75x", "Normal",
+                                                "1.25x", "1.5x",  "1.75x",
+                                                "2x" };
+
+// Whether the boost should be on right now. Handheld only: the built-in
+// speakers are what it exists for -- docked, the TV or receiver has all the
+// gain anyone needs and the compression would only flatten the mix.
+//
+// appletGetOperationMode() is a cached read of a variable libnx updates from
+// the applet message loop borealis already pumps, not an IPC round trip, so it
+// is safe on a per-frame path -- unlike the nifm call that used to freeze it.
+bool audioBoostWanted()
+{
+    return config::get().audioBoost
+           && appletGetOperationMode() == AppletOperationMode_Handheld;
+}
 
 // Seconds the cursor moves per D-pad press while scrubbing.
 constexpr double kSeekStepSecs = 5.0;
@@ -131,6 +179,21 @@ void popActivities(int n)
     if (n <= 0) return;
     brls::Application::popActivity(brls::TransitionAnimation::NONE,
                                    [n]() { popActivities(n - 1); });
+}
+
+// The same, with a final step. Each pop completes asynchronously, so whatever
+// comes next has to hang off the last one's callback rather than run straight
+// after the call.
+void popActivitiesThen(int n, std::function<void()> then)
+{
+    if (n <= 0)
+    {
+        if (then) then();
+        return;
+    }
+    brls::Application::popActivity(brls::TransitionAnimation::NONE, [n, then]() {
+        popActivitiesThen(n - 1, then);
+    });
 }
 
 } // namespace
@@ -261,10 +324,11 @@ bool MpvView::startMpv()
     // standard downmix levels so the centre (dialogue) folds in at full strength.
     mpv_set_option_string(mpv, "audio-normalize-downmix", "no");
     // Even so a 5.1 master downmixed to stereo sits well below a native stereo
-    // track on the Switch's output. dynaudnorm lifts perceived loudness to a
-    // consistent target in realtime -- quiet 5.1 dialogue comes up without
-    // clipping loud scenes, and native stereo is left roughly where it is.
-    mpv_set_option_string(mpv, "af", "dynaudnorm=f=200:g=11:p=0.9:m=10");
+    // track on the Switch's own speakers, which is what the boost is for (see
+    // audioBoostWanted -- handheld only, and switchable in Options). Kept in
+    // sync with the dock state from pumpEvents afterwards.
+    boostApplied = audioBoostWanted();
+    mpv_set_option_string(mpv, "af", boostApplied ? kAudioBoostFilter : "");
 
     // Preferred track languages (Options). mpv falls back to the file's default
     // track when nothing matches, so a wrong guess costs nothing.
@@ -308,6 +372,15 @@ bool MpvView::startMpv()
     // "scale" -- mpv's default -- would leave those alone. Border names are the
     // 0.37 spelling; they became sub-outline-* in 0.38.
     mpv_set_option_string(mpv, "sub-ass-override", "yes");
+    // Subtitles pulled from an addon are frequently CP1252, not UTF-8 (that is
+    // what OpenSubtitles has on file for most European languages), and this
+    // toolchain's mpv is built without uchardet -- so "auto" cannot detect
+    // anything and every accented character came out mangled. Naming a codepage
+    // without a "+" means "use it only if the text is not valid UTF-8", so a
+    // UTF-8 file is still read as UTF-8. CP1252 is the right guess for the
+    // languages this app offers; a Cyrillic or Greek subtitle would still need
+    // its own, which is a setting nobody has asked for yet.
+    mpv_set_option_string(mpv, "sub-codepage", "cp1252");
     mpv_set_option_string(mpv, "cache", "yes");
     // Never let mpv auto-pause playback to rebuffer -- once we start, we keep
     // playing. We do the initial buffering ourselves: start paused, fill the
@@ -418,6 +491,15 @@ void MpvView::registerPlayerActions()
         "Pause", brls::BUTTON_A,
         [this](brls::View*) {
             if (controlsLocked) { flashLock(); return true; }
+            // While the next-episode card is up and the video is running, A
+            // takes it -- that is what the card is asking for and what every
+            // other player does. Paused, A still resumes: the card stays put
+            // and the tap on it is the way through.
+            if (nextCardShown && !userPaused && !seeking)
+            {
+                goToNextEpisode();
+                return true;
+            }
             onPlayPause();
             return true;
         },
@@ -446,6 +528,24 @@ void MpvView::registerPlayerActions()
         "Seek +", brls::BUTTON_RIGHT,
         [scrub](brls::View*) { return scrub(kSeekStepSecs); },
         false, true, brls::SOUND_NONE);
+
+    // L / R step the playback speed. These actions only fire while the player
+    // itself has the cursor -- with the settings panel up, focus is inside it
+    // and the same two buttons are the subtitle delay there (see openTrackMenu).
+    auto speedStep = [this](int dir) {
+        if (controlsLocked) { flashLock(); return true; }
+        if (!ready || !mpv) return true;
+        nudgeSpeed(dir);
+        return true;
+    };
+    this->registerAction(
+        "Slower", brls::BUTTON_LB,
+        [speedStep](brls::View*) { return speedStep(-1); },
+        false, false, brls::SOUND_NONE);
+    this->registerAction(
+        "Faster", brls::BUTTON_RB,
+        [speedStep](brls::View*) { return speedStep(1); },
+        false, false, brls::SOUND_NONE);
 
     // ZR toggles the network/torrent info panel.
     this->registerAction(
@@ -657,21 +757,272 @@ class TrackCell : public brls::SelectorCell
         detail->setAnimated(false);
     }
 };
+
+// The settings panel's own activity. Translucent, so borealis keeps drawing the
+// player underneath -- which is the whole point of a side panel: the picture
+// stays on screen while you change what is drawn over it. (PlayerActivity is
+// opaque, so the stack drawn is exactly those two; the panel's nanovg calls
+// flush after MpvView::draw has rendered mpv, so they land on top of the video
+// rather than under it.)
+class PlayerSettingsActivity : public brls::Activity
+{
+  public:
+    PlayerSettingsActivity(brls::View* content, std::function<void()> onGone)
+        : content(content), onGone(std::move(onGone))
+    {
+    }
+    ~PlayerSettingsActivity() override
+    {
+        if (onGone) onGone();
+    }
+    bool isTranslucent() override { return true; }
+    brls::View* createContentView() override { return content; }
+
+  private:
+    brls::View* content;
+    std::function<void()> onGone;
+};
+
+// How wide the panel is, in the logical space borealis lays out in. Wide enough
+// for "Subtitles" and a track name beside it, narrow enough to leave most of
+// the frame showing.
+constexpr float kPanelW = 560.0f;
+
+// The subtitle delay as it is shown, everywhere it is shown. Two decimals, so a
+// 0.1 step off a preset reads as "+0.10 s" rather than being rounded away into
+// the nearest preset -- which is what the old dropdown did.
+std::string subDelayText(double d)
+{
+    if (d == 0.0) return "None";
+    char b[32];
+    std::snprintf(b, sizeof(b), "%+.2f s", d);
+    return b;
+}
+
+// A section heading inside the panel: the label in the accent, over a hairline.
+// brls::Header would do, but it is sized for a full-width settings list and its
+// rule runs the whole way across -- too heavy repeated three times in 560px.
+brls::Box* panelSection(const char* title, float marginTop)
+{
+    auto* box = new brls::Box();
+    box->setAxis(brls::Axis::COLUMN);
+    box->setMargins(marginTop, 0.0f, 6.0f, 0.0f);
+
+    auto* l = new brls::Label();
+    l->setText(title);
+    l->setFontSize(17.0f);
+    l->setTextColor(theme::accent());
+    l->setMarginBottom(6.0f);
+    box->addView(l);
+
+    auto* rule = new brls::Box();
+    rule->setHeight(1.0f);
+    rule->setBackgroundColor(theme::scrim(38));
+    box->addView(rule);
+    return box;
+}
 } // namespace
+
+// Kicks off the one subtitle-addon lookup this playback makes. Safe to call
+// more than once: only the first attempt goes anywhere.
+void MpvView::fetchOnlineSubs()
+{
+    if (onlineSubState != SubFetch::Idle) return;
+    // A local .torrent has no Stremio identity, so there is nothing to ask
+    // about. Left Idle: the menu tells the user why the row is empty.
+    if (watch.authKey.empty() || watch.videoId.empty()) return;
+
+    onlineSubState = SubFetch::Busy;
+    // "movie" unless we were told otherwise -- a WatchInfo built before this
+    // field existed, or any path that forgot it, still gets a useful answer for
+    // a film, and an episode id would not resolve as a movie anyway.
+    std::string type = watch.type.empty() ? "movie" : watch.type;
+
+    auto live = this->alive;
+    stremio::fetchSubtitlesAsync(
+        watch.authKey, type, watch.videoId,
+        [this, live](stremio::SubtitlesResult r) {
+            // The player can be gone: B during the buffering wait tears the
+            // view down while this is still in flight.
+            if (!*live) return;
+            onlineSubs     = r.subs;
+            onlineSubErr   = r.error;
+            onlineSubState = r.ok ? SubFetch::Done : SubFetch::Failed;
+            brls::Logger::info("[player] addon subtitles: {} ({})",
+                               onlineSubs.size(),
+                               r.ok ? "ok" : onlineSubErr.c_str());
+        });
+}
+
+// Downloads onlineSubs[index] and hands the file to mpv, selected.
+void MpvView::loadOnlineSub(int index)
+{
+    if (index < 0 || index >= (int)onlineSubs.size() || !mpv) return;
+
+    const stremio::Subtitle& sub = onlineSubs[index];
+    std::string title = config::langLabelFor(sub.lang);
+    if (title.empty()) title = "Subtitle";
+    if (!sub.addon.empty()) title += " - " + sub.addon;
+
+    brls::Application::notify("Downloading " + title + "...");
+
+    auto live = this->alive;
+    stremio::downloadSubtitleAsync(
+        sub, [this, live, index, title, lang = sub.lang](std::string path) {
+            if (!*live) return;
+            if (path.empty() || !mpv)
+            {
+                brls::Application::notify("Subtitle download failed");
+                return;
+            }
+            // "cached" rather than "select": picking the same subtitle twice
+            // then re-selects the track already loaded instead of adding a
+            // duplicate. The title and language are what the Subtitles row
+            // will show for it from here on.
+            const char* cmd[] = { "sub-add",      path.c_str(), "cached",
+                                  title.c_str(),  lang.c_str(), nullptr };
+            if (mpv_command(mpv, cmd) < 0)
+            {
+                brls::Application::notify("Subtitle could not be loaded");
+                return;
+            }
+            loadedSubs.insert(index);
+            brls::Application::notify(title + " loaded");
+            brls::Logger::info("[player] loaded subtitle {}", path);
+        });
+}
+
+// Clamps, pushes to mpv and shows the readout pill. The single point where the
+// delay changes -- the menu and the L/R shortcut both come through here.
+void MpvView::setSubDelay(double seconds)
+{
+    // Past ten seconds either way it is not a sync problem any more, it is the
+    // wrong subtitle file.
+    constexpr double kMax = 10.0;
+    if (seconds < -kMax) seconds = -kMax;
+    if (seconds > kMax) seconds = kMax;
+    // Snap: the shortcut steps by 0.1 and floating point drift would otherwise
+    // show up in the readout.
+    subDelay = std::round(seconds * 100.0) / 100.0;
+
+    if (mpv)
+    {
+        char v[24];
+        std::snprintf(v, sizeof(v), "%.2f", subDelay);
+        mpv_set_property_string(mpv, "sub-delay", v);
+    }
+
+    // The panel's own row while it is open -- it shows the exact figure, which
+    // is the whole point of stepping by 0.1 -- and the pill otherwise.
+    if (subDelaySink)
+        subDelaySink(subDelay);
+    else
+        flashPill("Subtitles  " + subDelayText(subDelay));
+}
+
+// Steps through kSpeeds. Clamped at both ends rather than wrapping: running
+// into 2x and coming out at 0.5x is never what a press meant.
+void MpvView::nudgeSpeed(int dir)
+{
+    if (!mpv) return;
+    int cur   = 0;
+    double bd = 1e18;
+    for (size_t i = 0; i < kSpeeds.size(); i++)
+    {
+        double d = playSpeed > kSpeeds[i] ? playSpeed - kSpeeds[i]
+                                          : kSpeeds[i] - playSpeed;
+        if (d < bd) { bd = d; cur = (int)i; }
+    }
+    int next = cur + dir;
+    if (next < 0 || next >= (int)kSpeeds.size()) return;
+
+    playSpeed = kSpeeds[(size_t)next];
+    char v[24];
+    std::snprintf(v, sizeof(v), "%.4g", playSpeed);
+    mpv_set_property_string(mpv, "speed", v);
+    flashPill("Speed  " + kSpeedLabels[(size_t)next]);
+}
+
+void MpvView::flashPill(const std::string& text)
+{
+    if (!hintPill || !pillLabel) return;
+    pillLabel->setText(text);
+    hintPill->setVisibility(brls::Visibility::VISIBLE);
+    pillFlashActive = true;
+    pillFlashUntil =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(1600);
+}
+
+// Shows the card over the last kNextCardSecs, and only when there is somewhere
+// to go. obsPos/obsDur are the asynchronously observed properties -- this runs
+// every frame, and mpv_get_property on this path is what once froze the render
+// thread.
+void MpvView::updateNextCard()
+{
+    if (!nextCard) return;
+
+    double left = obsDur - obsPos;
+    bool want   = ready && !ended && !settingsOpen && !watch.nextVideoId.empty()
+                && obsDur > 0.0 && left > 0.0 && left <= kNextCardSecs;
+    if (want == nextCardShown) return;
+
+    nextCardShown = want;
+    if (want && nextCardSub)
+    {
+        std::string sub = episodeLabelOf(watch.nextVideoId);
+        nextCardSub->setText(sub.empty() ? "Up next" : sub);
+    }
+    nextCard->setVisibility(want ? brls::Visibility::VISIBLE
+                                 : brls::Visibility::GONE);
+}
+
+// Leaves the player and opens the next episode's sources. Everything it needs
+// is copied out first: popping frees this view long before the push happens.
+void MpvView::goToNextEpisode()
+{
+    if (ended || watch.nextVideoId.empty()) return;
+    // Also stops the EOF handler from popping underneath us if the file runs
+    // out while the pops are in flight.
+    ended = true;
+    nextCardShown = false;
+    if (nextCard) nextCard->setVisibility(brls::Visibility::GONE);
+
+    std::string authKey = watch.authKey;
+    std::string series  = watch.itemId;
+    std::string next    = watch.nextVideoId;
+    PlayerArt showArt   = art;
+    int pops            = watch.endPop;
+
+    brls::Logger::info("[player] next episode -> {} (pop {})", next, pops);
+    // Deferred: we are inside draw()'s update pass (or a tap handler), and
+    // popping -- which frees this view -- mid-draw is not safe.
+    brls::sync([pops, authKey, series, next, showArt]() {
+        popActivitiesThen(pops, [authKey, series, next, showArt]() {
+            openEpisodeById(authKey, series, next, showArt);
+        });
+    });
+}
+
+void MpvView::updatePill()
+{
+    if (!pillFlashActive) return;
+    if (std::chrono::steady_clock::now() < pillFlashUntil) return;
+    pillFlashActive = false;
+    if (hintPill) hintPill->setVisibility(brls::Visibility::GONE);
+}
 
 void MpvView::openTrackMenu()
 {
     if (!ready || !mpv)
         return;
 
-    // Pause behind the popup, the same state A leaves, so the video stays
-    // paused when the menu closes and A resumes it.
-    if (!userPaused && !seeking)
-    {
-        userPaused = true;
-        mpv_set_property_string(mpv, "pause", "yes");
-        setControlsVisible(true);
-    }
+    // Playback is deliberately NOT paused here any more. The panel leaves the
+    // picture on screen, and every control in it -- the subtitle timing above
+    // all -- can only be judged against moving video. The controls overlay does
+    // come down, though: a play button, a title and a seek bar beside the panel
+    // are clutter over the very frame it exists to let you watch.
+    setControlsVisible(false);
+    settingsOpen = true;
 
     // Human label for a track: uppercased language, then its title, else "Track N".
     auto label = [](const std::string& lang, const std::string& title,
@@ -734,51 +1085,64 @@ void MpvView::openTrackMenu()
         mpv_free_node_contents(&node);
     }
 
+    // ---- the panel ------------------------------------------------------
+    // A right-hand panel rather than the centred dialog this used to be. Every
+    // control here changes something you can only judge by looking at the
+    // picture -- a subtitle's size, its timing, which track is playing -- and a
+    // box in the middle of the screen covers exactly what you need to see.
+    auto* root = new brls::Box();
+    root->setAxis(brls::Axis::ROW);
+    root->setJustifyContent(brls::JustifyContent::FLEX_END);
+    root->setGrow(1.0f);
+
+    // The uncovered part of the frame. Not a scrim -- it is left clear on
+    // purpose -- but it is what a tap outside the panel lands on.
+    auto* rest = new brls::Box();
+    rest->setGrow(1.0f);
+    rest->setHeightPercentage(100.0f);
+    rest->addGestureRecognizer(new brls::TapGestureRecognizer(
+        rest, []() { brls::Application::popActivity(); }));
+    root->addView(rest);
+
+    auto* panel = new brls::Box();
+    panel->setAxis(brls::Axis::COLUMN);
+    panel->setWidth(kPanelW);
+    panel->setHeightPercentage(100.0f);
+    panel->setPadding(40.0f, 32.0f, 24.0f, 32.0f);
+    // Near-opaque: this sits over moving video, and anything lighter makes
+    // every label fight the frame behind it.
+    panel->setBackgroundColor(theme::isLight() ? nvgRGBA(246, 246, 250, 242)
+                                               : nvgRGBA(18, 18, 22, 238));
+    root->addView(panel);
+
+    // B closes it. Registered on the panel, and actions bubble from the focused
+    // cell up the parents, so it works wherever the cursor is inside.
+    panel->registerAction(
+        "Close", brls::BUTTON_B,
+        [](brls::View*) {
+            brls::Application::popActivity();
+            return true;
+        },
+        false, false, brls::SOUND_BACK);
+
+    auto* title = new brls::Label();
+    title->setText("Playback");
+    title->setFontSize(28.0f);
+    title->setTextColor(theme::text());
+    title->setMarginBottom(4.0f);
+    panel->addView(title);
+
+    // Everything below scrolls: the subtitle section grows by three rows the
+    // moment a file has subtitles, and at the 100% UI size that is already most
+    // of the panel's height.
+    auto* scroll = new brls::ScrollingFrame();
+    scroll->setGrow(1.0f);
+    // CENTERED, like every other list in the app: one cell per press.
+    scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
     auto* content = new brls::Box();
     content->setAxis(brls::Axis::COLUMN);
-    content->setPadding(8.0f, 40.0f, 24.0f, 40.0f);
-    // No fixed width: the dialog frame is 720 wide and stretches its children,
-    // so leaving this auto makes the rows span the whole dialog (a fixed 580
-    // left them short of the right edge).
-
-    auto* header = new brls::Header();
-    header->setTitle("Playback");
-    content->addView(header);
-
-    // Always show the audio, even when there is only one track -- it tells you
-    // what is playing (language/title).
-    if (!aLabels.empty())
-    {
-        auto* a = new TrackCell();
-        a->init("Audio", aLabels, aCur, [this, aIds](int sel) {
-            char v[24];
-            std::snprintf(v, sizeof(v), "%lld", (long long)aIds[sel]);
-            mpv_set_property_string(mpv, "aid", v);
-        });
-        content->addView(a);
-    }
-
-    if (sIds.size() > 1)  // there is at least one subtitle track besides "Off"
-    {
-        auto* s = new TrackCell();
-        s->init("Subtitles", sLabels, sCur, [this, sIds](int sel) {
-            if (sIds[sel] < 0)
-                mpv_set_property_string(mpv, "sid", "no");
-            else
-            {
-                char v[24];
-                std::snprintf(v, sizeof(v), "%lld", (long long)sIds[sel]);
-                mpv_set_property_string(mpv, "sid", v);
-            }
-        });
-        content->addView(s);
-    }
-    else  // no subtitle tracks: still show a "Subtitles: None" row for clarity
-    {
-        auto* s = new brls::SelectorCell();
-        s->init("Subtitles", { "None" }, 0, [](int) {});
-        content->addView(s);
-    }
+    scroll->setContentView(content);
+    panel->addView(scroll);
 
     // The index whose value sits closest to `x`: these are doubles read back from
     // mpv, so matching them by equality would fail on the first rounding.
@@ -805,10 +1169,129 @@ void MpvView::openTrackMenu()
         mpv_set_property_string(mpv, prop, v);
     };
 
+    content->addView(panelSection("AUDIO", 8.0f));
+
+    // Always show the track, even when there is only one -- it tells you what
+    // is playing (language/title).
+    if (!aLabels.empty())
+    {
+        auto* a = new TrackCell();
+        a->init("Track", aLabels, aCur, [this, aIds](int sel) {
+            char v[24];
+            std::snprintf(v, sizeof(v), "%lld", (long long)aIds[sel]);
+            mpv_set_property_string(mpv, "aid", v);
+        });
+        content->addView(a);
+    }
+
+    // Playback speed. Also on L/R in the player itself (see nudgeSpeed), which
+    // steps through this same list -- hence the shared kSpeeds.
+    {
+        playSpeed = getScale("speed");
+        auto* sp  = new brls::SelectorCell();
+        sp->init("Speed", kSpeedLabels, nearest(kSpeeds, playSpeed),
+                 [this, setScale](int sel) {
+                     playSpeed = kSpeeds[(size_t)sel];
+                     setScale("speed", playSpeed);
+                 });
+        content->addView(sp);
+    }
+
+    content->addView(panelSection("SUBTITLES", 18.0f));
+
+    // ---- subtitles: one list, wherever they come from --------------------
+    // The tracks muxed into the file and the ones the account's Stremio
+    // subtitle addons offer are the same choice to whoever is watching, so they
+    // are one selector. What differs is only what picking costs: an mpv track
+    // switches instantly, an addon entry is fetched first (loadOnlineSub) and
+    // then joins the track list -- which is why a loaded one is skipped in the
+    // addon section below rather than being listed twice.
+    {
+        // Whether each entry is an mpv track or an addon subtitle to fetch.
+        // sub >= 0 indexes onlineSubs; otherwise sid is the mpv track, -1 for
+        // "Off" and -2 for the inert status entry at the end.
+        struct Pick
+        {
+            int64_t sid = -1;
+            int sub     = -1;
+        };
+        constexpr int64_t kNoteSid = -2;
+        std::vector<Pick> picks;
+        std::vector<std::string> labels;
+        int cur = 0;
+
+        for (size_t i = 0; i < sIds.size(); i++)
+        {
+            picks.push_back({ sIds[i], -1 });
+            labels.push_back(sLabels[i]);
+            if ((int)i == sCur) cur = (int)labels.size() - 1;
+        }
+
+        // The addon ones we have not pulled yet. A loaded one is already an
+        // mpv track above, carrying the title and language sub-add was given.
+        for (size_t i = 0; i < onlineSubs.size(); i++)
+        {
+            if (loadedSubs.count((int)i)) continue;
+            std::string l = config::langLabelFor(onlineSubs[i].lang);
+            if (l.empty()) l = "Unknown";
+            if (!onlineSubs[i].addon.empty()) l += " - " + onlineSubs[i].addon;
+            picks.push_back({ -1, (int)i });
+            labels.push_back(l);
+        }
+
+        // A last, inert entry when the lookup has something to say for itself.
+        // Picking it does nothing -- it is there so an empty-looking list is
+        // explained rather than just empty.
+        const char* note = nullptr;
+        if (watch.authKey.empty() || watch.videoId.empty())
+            note = nullptr;  // local torrent: no addons were ever in play
+        else if (onlineSubState == SubFetch::Busy ||
+                 onlineSubState == SubFetch::Idle)
+            note = "Searching addons...";
+        else if (onlineSubState == SubFetch::Failed)
+            note = "Addons unavailable";
+        if (note)
+        {
+            picks.push_back({ kNoteSid, -1 });
+            labels.push_back(note);
+        }
+
+        if (labels.size() > 1)  // something besides "Off"
+        {
+            auto* s = new TrackCell();
+            s->init("Subtitles", labels, cur, [this, picks](int sel) {
+                const Pick& p = picks[(size_t)sel];
+                if (p.sid == kNoteSid) return;  // the status entry: not a choice
+                if (p.sub >= 0)
+                {
+                    loadOnlineSub(p.sub);
+                    return;
+                }
+                if (p.sid < 0)
+                {
+                    mpv_set_property_string(mpv, "sid", "no");
+                    return;
+                }
+                char v[24];
+                std::snprintf(v, sizeof(v), "%lld", (long long)p.sid);
+                mpv_set_property_string(mpv, "sid", v);
+            });
+            content->addView(s);
+        }
+        else  // nothing anywhere: say so rather than offering a bare "Off"
+        {
+            auto* s = new brls::SelectorCell();
+            s->init("Subtitles", { "None" }, 0, [](int) {});
+            content->addView(s);
+        }
+    }
+
     // Subtitle size, as a percentage of the size the app configures at startup
     // (sub-font-size): sub-scale multiplies it, so 100% is that baseline rather
-    // than mpv's own default. Only offered when there is something to scale.
-    if (sIds.size() > 1)
+    // than mpv's own default. Only offered when there is something to scale --
+    // including a subtitle only an addon has yet, since picking it is one step
+    // away in the row above.
+    if (sIds.size() > 1 || !onlineSubs.empty())
     {
         const std::vector<double> scales = { 0.75, 0.9, 1.0, 1.15, 1.3, 1.5 };
         auto* z = new brls::SelectorCell();
@@ -819,29 +1302,66 @@ void MpvView::openTrackMenu()
         content->addView(z);
     }
 
-    // Playback speed. mpv resamples the audio to keep the pitch, so this stays
-    // listenable either side of 1x.
+    // Subtitle timing. Offered whenever there is any subtitle to shift --
+    // including one just pulled from an addon, which is where a release that
+    // does not match the rip usually comes from. Finer steps near zero: that is
+    // where the answer almost always is, and a 21-entry list of even steps is
+    // worse to walk than an uneven one that puts the useful values up front.
+    if (sIds.size() > 1 || !onlineSubs.empty())
     {
-        const std::vector<double> speeds = { 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0 };
-        auto* sp = new brls::SelectorCell();
-        sp->init("Speed",
-                 { "0.5x", "0.75x", "Normal", "1.25x", "1.5x", "1.75x", "2x" },
-                 nearest(speeds, getScale("speed")),
-                 [speeds, setScale](int sel) { setScale("speed", speeds[sel]); });
-        content->addView(sp);
+        // A readout, not a dropdown. L/R step it by 0.1 s while the panel is
+        // open, so the figure is very often not one of a preset list -- and a
+        // selector could only ever show the nearest preset, which is how
+        // +0.10 s used to display as "None".
+        auto* sd = new brls::DetailCell();
+        sd->setText("Subtitle delay");
+        sd->setDetailText(subDelayText(subDelay));
+        sd->setDetailTextColor(
+            brls::Application::getTheme()["brls/list/listItem_value_color"]);
+        sd->setFocusable(false);  // nothing to activate: L/R are the control
+        sd->setLineBottom(0.0f);
+        content->addView(sd);
+
+        // Fed by setSubDelay for as long as the panel is up.
+        subDelaySink = [sd](double d) { sd->setDetailText(subDelayText(d)); };
+
+        auto* hint = new brls::Label();
+        hint->setText("L / R shift the subtitles by 0.1 s. Later is positive. "
+                      "The video keeps playing behind this, which is the only "
+                      "way to see whether it lands.");
+        hint->setFontSize(15.0f);
+        hint->setTextColor(theme::textMuted());
+        hint->setLineHeight(1.35f);
+        hint->setMargins(6.0f, 12.0f, 4.0f, 12.0f);
+        content->addView(hint);
+
+        // L/R belong to the delay in here. The player registers the same two
+        // buttons for the speed, but those never fire while the panel has the
+        // cursor -- actions are dispatched up the focused view's own tree.
+        auto nudge = [this](double delta) {
+            setSubDelay(subDelay + delta);
+            return true;
+        };
+        panel->registerAction(
+            "Subtitles earlier", brls::BUTTON_LB,
+            [nudge](brls::View*) { return nudge(-0.1); }, false, true,
+            brls::SOUND_NONE);
+        panel->registerAction(
+            "Subtitles later", brls::BUTTON_RB,
+            [nudge](brls::View*) { return nudge(0.1); }, false, true,
+            brls::SOUND_NONE);
     }
 
-    auto* dlg = new brls::Dialog(content);
-    dlg->addButton("Close", []() {});  // B also closes it (cancelable)
-    dlg->open();
-
-    // The dialog button text defaults to brls/accent -- purple app-wide, which
-    // clashes with the teal the SelectorCell values use in this same menu. Recolour
-    // just this button to match the rest of the menu.
-    if (auto* btn = dlg->getView("brls/dialog/button1"))
-        if (auto* lbl = dynamic_cast<brls::Label*>(btn->getView("brls/button/label")))
-            lbl->setTextColor(
-                brls::Application::getTheme()["brls/list/listItem_value_color"]);
+    auto liveFlag = this->alive;
+    brls::Application::pushActivity(
+        new PlayerSettingsActivity(root, [this, liveFlag]() {
+            if (!*liveFlag) return;
+            settingsOpen = false;
+            subDelaySink = nullptr;  // the row it fed is about to be freed
+            // Back to whatever the overlay was doing: up while paused, and up
+            // mid-scrub too -- that is where the seek bar lives.
+            setControlsVisible(userPaused || seeking);
+        }));
 }
 
 MpvView::~MpvView()
@@ -906,6 +1426,16 @@ void MpvView::pumpEvents()
         setControlsVisible(true);
     }
 
+    // The boost follows the dock state, which can change mid-film -- putting the
+    // console on the dock has to drop it, and taking it off has to bring it
+    // back. Only touches mpv on an actual transition.
+    if (bool want = audioBoostWanted(); want != boostApplied)
+    {
+        boostApplied = want;
+        mpv_set_property_string(mpv, "af", want ? kAudioBoostFilter : "");
+        brls::Logger::info("[audio] loudness boost {}", want ? "on" : "off");
+    }
+
     while (true)
     {
         mpv_event* ev = mpv_wait_event(mpv, 0);
@@ -918,6 +1448,10 @@ void MpvView::pumpEvents()
                 // connecting.
                 fileLoaded = true;
                 brls::Logger::info("[mpv event] file loaded");
+                // Ask the subtitle addons now: the buffering wait is dead time
+                // for the network anyway, and the list has to be there before
+                // the first X press for the menu to be worth anything.
+                fetchOnlineSubs();
                 break;
             case MPV_EVENT_END_FILE:
             {
@@ -1299,6 +1833,95 @@ void MpvView::buildLoadingOverlay(const std::string& title)
         lockHint->addView(lockLabel);
     }
     topRight->addView(lockHint);
+
+    // The L/R readout, top centre: shown for a moment on a speed or a
+    // subtitle-delay change and hidden again by updatePill. Its own absolute,
+    // full-width row so centring it does not disturb the pills above -- and
+    // away from the bottom, where the subtitles it can be about are drawn.
+    {
+        auto* row = new brls::Box();
+        row->setPositionType(brls::PositionType::ABSOLUTE);
+        row->setPositionTop(48.0f);
+        row->setPositionLeft(0.0f);
+        row->setWidthPercentage(100.0f);
+        row->setAxis(brls::Axis::ROW);
+        row->setJustifyContent(brls::JustifyContent::CENTER);
+
+        hintPill = new brls::Box();
+        hintPill->setHeight(56.0f);
+        hintPill->setPadding(0.0f, 24.0f, 0.0f, 24.0f);
+        hintPill->setCornerRadius(8.0f);
+        hintPill->setBackgroundColor(nvgRGBA(0, 0, 0, 140));
+        hintPill->setAxis(brls::Axis::ROW);
+        hintPill->setAlignItems(brls::AlignItems::CENTER);
+        hintPill->setVisibility(brls::Visibility::GONE);
+        {
+            // Words, not a glyph. The pill says two different things
+            // ("Speed 1.25x", "Subtitles +0.10 s") and no one icon covers both
+            // -- and a caption glyph could not be drawn anyway: every Material
+            // one lives in U+E000-E152, which the Nintendo Extended shared font
+            // claims ahead of Material in the fallback chain.
+            pillLabel = new brls::Label();
+            pillLabel->setText("");
+            pillLabel->setFontSize(24.0f);
+            pillLabel->setTextColor(nvgRGB(255, 255, 255));
+            hintPill->addView(pillLabel);
+        }
+        row->addView(hintPill);
+        this->addView(row);
+    }
+
+    // "Next episode", bottom right, over the last kNextCardSecs of an episode
+    // that has one. Above the seek bar so the two never overlap, and on the
+    // right so it stays clear of the title pill on the left.
+    nextCard = new brls::Box();
+    nextCard->setAxis(brls::Axis::COLUMN);
+    nextCard->setPositionType(brls::PositionType::ABSOLUTE);
+    nextCard->setPositionBottom(132.0f);
+    nextCard->setPositionRight(70.0f);
+    nextCard->setPadding(14.0f, 22.0f, 16.0f, 22.0f);
+    nextCard->setCornerRadius(10.0f);
+    nextCard->setBackgroundColor(nvgRGBA(0, 0, 0, 170));
+    nextCard->setVisibility(brls::Visibility::GONE);
+    {
+        // The A button glyph, then the words. Two labels rather than one
+        // string so the glyph can carry its own size -- it sits small next to
+        // 23pt text otherwise. Same font as the X and Y glyphs on the pills
+        // above (Nintendo Extended, which owns U+E000-E152).
+        auto* headRow = new brls::Box();
+        headRow->setAxis(brls::Axis::ROW);
+        headRow->setAlignItems(brls::AlignItems::CENTER);
+
+        auto* glyph = new brls::Label();
+        glyph->setText("\xEE\x83\xA0");  // U+E0E0, the A button
+        glyph->setFontSize(26.0f);
+        glyph->setTextColor(nvgRGB(255, 255, 255));
+        glyph->setMarginRight(10.0f);
+        headRow->addView(glyph);
+
+        auto* head = new brls::Label();
+        head->setText("Next episode");
+        head->setFontSize(23.0f);
+        head->setTextColor(nvgRGB(255, 255, 255));
+        headRow->addView(head);
+
+        nextCard->addView(headRow);
+
+        nextCardSub = new brls::Label();
+        nextCardSub->setText("");
+        nextCardSub->setFontSize(18.0f);
+        nextCardSub->setTextColor(nvgRGB(186, 186, 192));
+        nextCardSub->setMarginTop(4.0f);
+        nextCard->addView(nextCardSub);
+    }
+    // Touch works whatever the playback state, which is the way through while
+    // paused (A resumes then).
+    nextCard->addGestureRecognizer(
+        new brls::TapGestureRecognizer(nextCard, [this]() {
+            if (controlsLocked) { flashLock(); return; }
+            goToNextEpisode();
+        }));
+    this->addView(nextCard);
 
     // Seek bar at the bottom while paused: elapsed | progress | total.
     seekOverlay = new brls::Box();
@@ -2082,6 +2705,11 @@ void MpvView::updateStickSeek()
 {
     if (!ready || !mpv)
         return;
+    // The settings panel has the cursor, but the stick is polled straight off
+    // the controller rather than routed through focus -- so without this it
+    // would go on scrubbing the video from under an open menu.
+    if (settingsOpen)
+        return;
 
     brls::ControllerState st {};
     brls::Application::getPlatform()->getInputManager()->updateUnifiedControllerState(&st);
@@ -2302,6 +2930,8 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
         updateSeekBar();
     updateControlsAutoHide();  // hide the overlay after a few seconds of playback
     updateLockHint();  // fades the lock flash out after its moment
+    updatePill();          // ... and the L/R readout after its own
+    updateNextCard();      // "next episode", over the last seconds
     updateInfoOverlay();
     logStats();  // always, even with the ZR panel closed
 

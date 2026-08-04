@@ -139,6 +139,7 @@ void ensureAppDataDir()
     mkdir(APPDATA_DIR, 0777);      // ignore EEXIST
     mkdir(APPDATA_TORRENTS, 0777); // where the user drops .torrent files
     mkdir(APPDATA_POSTERS, 0777);  // cached Stremio artwork
+    mkdir(APPDATA_SUBS, 0777);     // subtitles pulled from Stremio addons
 
     // Seed magnet.txt so the user has a file to edit from a PC (and knows the
     // format). Only when it does not exist yet -- never clobber their list.

@@ -26,6 +26,9 @@
 #include <cmath>
 #include <cstring>
 #include <ctime>
+#include <deque>
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -95,12 +98,59 @@ class GradientFrame : public brls::AppletFrame
     }
 };
 
+// How close to the end of a section's scroll counts as "the user is at the
+// bottom" -- roughly one line of posters, so the next page is asked for while
+// there is still something to look at.
+constexpr float kGrowMargin = 480.0f;
+
+// A section page that says when its scroll nears the bottom, so the catalog can
+// be extended in place. borealis' ScrollingFrame fires no scroll event, so this
+// is a per-frame comparison of its offset against the content it holds -- which
+// has the advantage of catching a touch flick as well as a focus step. It fires
+// on EVERY frame the scroll sits near the bottom; the handler is what
+// de-duplicates (see the loading/exhausted flags in openSection).
+class GrowingSection : public brls::Box
+{
+  public:
+    std::function<void()> onNearBottom;
+    brls::ScrollingFrame* scroll = nullptr;
+    brls::Box* list              = nullptr;
+
+    void draw(NVGcontext* vg, float x, float y, float w, float h,
+              brls::Style style, brls::FrameContext* ctx) override
+    {
+        brls::Box::draw(vg, x, y, w, h, style, ctx);
+        if (!onNearBottom || !scroll || !list) return;
+        float visible = scroll->getHeight();
+        float content = list->getHeight();
+        // Nothing to scroll yet: either the page is still being laid out
+        // (heights are 0 before the first layout pass) or it all fits, and
+        // asking for more of a catalog nobody has scrolled is wrong.
+        if (content <= visible || visible <= 0.0f) return;
+        if (scroll->getContentOffsetY() + visible >= content - kGrowMargin)
+            onNearBottom();
+    }
+};
+
 // Holds a page the tab has already built -- the full contents of a section.
 // Footer only: the header would repeat the title the page already carries.
 class SectionActivity : public brls::Activity
 {
   public:
-    explicit SectionActivity(brls::View* content) : content(content) {}
+    SectionActivity(brls::View* content, std::function<void()> onGone)
+        : content(content), onGone(std::move(onGone))
+    {
+    }
+
+    // Retires the page's liveness tokens. B pops this screen while its poster
+    // downloads -- and possibly a catalog page -- are still in flight, and
+    // every one of them holds a raw pointer into the view tree that is about to
+    // be freed. The tab's own token is no good here: the tab is still alive, so
+    // it would not stop any of them.
+    ~SectionActivity() override
+    {
+        if (onGone) onGone();
+    }
 
     brls::View* createContentView() override
     {
@@ -112,7 +162,12 @@ class SectionActivity : public brls::Activity
 
   private:
     brls::View* content;
+    std::function<void()> onGone;
 };
+
+// The default meta provider. Every catalog the tab shows comes from it, and so
+// does the genre list on a section page.
+constexpr const char* kCinemeta   = "https://v3-cinemeta.strem.io";
 
 constexpr const char* kLoginUrl   = "https://api.strem.io/api/login";
 constexpr const char* kLibraryUrl = "https://api.strem.io/api/datastoreGet";
@@ -272,6 +327,13 @@ void clearPosterCache()
 // progress without another round-trip: Stremio tracks one position per show, and
 // we just set it, so this IS the current truth for that item.
 static LocalWatch g_lastWatch;
+
+// Ids the account currently holds, refreshed by every fetchLibraryAsync and
+// edited in place by setLibraryMemberAsync. UI thread only.
+static std::set<std::string> g_libIds;
+// g_libIds being empty is ambiguous on its own -- an account with nothing in it
+// looks exactly like one that has never been read.
+static bool g_libFetched = false;
 
 LocalWatch lastWatch() { return g_lastWatch; }
 
@@ -609,6 +671,19 @@ void fetchLibraryAsync(const std::string& authKey,
                     if (it.name.empty()) { nNoName++; continue; }
                     r.items.push_back(it);
                 }
+                // What inLibrary() answers from. Everything the account
+                // holds, whether or not it survived the filters above -- a
+                // "temp" (auto-added by watching) item IS in the library as far
+                // as the +/- button is concerned; only "removed" is not.
+                g_libIds.clear();
+                g_libFetched = true;
+                for (const auto& o : objs)
+                {
+                    std::string id = json::str(o, "_id");
+                    if (!id.empty() && !json::boolean(o, "removed", false))
+                        g_libIds.insert(id);
+                }
+
                 // Most recently viewed first: watching bumps _mtime, and the ISO
                 // timestamps compare lexicographically. Items without an _mtime
                 // (should not happen) sort to the bottom.
@@ -679,6 +754,248 @@ bool setField(std::string& obj, const char* key, const std::string& val)
 }
 
 } // namespace
+
+bool isStreamAddonHidden(const std::string& name)
+{
+    // Lives here rather than beside the source list that first needed it: the
+    // Account screen has to mark the same addons, and two copies of a blocklist
+    // is one copy too many.
+    static const char* kHidden[] = {
+        "WatchHub", "Local Files", "Peario",
+        "Public Domain Movies", "Public Domain Foreign Movies",
+    };
+    for (const char* bad : kHidden)
+        if (name.find(bad) != std::string::npos) return true;
+    return false;
+}
+
+int libraryCount()
+{
+    return g_libFetched ? (int)g_libIds.size() : -1;
+}
+
+bool inLibrary(const std::string& itemId)
+{
+    return !itemId.empty() && g_libIds.count(itemId) > 0;
+}
+
+// A libraryItem built from scratch, for a title the account has never seen --
+// anything opened from a catalog or a search. Stremio fills the rest in itself;
+// these are the fields it will not do without.
+static std::string newLibraryItem(const LibItem& item, const std::string& iso)
+{
+    std::string o = "{";
+    o += "\"_id\":\"" + json::escape(item.id) + "\",";
+    o += "\"name\":\"" + json::escape(item.name) + "\",";
+    o += "\"type\":\"" + json::escape(item.type.empty() ? "movie" : item.type) +
+         "\",";
+    o += "\"poster\":\"" + json::escape(item.poster) + "\",";
+    o += "\"posterShape\":\"poster\",";
+    o += "\"background\":\"\",\"logo\":\"\",";
+    o += "\"year\":\"" + json::escape(item.year) + "\",";
+    o += "\"_ctime\":\"" + iso + "\",\"_mtime\":\"" + iso + "\",";
+    o += "\"removed\":false,\"temp\":false,";
+    o += "\"state\":{\"lastWatched\":\"\",\"timeOffset\":0,\"duration\":0,"
+         "\"video_id\":\"\",\"watched\":\"\",\"flaggedWatched\":0,"
+         "\"noNotif\":false,\"season\":0,\"episode\":0,"
+         "\"overallTimeWatched\":0,\"timesWatched\":0}";
+    o += "}";
+    return o;
+}
+
+void setLibraryMemberAsync(const std::string& authKey, const LibItem& item,
+                           bool add, std::function<void(bool)> done)
+{
+    if (authKey.empty() || item.id.empty())
+    {
+        done(false);
+        return;
+    }
+
+    // Flip the local answer now, on the UI thread, so the button responds to the
+    // press instead of to the round trip. Put back if the API refuses.
+    if (add)
+        g_libIds.insert(item.id);
+    else
+        g_libIds.erase(item.id);
+    g_libraryGen++;
+    markLibraryStale();
+
+    brls::async([authKey, item, add, done]() {
+        std::time_t tt = std::time(nullptr);
+        std::tm g {};
+        gmtime_r(&tt, &g);
+        char isoBuf[40];
+        std::strftime(isoBuf, sizeof(isoBuf), "%Y-%m-%dT%H:%M:%S.000Z", &g);
+        std::string iso  = isoBuf;
+        std::string isoq = "\"" + iso + "\"";
+
+        // Read the stored item back first and edit it in place: datastorePut
+        // REPLACES what is there, so rebuilding a subset would strip every field
+        // this client does not know about (the same reason the watch-state push
+        // does it this way).
+        std::string body = "{\"authKey\":\"" + json::escape(authKey) +
+                           "\",\"collection\":\"libraryItem\",\"ids\":[\"" +
+                           json::escape(item.id) + "\"]}";
+        std::string resp, err;
+        std::string obj;
+        if (http::postJson(kLibraryUrl, body, resp, err))
+        {
+            auto objs = json::objects(resp, "result");
+            if (!objs.empty()) obj = objs[0];
+        }
+        // Never stored: adding has to create it. Removing one that was never
+        // there is a no-op we can report as done.
+        if (obj.empty())
+        {
+            if (!add)
+            {
+                brls::sync([done]() { done(true); });
+                return;
+            }
+            obj = newLibraryItem(item, iso);
+        }
+        else
+        {
+            setField(obj, "removed", add ? "false" : "true");
+            // "temp" marks an entry auto-added by watching. An explicit + makes
+            // it a real library entry; leaving it set would let Stremio drop it
+            // again on its own.
+            setField(obj, "temp", "false");
+            setField(obj, "_mtime", isoq);
+        }
+
+        std::string put = "{\"authKey\":\"" + json::escape(authKey) +
+                          "\",\"collection\":\"libraryItem\",\"changes\":[" +
+                          obj + "]}";
+        std::string resp2;
+        bool ok = http::postJson("https://api.strem.io/api/datastorePut", put,
+                                 resp2, err);
+        if (!ok)
+            brls::Logger::warning("[stremio] library {} failed: {}",
+                                  add ? "add" : "remove", err);
+        else
+            brls::Logger::info("[stremio] library {} {}", add ? "+" : "-",
+                               item.id);
+
+        brls::sync([done, ok, add, id = item.id]() {
+            // Put the local answer back if the account did not take it.
+            if (!ok)
+            {
+                if (add)
+                    g_libIds.erase(id);
+                else
+                    g_libIds.insert(id);
+            }
+            done(ok);
+        });
+    });
+}
+
+void clearWatchStateAsync(const std::string& authKey,
+                          const std::string& itemId,
+                          std::function<void(bool)> done)
+{
+    if (authKey.empty() || itemId.empty())
+    {
+        done(false);
+        return;
+    }
+
+    // Anything the UI reads before the round trip finishes.
+    if (g_lastWatch.itemId == itemId) g_lastWatch = LocalWatch();
+    g_libraryGen++;
+
+    brls::async([authKey, itemId, done]() {
+        std::string body = "{\"authKey\":\"" + json::escape(authKey) +
+                           "\",\"collection\":\"libraryItem\",\"ids\":[\"" +
+                           json::escape(itemId) + "\"]}";
+        std::string resp, err;
+        if (!http::postJson(kLibraryUrl, body, resp, err))
+        {
+            brls::Logger::warning("[stremio] continue-watching get failed: {}",
+                                  err);
+            brls::sync([done]() { done(false); });
+            return;
+        }
+        auto objs = json::objects(resp, "result");
+        if (objs.empty())
+        {
+            // Not on the account at all: nothing to clear, and the row it was
+            // drawn from is stale. Report success so the UI drops it.
+            brls::sync([done]() { done(true); });
+            return;
+        }
+        std::string obj = objs[0];
+
+        // Edit the "state" object's own text, then splice it back -- same
+        // reasoning as pushWatchStateAsync: field names repeat outside it.
+        std::string pat = "\"state\"";
+        size_t sk       = obj.find(pat);
+        size_t sopen    = sk == std::string::npos ? std::string::npos
+                                                  : obj.find('{', sk + pat.size());
+        size_t sclose   = std::string::npos;
+        if (sopen != std::string::npos)
+        {
+            int depth  = 0;
+            bool inStr = false;
+            for (size_t i = sopen; i < obj.size(); i++)
+            {
+                char c = obj[i];
+                if (inStr)
+                {
+                    if (c == '\\') i++;
+                    else if (c == '"') inStr = false;
+                    continue;
+                }
+                if (c == '"') inStr = true;
+                else if (c == '{') depth++;
+                else if (c == '}' && --depth == 0) { sclose = i; break; }
+            }
+        }
+        if (sclose != std::string::npos)
+        {
+            std::string st = obj.substr(sopen, sclose - sopen + 1);
+            // The three fields Continue Watching is derived from: a position, a
+            // duration to measure it against, and which video it belongs to.
+            setField(st, "timeOffset", "0");
+            setField(st, "duration", "0");
+            setField(st, "video_id", "\"\"");
+            obj.replace(sopen, sclose - sopen + 1, st);
+        }
+
+        // A temp entry is one the account holds only because it was watched.
+        // Emptying its state would leave it in the library as a blank row, so
+        // it goes; anything added on purpose stays where the user put it.
+        bool wasTemp = json::boolean(obj, "temp", false);
+        if (wasTemp) setField(obj, "removed", "true");
+
+        std::time_t tt = std::time(nullptr);
+        std::tm g {};
+        gmtime_r(&tt, &g);
+        char iso[40];
+        std::strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%S.000Z", &g);
+        setField(obj, "_mtime", "\"" + std::string(iso) + "\"");
+
+        std::string put = "{\"authKey\":\"" + json::escape(authKey) +
+                          "\",\"collection\":\"libraryItem\",\"changes\":[" +
+                          obj + "]}";
+        std::string resp2;
+        bool ok = http::postJson("https://api.strem.io/api/datastorePut", put,
+                                 resp2, err);
+        if (!ok)
+            brls::Logger::warning("[stremio] continue-watching put failed: {}",
+                                  err);
+        else
+            brls::Logger::info("[stremio] continue-watching cleared {}", itemId);
+        // g_libIds is UI-thread-only, so the membership edit rides back with
+        // the result rather than being made here on the worker.
+        brls::sync([done, ok, wasTemp, itemId]() {
+            if (ok && wasTemp) g_libIds.erase(itemId);
+            done(ok);
+        });
+    });
+}
 
 // Rewrites the library item's watch state on the API. The item is fetched
 // back first and edited in place (string surgery on the raw object), because
@@ -1064,6 +1381,7 @@ void fetchAddonsAsync(const std::string& authKey,
                 {
                     if (x == "meta") a.hasMeta = true;
                     if (x == "stream") a.hasStream = true;
+                    if (x == "subtitles") a.hasSubtitles = true;
                 }
                 a.types = json::strings(o, "types");
                 r.addons.push_back(a);
@@ -1085,12 +1403,50 @@ void fetchAddonsAsync(const std::string& authKey,
     });
 }
 
-void clearAddonCache() { addonCache = AddonsResult(); }
+void clearAddonCache()
+{
+    addonCache = AddonsResult();
+    clearMetaCache();  // signing in as somebody else re-reads everything
+}
+
+// Meta answers, kept for the session. An episode list does not change while
+// the app is running, and the alternative is a network round trip on a path
+// that has to feel instant: brls::async runs its tasks on ONE thread, one after
+// another (thread.cpp), so a meta fetch fired while an episode screen is still
+// pulling its sources waits for those to finish first. That was the wait on
+// the prev/next chevrons -- the series screen has already fetched this exact
+// meta, so with a cache they need no request at all.
+//
+// Bounded, because a MetaResult carries every episode of a series and a long
+// session would otherwise walk through a lot of them.
+static std::map<std::string, MetaResult> metaCache;
+static std::deque<std::string> metaOrder;
+constexpr size_t kMetaCacheMax = 8;
+
+void clearMetaCache()
+{
+    metaCache.clear();
+    metaOrder.clear();
+}
 
 void fetchMetaAsync(const std::string& addonBase, const std::string& type,
                     const std::string& id, std::function<void(MetaResult)> done)
 {
-    brls::async([addonBase, type, id, done]() {
+    std::string key = addonBase + "|" + type + "|" + id;
+    auto hit        = metaCache.find(key);
+    if (hit != metaCache.end())
+    {
+        // Through the sync queue rather than straight through, so a hit and a
+        // miss deliver the same way -- next frame, on the UI thread. Callers
+        // push a loading screen before this returns and swap it for the result;
+        // answering inside the call would have them pop what they just pushed
+        // in the same breath.
+        MetaResult r = hit->second;
+        brls::sync([done, r]() { done(r); });
+        return;
+    }
+
+    brls::async([addonBase, type, id, key, done]() {
         MetaResult r;
         std::string url =
             addonBase + "/meta/" + http::urlEncode(type) + "/" + http::urlEncode(id) + ".json";
@@ -1135,7 +1491,21 @@ void fetchMetaAsync(const std::string& addonBase, const std::string& type,
             brls::Logger::info("[stremio] meta {} -> {} videos", id,
                                r.videos.size());
         }
-        brls::sync([done, r]() { done(r); });
+        brls::sync([done, r, key]() {
+            if (r.ok)
+            {
+                if (metaCache.emplace(key, r).second)
+                {
+                    metaOrder.push_back(key);
+                    while (metaOrder.size() > kMetaCacheMax)
+                    {
+                        metaCache.erase(metaOrder.front());
+                        metaOrder.pop_front();
+                    }
+                }
+            }
+            done(r);
+        });
     });
 }
 
@@ -1174,14 +1544,239 @@ void fetchStreamsAsync(const std::string& addonBase, const std::string& type,
     });
 }
 
+// Where a downloaded subtitle lands. Keyed on the addon-side id when there is
+// one (URLs carry tokens that change between calls), sanitised the same way the
+// poster cache is -- FAT32 refuses ':' and friends.
+static std::string subtitleCachePath(const Subtitle& s)
+{
+    std::string key = s.id.empty() ? s.url : (s.addon + "_" + s.id);
+    std::string safe;
+    for (char c : key)
+        safe += (isalnum((unsigned char)c) || c == '-' || c == '_') ? c : '_';
+    // Names come from an addon, so cap them; the tail is the distinguishing
+    // part of both an id and a URL.
+    if (safe.size() > 90) safe = safe.substr(safe.size() - 90);
+
+    // The extension is not cosmetic: mpv picks the subtitle demuxer from it.
+    // Read it off the URL's path, before any query string.
+    std::string path = s.url.substr(0, s.url.find('?'));
+    std::string ext  = ".srt";
+    for (const char* e : { ".vtt", ".ass", ".ssa", ".sub" })
+        if (path.size() > 4 &&
+            path.compare(path.size() - 4, 4, e) == 0)
+            ext = e;
+    return std::string(APPDATA_SUBS) + "/" + safe + ext;
+}
+
+void fetchSubtitlesAsync(const std::string& authKey, const std::string& type,
+                         const std::string& videoId,
+                         std::function<void(SubtitlesResult)> done)
+{
+    if (authKey.empty() || videoId.empty())
+    {
+        SubtitlesResult r;
+        r.error = "Not a Stremio playback";
+        done(r);
+        return;
+    }
+
+    // Normally free: the collection is cached after the first call of the
+    // session (see fetchAddonsAsync).
+    fetchAddonsAsync(authKey, [type, videoId, done](AddonsResult ar) {
+        if (!ar.ok)
+        {
+            SubtitlesResult r;
+            r.error = ar.error;
+            done(r);
+            return;
+        }
+
+        auto list = std::make_shared<std::vector<Addon>>();
+        for (const auto& a : ar.addons)
+            if (a.hasSubtitles && a.supportsType(type)) list->push_back(a);
+
+        if (list->empty())
+        {
+            // Nothing installed that serves subtitles: not a failure, just an
+            // empty answer. The player says "no subtitle addon" rather than
+            // reporting an error nobody can act on.
+            SubtitlesResult r;
+            r.ok = true;
+            done(r);
+            return;
+        }
+
+        brls::async([list, type, videoId, done]() {
+            SubtitlesResult r;
+            // One addon at a time rather than in parallel. These run while the
+            // engine is streaming, and the console's socket pool is what the
+            // whole app is short of (see the ENOBUFS note in the vendored
+            // borealis) -- a couple of extra seconds here costs nothing, the
+            // list is fetched long before anyone opens the menu.
+            for (const auto& a : *list)
+            {
+                std::string url = a.base + "/subtitles/" + http::urlEncode(type) +
+                                  "/" + http::urlEncode(videoId) + ".json";
+                std::string resp, err;
+                if (!http::get(url, resp, err))
+                {
+                    brls::Logger::warning("[stremio] subtitles from {} failed: {}",
+                                          a.name, err);
+                    if (r.error.empty()) r.error = err;
+                    continue;  // one addon down; the others may still answer
+                }
+                r.ok = true;
+                for (const auto& o : json::objects(resp, "subtitles"))
+                {
+                    Subtitle s;
+                    s.url   = json::str(o, "url");
+                    s.lang  = json::str(o, "lang");
+                    s.id    = json::str(o, "id");
+                    s.addon = a.name;
+                    if (s.url.empty()) continue;
+
+                    bool dup = false;
+                    for (const auto& x : r.subs)
+                        if (x.url == s.url) { dup = true; break; }
+                    if (!dup) r.subs.push_back(s);
+                }
+            }
+
+            // OpenSubtitles alone can answer with dozens of files for a popular
+            // title. Past a point they are the same subtitle from different
+            // rips, and a selector nobody can scroll is worse than a short one.
+            constexpr size_t kMaxSubs = 40;
+
+            // The preferred language first -- stable, so each language keeps the
+            // order its addon sent (which is roughly best-match first).
+            std::string want = config::preferredSubLang();
+            std::string wantLabel = config::langLabelFor(want);
+            std::stable_sort(r.subs.begin(), r.subs.end(),
+                             [&](const Subtitle& a, const Subtitle& b) {
+                                 bool pa = config::langLabelFor(a.lang) == wantLabel;
+                                 bool pb = config::langLabelFor(b.lang) == wantLabel;
+                                 return pa && !pb;
+                             });
+            if (r.subs.size() > kMaxSubs) r.subs.resize(kMaxSubs);
+
+            brls::Logger::info("[stremio] subtitles {} -> {} ({} addons)", videoId,
+                               r.subs.size(), list->size());
+            brls::sync([done, r]() { done(r); });
+        });
+    });
+}
+
+void downloadSubtitleAsync(const Subtitle& sub,
+                           std::function<void(std::string)> done)
+{
+    std::string path = subtitleCachePath(sub);
+    if (FILE* f = std::fopen(path.c_str(), "rb"))
+    {
+        std::fclose(f);
+        done(path);
+        return;
+    }
+
+    std::string url = sub.url;
+    brls::async([url, path, done]() {
+        std::string err;
+        bool ok = http::download(url, path, err);
+        if (!ok)
+            brls::Logger::warning("[stremio] subtitle download failed: {}", err);
+        std::string out = ok ? path : std::string();
+        brls::sync([done, out]() { done(out); });
+    });
+}
+
+// {base}/catalog/{type}/{id}[/{extras}].json. Stremio puts the extras in a path
+// segment of their own, spelled "k=v&k=v": the VALUES are percent-encoded, the
+// separators are not -- which is why this is built by hand rather than by
+// running the whole segment through urlEncode.
+static std::string catalogUrl(const std::string& addonBase,
+                              const std::string& type,
+                              const std::string& catalogId,
+                              const CatalogQuery& q)
+{
+    std::string url = addonBase + "/catalog/" + http::urlEncode(type) + "/" +
+                      http::urlEncode(catalogId);
+    std::string extra;
+    if (!q.genre.empty()) extra = "genre=" + http::urlEncode(q.genre);
+    if (q.skip > 0)
+    {
+        if (!extra.empty()) extra += "&";
+        extra += "skip=" + std::to_string(q.skip);
+    }
+    if (!extra.empty()) url += "/" + extra;
+    return url + ".json";
+}
+
+// Manifests are static for the life of a session and a genre list is a few
+// hundred bytes, so one read per (addon, type, catalog) is plenty -- reopening
+// a section must not go back to the network for a list that cannot have
+// changed. UI thread only, like addonCache.
+static std::map<std::string, std::vector<std::string>> genreCache;
+
+void fetchCatalogGenresAsync(const std::string& addonBase,
+                             const std::string& type,
+                             const std::string& catalogId,
+                             std::function<void(std::vector<std::string>)> done)
+{
+    std::string key = addonBase + "|" + type + "|" + catalogId;
+    auto hit        = genreCache.find(key);
+    if (hit != genreCache.end())
+    {
+        done(hit->second);
+        return;
+    }
+
+    brls::async([addonBase, type, catalogId, key, done]() {
+        std::vector<std::string> genres;
+        std::string resp, err;
+        if (!http::get(addonBase + "/manifest.json", resp, err))
+        {
+            brls::Logger::warning("[stremio] manifest {} failed: {}", addonBase,
+                                  err);
+        }
+        else
+        {
+            for (const auto& cat : json::objects(resp, "catalogs"))
+            {
+                if (json::str(cat, "type") != type) continue;
+                if (json::str(cat, "id") != catalogId) continue;
+                for (const auto& ex : json::objects(cat, "extra"))
+                    if (json::str(ex, "name") == "genre")
+                        genres = json::strings(ex, "options");
+                // Manifests written before "extra" existed list them straight
+                // on the catalog instead.
+                if (genres.empty()) genres = json::strings(cat, "genres");
+                break;
+            }
+            brls::Logger::info("[stremio] genres {}/{} -> {}", type, catalogId,
+                               genres.size());
+        }
+        // Cached even when empty: a catalog with no genres must not be asked
+        // again every time its section is opened.
+        brls::sync([key, genres, done]() {
+            genreCache[key] = genres;
+            done(genres);
+        });
+    });
+}
+
 void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
                        const std::string& catalogId,
                        std::function<void(LibraryResult)> done)
 {
-    brls::async([addonBase, type, catalogId, done]() {
+    fetchCatalogAsync(addonBase, type, catalogId, CatalogQuery(), done);
+}
+
+void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
+                       const std::string& catalogId, const CatalogQuery& query,
+                       std::function<void(LibraryResult)> done)
+{
+    brls::async([addonBase, type, catalogId, query, done]() {
         LibraryResult r;
-        std::string url = addonBase + "/catalog/" + http::urlEncode(type) + "/" +
-                          http::urlEncode(catalogId) + ".json";
+        std::string url = catalogUrl(addonBase, type, catalogId, query);
         std::string resp, err;
         if (!http::get(url, resp, err))
         {
@@ -1258,6 +1853,12 @@ StremioTab::StremioTab()
     NVGcolor hintColor = theme::textDim();
 
     // ---- sign-in form ----------------------------------------------------
+    // A card with two rows that look like the fields they stand for. It used to
+    // be three identical 360px buttons in a column -- "Email", "Password",
+    // "Sign in" -- where the first two open a keyboard and the third submits,
+    // which the shapes did nothing to tell apart. What had been typed showed as
+    // a bare line floating above them, and the password's state was announced
+    // in the same label as the errors.
     loginBox = new brls::Box();
     loginBox->setAxis(brls::Axis::COLUMN);
     loginBox->setJustifyContent(brls::JustifyContent::CENTER);
@@ -1265,58 +1866,65 @@ StremioTab::StremioTab()
     loginBox->setGrow(1.0f);
     loginBox->setPadding(0, 60, 0, 60);
 
+    constexpr float kFormW = 480.0f;
+
+    // The mark, drawn rather than loaded so it follows the accent (see
+    // theme::drawStremioMark).
+    class Mark : public brls::Box
+    {
+      public:
+        void draw(NVGcontext* vg, float x, float y, float w, float h,
+                  brls::Style style, brls::FrameContext* ctx) override
+        {
+            theme::drawStremioMark(vg, x, y, w);
+        }
+    };
+    auto* mark = new Mark();
+    mark->setDimensions(72.0f, 72.0f);
+    mark->setMarginBottom(18.0f);
+    loginBox->addView(mark);
+
     auto* title = new brls::Label();
-    title->setText("Stremio");
-    title->setFontSize(28);
-    title->setTextColor(theme.getColor("brls/text"));
-    title->setMargins(0, 0, 16, 0);
+    title->setText("Sign in to Stremio");
+    title->setFontSize(30.0f);
+    title->setTextColor(theme::text());
     loginBox->addView(title);
 
     auto* hint = new brls::Label();
-    hint->setText("Sign in to your Stremio account to see your library.");
-    hint->setFontSize(18);
-    hint->setTextColor(hintColor);
+    hint->setText("Your library, your addons and their sources.");
+    hint->setFontSize(18.0f);
+    hint->setTextColor(theme::textMuted());
     hint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-    hint->setMargins(0, 0, 28, 0);
+    hint->setMargins(8.0f, 0.0f, 26.0f, 0.0f);
     loginBox->addView(hint);
 
-    emailLabel = new brls::Label();
-    emailLabel->setText("No email entered");
-    emailLabel->setFontSize(20);
-    emailLabel->setTextColor(theme.getColor("brls/text"));
-    emailLabel->setMargins(0, 0, 20, 0);
-    loginBox->addView(emailLabel);
+    auto* card = new brls::Box();
+    card->setAxis(brls::Axis::COLUMN);
+    card->setWidth(kFormW);
+    card->setMarginBottom(22.0f);
 
-    auto* emailBtn = new brls::Button();
-    emailBtn->setText("Email");
-    emailBtn->setWidth(360.0f);
-    emailBtn->setMargins(0, 0, 12, 0);
-    emailBtn->registerClickAction([this](brls::View*) { promptEmail(); return true; });
-    loginBox->addView(emailBtn);
-
-    auto* passBtn = new brls::Button();
-    passBtn->setText("Password");
-    passBtn->setWidth(360.0f);
-    passBtn->setMargins(0, 0, 24, 0);
-    passBtn->registerClickAction([this](brls::View*) { promptPassword(); return true; });
-    loginBox->addView(passBtn);
+    card->addView(loginField("EMAIL", "Not entered",
+                             [this]() { promptEmail(); }, &emailLabel));
+    card->addView(loginField("PASSWORD", "Not entered",
+                             [this]() { promptPassword(); }, &passLabel));
+    loginBox->addView(card);
 
     loginBtn = new brls::Button();
     loginBtn->setStyle(&brls::BUTTONSTYLE_PRIMARY);
     loginBtn->setText("Sign in");
-    loginBtn->setWidth(360.0f);
+    loginBtn->setWidth(kFormW);
     loginBtn->registerClickAction([this](brls::View*) { doLogin(); return true; });
     loginBox->addView(loginBtn);
 
     statusLabel = new brls::Label();
     statusLabel->setText("");
-    statusLabel->setFontSize(18);
-    statusLabel->setTextColor(hintColor);
+    statusLabel->setFontSize(17.0f);
+    statusLabel->setTextColor(theme::textMuted());
     statusLabel->setHorizontalAlign(brls::HorizontalAlign::CENTER);
     // Fixed height: without it the column re-centres every time this text
     // changes, so the whole form jumped around on a failed sign-in.
     statusLabel->setHeight(28.0f);
-    statusLabel->setMargins(20, 0, 0, 0);
+    statusLabel->setMargins(16.0f, 0.0f, 0.0f, 0.0f);
     loginBox->addView(statusLabel);
 
     this->addView(loginBox);
@@ -1520,13 +2128,54 @@ void StremioTab::onGlobalFocus(brls::View* focused)
     });
 }
 
+brls::Box* StremioTab::loginField(const char* caption, const char* placeholder,
+                                  std::function<void()> onPress,
+                                  brls::Label** value)
+{
+    auto* row = new brls::Box();
+    row->setAxis(brls::Axis::COLUMN);
+    row->setPadding(12.0f, 20.0f, 14.0f, 20.0f);
+    row->setMarginBottom(10.0f);
+    row->setCornerRadius(8.0f);
+    row->setBackgroundColor(theme::surfaceSunken());
+    row->setFocusable(true);
+    row->setHighlightCornerRadius(8.0f);
+    row->registerClickAction([onPress](brls::View*) {
+        onPress();
+        return true;
+    });
+    row->addGestureRecognizer(new brls::TapGestureRecognizer(row));
+
+    auto* cap = new brls::Label();
+    cap->setText(caption);
+    cap->setFontSize(14.0f);
+    cap->setTextColor(theme::textMuted());
+    row->addView(cap);
+
+    auto* val = new brls::Label();
+    val->setText(placeholder);
+    val->setFontSize(21.0f);
+    // Faint until there is something in it: an empty field and a filled one
+    // have to be distinguishable at a glance, which is the whole point of
+    // showing the value in the row instead of above the form.
+    val->setTextColor(theme::textFaint());
+    val->setSingleLine(true);
+    val->setMarginTop(2.0f);
+    row->addView(val);
+
+    *value = val;
+    return row;
+}
+
 void StremioTab::promptEmail()
 {
     brls::Application::getImeManager()->openForText(
         [this, live = alive](std::string out) {
             if (!*live) return;
             email = out;
-            emailLabel->setText(email.empty() ? "No email entered" : email);
+            emailLabel->setText(email.empty() ? "Not entered" : email);
+            emailLabel->setTextColor(email.empty() ? theme::textFaint()
+                                                   : theme::text());
         },
         "Stremio email", "", 128, email);
 }
@@ -1537,8 +2186,14 @@ void StremioTab::promptPassword()
         [this, live = alive](std::string out) {
             if (!*live) return;
             password = out;
-            // Never echo the password back to the screen.
-            statusLabel->setText(password.empty() ? "" : "Password entered");
+            // Never echoed: the row shows one bullet per character, capped so a
+            // long password does not report its own length across the card.
+            size_t n = password.size() > 16 ? 16 : password.size();
+            std::string dots;
+            for (size_t i = 0; i < n; i++) dots += "\xE2\x80\xA2";
+            passLabel->setText(password.empty() ? "Not entered" : dots);
+            passLabel->setTextColor(password.empty() ? theme::textFaint()
+                                                     : theme::text());
         },
         "Stremio password", "", 128, "");
 }
@@ -2122,8 +2777,16 @@ bool StremioTab::capped() const
 // The tile that ends a capped section, shaped like the items it follows so the
 // row/strip keeps its rhythm: a poster-sized card in the poster style, a row in
 // the others. Both open the whole section full-screen.
+// The two Popular views are the only ones with a See More (see capped()), and
+// each shows one type.
+const char* StremioTab::catalogType() const
+{
+    return view == View::PopularSeries ? "series" : "movie";
+}
+
 brls::Box* StremioTab::buildSeeMoreCard(const std::string& title,
-                                        std::vector<stremio::LibItem> all)
+                                        std::vector<stremio::LibItem> all,
+                                        std::string catType, std::string catId)
 {
     auto* card = new brls::Box();
     card->setAxis(brls::Axis::COLUMN);
@@ -2138,8 +2801,8 @@ brls::Box* StremioTab::buildSeeMoreCard(const std::string& title,
     card->setHighlightCornerRadius(
         kCardRadius +
         brls::Application::getStyle()["brls/highlight/stroke_width"] / 2);
-    card->registerClickAction([this, title, all](brls::View*) {
-        openSection(title, all);
+    card->registerClickAction([this, title, all, catType, catId](brls::View*) {
+        openSection(title, all, catType, catId);
         return true;
     });
     card->addGestureRecognizer(new brls::TapGestureRecognizer(card));
@@ -2160,7 +2823,8 @@ brls::Box* StremioTab::buildSeeMoreCard(const std::string& title,
 }
 
 brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
-                                       std::vector<stremio::LibItem> all)
+                                       std::vector<stremio::LibItem> all,
+                                       std::string catType, std::string catId)
 {
     auto* row = new brls::Box();
     row->setAxis(brls::Axis::ROW);
@@ -2175,8 +2839,8 @@ brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
     row->setHighlightCornerRadius(
         kCardRadius +
         brls::Application::getStyle()["brls/highlight/stroke_width"] / 2);
-    row->registerClickAction([this, title, all](brls::View*) {
-        openSection(title, all);
+    row->registerClickAction([this, title, all, catType, catId](brls::View*) {
+        openSection(title, all, catType, catId);
         return true;
     });
     row->addGestureRecognizer(new brls::TapGestureRecognizer(row));
@@ -2196,23 +2860,144 @@ brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
     return row;
 }
 
-// The whole of a section, full screen: title, then every item in the style the
-// list is in -- a grid of cards under the poster style, the same rows under the
-// others. Only the footer sits around it; the header would just repeat the
-// title. Built here rather than by the activity because the card and row
-// builders (and the account key they need) live on the tab.
-void StremioTab::openSection(std::string title, std::vector<stremio::LibItem> items)
+// The whole of a section, full screen: title, a genre filter, then the items in
+// the style the list is in -- a grid of cards under the poster style, the same
+// rows under the others. Only the footer sits around it; the header would just
+// repeat the title. Built here rather than by the activity because the card and
+// row builders (and the account key they need) live on the tab.
+//
+// Unlike the strip it came from, this page is not a fixed set of items: it pages
+// the catalog as you scroll (Stremio's "skip" extra) and re-queries it when the
+// genre changes ("genre"). `items` is the first page, already in hand.
+void StremioTab::openSection(std::string title,
+                             std::vector<stremio::LibItem> items,
+                             std::string catType, std::string catId)
 {
-    auto* root = new brls::Box();
+    // Everything the page mutates. On the heap and shared, because it outlives
+    // this function and belongs to the pushed page rather than to the tab --
+    // which keeps its own state for the list behind it.
+    struct State
+    {
+        std::vector<stremio::LibItem> items;
+        std::set<std::string> ids;  // what is already on the page (see loadMore)
+        std::string type, id;
+        std::string genre;                   // "" = All
+        std::vector<std::string> genresList;  // as the manifest spells them
+        int nextSkip   = 0;     // what to ask the catalog for next
+        bool loading   = false;
+        bool exhausted = false;
+        // Bumped on every genre change. A request carries the value it was
+        // issued under and its answer is dropped if that no longer matches --
+        // without it, switching All -> Drama -> Family fast lets Drama's reply
+        // land after Family's clear and fill the page with the wrong genre.
+        int gen = 0;
+        // The line currently being filled, in the poster grid. Raw pointers
+        // into the view tree, reset whenever the list is cleared.
+        brls::Box* line = nullptr;
+        int inLine      = 0;
+        // Lifetime of the cards CURRENTLY in the grid, which is shorter than
+        // the page's: a genre change frees every one of them while the page
+        // lives on. Their poster fetches hold this, so retiring it is what
+        // keeps a late download off a freed Image.
+        std::shared_ptr<bool> gridAlive = std::make_shared<bool>(true);
+    };
+    // Retired by ~SectionActivity. Everything this page starts -- poster
+    // downloads, catalog pages -- checks it, because B can pop the page while
+    // they are in flight and they all hold raw pointers into its view tree.
+    auto pageAlive = std::make_shared<bool>(true);
+
+    auto st   = std::make_shared<State>();
+    st->type  = catType;
+    st->id    = catId;
+    st->items = std::move(items);
+    for (const auto& it : st->items) st->ids.insert(it.id);
+    st->nextSkip = (int)st->items.size();
+
+    auto* root = new GrowingSection();
     root->setAxis(brls::Axis::COLUMN);
     root->setGrow(1.0f);
     root->setPaddingTop(28.0f);
 
+    // As many cards per line as the logical width takes -- which is not a
+    // constant, it follows the UI-size setting and the dock state.
+    //
+    // A line is (kPosterInset - 8) of left inset, then N cards of 8 + 210 + 16.
+    // The +16 below is the LAST card's own right margin, which already provides
+    // part of the gap at the right edge: counting a full kPosterInset there on
+    // top of it -- which "contentWidth - 2 * kPosterInset" did -- lost a whole
+    // column at the 100% UI size (four cards and a card-wide hole on the right,
+    // where five fit exactly).
+    const float step     = kPosterCardW + 24.0f;
+    const float lineLeft = kPosterInset - 8.0f;
+    const float usable =
+        brls::Application::contentWidth - lineLeft - kPosterInset + 16.0f;
+    int perRow = (int)(usable / step);
+    if (perRow < 1) perRow = 1;
+
+    // The columns almost never divide the width exactly, and a card is 210 wide
+    // whatever the screen -- so N columns at their natural spacing leave up to a
+    // card's worth of nothing against the right edge (234px at the 89% UI size).
+    // Spread that remainder across the gaps BETWEEN cards instead: the grid then
+    // ends where the header does at every UI size, and the columns simply
+    // breathe a little more on the wider ones.
+    float gapExtra = 0.0f;
+    if (perRow > 1)
+    {
+        float lastRight = lineLeft + perRow * step - 16.0f;
+        float slack     = brls::Application::contentWidth - kPosterInset - lastRight;
+        if (slack > 0.0f) gapExtra = slack / (perRow - 1);
+    }
+
+    // The page header: the title on the left, the filter pinned to the right.
+    // One row, so the filter costs no vertical space of its own and the grid
+    // starts higher.
+    auto* head = new brls::Box();
+    head->setAxis(brls::Axis::ROW);
+    head->setAlignItems(brls::AlignItems::CENTER);
+    // Left matches the grid's effective inset (the lines' kPosterInset - 8 plus
+    // the cards' own 8); right matches where the grid now ends, which gapExtra
+    // has just pinned to the same inset. The other styles have no grid: their
+    // rows end at 40.
+    head->setMargins(0.0f, posterStyle() ? kPosterInset : 40.0f, 0.0f,
+                     kPosterInset);
+    root->addView(head);
+
+    // "Movies - Popular", "Shows - Featured". The strip this came from sat under
+    // a view whose own name carried the type; this page stands alone, so it has
+    // to say it. No item count: the page pages, so any number it showed would be
+    // "how much has been scrolled so far", which is not worth a line.
     auto* h = new brls::Label();
-    h->setText(title + "  ·  " + std::to_string(items.size()));
+    h->setText(std::string(catType == "series" ? "Shows" : "Movies") + " - " +
+               title);
     h->setFontSize(28.0f);
-    h->setMargins(0.0f, 0.0f, 16.0f, 60.0f);
-    root->addView(h);
+    h->setSingleLine(true);
+    h->setGrow(1.0f);  // pushes the filter to the right edge
+    head->addView(h);
+
+    // Starts as the only option and grows once the addon's manifest is read.
+    // Built now rather than after that read so the page appears immediately --
+    // the manifest is one more request, and it is cached from then on. Fixed
+    // width: a SelectorCell is a full-width list row by default, which is not
+    // what it is being used as here.
+    auto* genreCell = new brls::SelectorCell();
+    genreCell->setWidth(340.0f);
+    genreCell->setShrink(0.0f);
+    // RecyclerCell's constructor gives every cell a 1px bottom separator, which
+    // is right in a list and wrong here -- it drew a rule under the filter with
+    // nothing below it to separate from.
+    genreCell->setLineBottom(0.0f);
+    head->addView(genreCell);
+
+    // Shown while a query is out and the grid has nothing in it -- picking a
+    // genre empties the page for as long as the round trip takes, and an empty
+    // screen with no explanation reads as a bug.
+    auto* busy = new brls::Label();
+    busy->setText("Loading...");
+    busy->setFontSize(20.0f);
+    busy->setTextColor(theme::textMuted());
+    busy->setMargins(24.0f, 0.0f, 0.0f, kPosterInset);
+    busy->setVisibility(brls::Visibility::GONE);
+    root->addView(busy);
 
     auto* scroll = new brls::ScrollingFrame();
     scroll->setGrow(1.0f);
@@ -2221,38 +3006,186 @@ void StremioTab::openSection(std::string title, std::vector<stremio::LibItem> it
     scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
     auto* list = new brls::Box();
     list->setAxis(brls::Axis::COLUMN);
-
-    if (posterStyle())
-    {
-        // As many cards per line as the logical width takes -- which is not a
-        // constant, it follows the UI-size setting and the dock state.
-        const float step = kPosterCardW + 24.0f;
-        int perRow = (int)((brls::Application::contentWidth - 2 * kPosterInset) / step);
-        if (perRow < 1) perRow = 1;
-
-        brls::Box* line = nullptr;
-        for (size_t i = 0; i < items.size(); i++)
-        {
-            if (i % (size_t)perRow == 0)
-            {
-                line = new brls::Box();
-                line->setAxis(brls::Axis::ROW);
-                line->setMarginLeft(kPosterInset - 8.0f);  // the cards' own left margin
-                line->setMarginBottom(16.0f);
-                list->addView(line);
-            }
-            line->addView(buildPosterCard(items[i], false));
-        }
-    }
-    else
-    {
-        list->setPaddingLeft(kPosterInset);
-        for (const auto& it : items) list->addView(buildItemRow(it, false));
-    }
-
+    if (!posterStyle()) list->setPaddingLeft(kPosterInset);
     scroll->setContentView(list);
     root->addView(scroll);
-    brls::Application::pushActivity(new SectionActivity(root));
+
+    root->scroll = scroll;
+    root->list   = list;
+
+    // Adds st->items[from..] to the list, continuing the part-filled line the
+    // last page left behind rather than starting a new one -- a page boundary
+    // must not show up as a gap in the grid.
+    auto appendFrom = [this, list, st, perRow, gapExtra, genreCell,
+                       busy](size_t from) {
+        // The cards built below belong to this grid, so their artwork fetches
+        // must die with it -- not with the tab's list, which outlives the page,
+        // and not with the page either, which outlives a genre change. See
+        // attachPoster.
+        artToken = st->gridAlive;
+        for (size_t i = from; i < st->items.size(); i++)
+        {
+            // UP out of the top of the list has to be said explicitly: the
+            // ScrollingFrame hands focus back to itself while it can still
+            // scroll up, so traversal alone never reaches the genre row (the
+            // same reason the library has setLibraryUpTarget).
+            bool top = list->getChildren().empty();
+
+            if (!posterStyle())
+            {
+                brls::Box* row = buildItemRow(st->items[i], false);
+                if (top)
+                    row->setCustomNavigationRoute(brls::FocusDirection::UP,
+                                                  genreCell);
+                list->addView(row);
+                continue;
+            }
+            if (!st->line || st->inLine >= perRow)
+            {
+                st->line = new brls::Box();
+                st->line->setAxis(brls::Axis::ROW);
+                // The cards carry their own left margin.
+                st->line->setMarginLeft(kPosterInset - 8.0f);
+                st->line->setMarginBottom(16.0f);
+                list->addView(st->line);
+                st->inLine = 0;
+            }
+            brls::Box* card = buildPosterCard(st->items[i], false);
+            // Everything but the last column carries a share of the slack, so
+            // a part-filled final line still lines up with the ones above it.
+            if (st->inLine < perRow - 1)
+                card->setMarginRight(16.0f + gapExtra);
+            // Every card of the first line, whichever page it came from.
+            if (list->getChildren().size() == 1)
+                card->setCustomNavigationRoute(brls::FocusDirection::UP,
+                                               genreCell);
+            st->line->addView(card);
+            st->inLine++;
+        }
+        artToken = nullptr;
+        if (!st->items.empty()) busy->setVisibility(brls::Visibility::GONE);
+    };
+
+    auto live = this->alive;
+
+    // Pulls the next page. Called from the draw loop while the scroll sits near
+    // the bottom, so the two flags are what stop it firing sixty times a second
+    // -- and what stops it asking forever once the catalog runs out.
+    auto loadMore = [live, pageAlive, st, appendFrom, busy]() {
+        if (st->loading || st->exhausted) return;
+        st->loading = true;
+        if (st->items.empty())
+        {
+            busy->setText("Loading...");
+            busy->setVisibility(brls::Visibility::VISIBLE);
+        }
+
+        stremio::CatalogQuery q;
+        q.genre  = st->genre;
+        q.skip   = st->nextSkip;
+        int gen  = st->gen;
+        stremio::fetchCatalogAsync(
+            kCinemeta, st->type, st->id, q,
+            [live, pageAlive, st, appendFrom, busy, gen](stremio::LibraryResult r) {
+                if (!*live || !*pageAlive) return;
+                // Answer to a question the page no longer asks.
+                if (gen != st->gen) return;
+                st->loading = false;
+                busy->setVisibility(brls::Visibility::GONE);
+                if (!r.ok || r.items.empty())
+                {
+                    st->exhausted = true;
+                    // Nothing at all under this filter (or the addon refused).
+                    // Leave the line up, saying which -- an empty page with no
+                    // word on it is the same blank screen the busy label exists
+                    // to avoid.
+                    if (st->items.empty())
+                    {
+                        busy->setText(r.ok ? "Nothing here" : "Catalog unavailable");
+                        busy->setVisibility(brls::Visibility::VISIBLE);
+                    }
+                    return;
+                }
+                // Skip is counted in what the addon sent, not in what we kept:
+                // an addon that pads the last page with items we already have
+                // would otherwise make us ask for the same offset forever.
+                st->nextSkip += (int)r.items.size();
+
+                size_t from = st->items.size();
+                for (const auto& it : r.items)
+                    if (st->ids.insert(it.id).second) st->items.push_back(it);
+                if (st->items.size() == from)
+                {
+                    st->exhausted = true;  // a whole page of things we had
+                    return;
+                }
+                appendFrom(from);
+            });
+    };
+    root->onNearBottom = loadMore;
+
+    // Genre change: the page is a different query now, so it starts over.
+    auto onGenre = [st, list, scroll, genreCell, loadMore](int sel) {
+        // Index 0 is "All"; the rest are the manifest's list, offset by it.
+        std::string want;
+        if (sel > 0 && (size_t)(sel - 1) < st->genresList.size())
+            want = st->genresList[(size_t)sel - 1];
+        if (want == st->genre) return;
+        st->genre = want;
+
+        // clearViews() frees whatever it holds, including the focused view --
+        // the same trap as the library list. Normally the cursor is up in the
+        // dropdown that fired this, not in the grid, but park it if it is not.
+        brls::View* cur = brls::Application::getCurrentFocus();
+        if (cur && isUnder(cur, list)) brls::Application::giveFocus(genreCell);
+
+        // The cards about to be freed each have a poster fetch that writes
+        // into their Image when it lands. Retiring the grid's token is what
+        // stops that writing into freed views. NOT the tab's rowsAlive: that
+        // belongs to the list behind this page, which is not being touched.
+        *st->gridAlive = false;
+        st->gridAlive  = std::make_shared<bool>(true);
+        list->clearViews();
+        st->items.clear();
+        st->ids.clear();
+        st->line      = nullptr;
+        st->inLine    = 0;
+        st->nextSkip  = 0;
+        st->exhausted = false;
+        st->loading   = false;
+        st->gen++;  // any reply still out belongs to the previous genre
+
+        // The frame keeps the offset it was scrolled to, and the new query
+        // starts empty -- leave it and the first page is drawn above the
+        // viewport, which looks exactly like the list vanishing.
+        scroll->setContentOffsetY(0.0f, false);
+
+        loadMore();  // the first page of the new query
+    };
+
+    // Cinemeta's "year" catalog (the Featured strip) filters by YEAR through the
+    // very same "genre" extra -- its options are 2026, 2025, ... So the row is
+    // named after what it will actually hold, not after the Stremio prop.
+    genreCell->init(catId == "year" ? "Year" : "Genre", { "All" }, 0, onGenre);
+
+    stremio::fetchCatalogGenresAsync(
+        kCinemeta, catType, catId,
+        [live, pageAlive, st, genreCell](std::vector<std::string> g) {
+            if (!*live || !*pageAlive) return;
+            if (g.empty()) return;  // no genres: the row stays at All
+            st->genresList = g;
+            std::vector<std::string> labels{ "All" };
+            for (const auto& x : g) labels.push_back(x);
+            genreCell->setData(labels);
+            genreCell->setSelection(0, true);  // silent: nothing has changed
+        });
+
+    appendFrom(0);
+    brls::Application::pushActivity(
+        new SectionActivity(root, [st, pageAlive]() {
+            *pageAlive     = false;  // catalog pages, the genre list
+            *st->gridAlive = false;  // the artwork of the cards on screen
+        }));
 }
 
 // A section heading into libList. `left` is the inset the style needs -- see
@@ -2330,7 +3263,9 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
         // scroll.
         brls::View* last = addStripSection(
             sectionTitle(), head(items),
-            overflows(items) ? buildSeeMoreCard(sectionTitle(), items) : nullptr);
+            overflows(items) ? buildSeeMoreCard(sectionTitle(), items,
+                                              catalogType(), "top")
+                             : nullptr);
         // Popular Movies / Shows carry a second strip under the first. It is
         // absent until Cinemeta's second catalog lands (loadFeatured re-renders
         // when it does), and stays absent if that request fails.
@@ -2338,7 +3273,9 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
         if (feat && !feat->empty())
             last = addStripSection(
                 "Featured", head(*feat),
-                overflows(*feat) ? buildSeeMoreCard("Featured", *feat) : nullptr);
+                overflows(*feat) ? buildSeeMoreCard("Featured", *feat,
+                                                   catalogType(), "year")
+                                 : nullptr);
         finishList(last);
         return;
     }
@@ -2375,9 +3312,11 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
         for (const auto& it : head(items)) popCol->addView(buildItemRow(it, false));
         for (const auto& it : head(*feat)) featCol->addView(buildItemRow(it, false));
         if (overflows(items))
-            popCol->addView(buildSeeMoreRow(sectionTitle(), items));
+            popCol->addView(
+                buildSeeMoreRow(sectionTitle(), items, catalogType(), "top"));
         if (overflows(*feat))
-            featCol->addView(buildSeeMoreRow("Featured", *feat));
+            featCol->addView(
+                buildSeeMoreRow("Featured", *feat, catalogType(), "year"));
 
         split->addView(popCol);
         split->addView(featCol);
@@ -2393,7 +3332,7 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
     for (const auto& it : head(items)) last = addItemRow(it);
     if (overflows(items))
     {
-        last = buildSeeMoreRow(sectionTitle(), items);
+        last = buildSeeMoreRow(sectionTitle(), items, catalogType(), "top");
         libList->addView(last);
     }
     finishList(last);
@@ -2489,6 +3428,50 @@ brls::Box* StremioTab::buildItemRow(const stremio::LibItem& it, bool showType)
 
 // The focusable row both styles are built on: its size, its click action and
 // its tap gesture. Empty -- the caller fills it.
+// X on a Continue Watching tile drops it from the row. Only there: everywhere
+// else the same key means something else or nothing, and the footer hint --
+// which borealis draws from the registered action -- would be a lie.
+//
+// The account has no "continue watching" list to delete from; the row is
+// derived from each item's watch state, so clearing that state is the removal
+// (see stremio::clearWatchStateAsync).
+void StremioTab::bindRemoveFromContinue(brls::Box* card,
+                                        const stremio::LibItem& it)
+{
+    if (view != View::ContinueWatching) return;
+
+    auto live = alive;
+    std::string key = authKey;
+    // Just "Remove": the hint sits in the footer next to every other one, and
+    // the full sentence pushed them all along.
+    card->registerAction(
+        "Remove", brls::BUTTON_X,
+        [this, live, key, id = it.id](brls::View*) {
+            stremio::clearWatchStateAsync(key, id, [this, live, id](bool ok) {
+                if (!*live) return;
+                if (!ok)
+                {
+                    brls::Application::notify("Could not remove it");
+                    return;
+                }
+                // Clear the same fields locally rather than dropping the item:
+                // Continue Watching is filtered on them, so this takes it out
+                // of the row while leaving it in the Library view where it may
+                // well belong. Then re-render, which parks focus safely.
+                for (auto& x : libItems)
+                    if (x.id == id)
+                    {
+                        x.videoId.clear();
+                        x.timeOffsetMs = 0;
+                        x.durationMs   = 0;
+                    }
+                renderView();
+            });
+            return true;
+        },
+        false, false, brls::SOUND_CLICK);
+}
+
 brls::Box* StremioTab::newRowShell(const stremio::LibItem& it, float height)
 {
     auto* row = new brls::Box();
@@ -2512,6 +3495,7 @@ brls::Box* StremioTab::newRowShell(const stremio::LibItem& it, float height)
         openLibraryItem(key, it);
         return true;
     });
+    bindRemoveFromContinue(row, it);
     // Tap gesture so the touchscreen works too (A-only otherwise).
     row->addGestureRecognizer(new brls::TapGestureRecognizer(row));
     return row;
@@ -2536,7 +3520,11 @@ brls::Image* StremioTab::newPoster(const stremio::LibItem& it, float w, float h,
 // empty slot instead of the whole list waiting on the network.
 void StremioTab::attachPoster(brls::Image* art, const stremio::LibItem& it)
 {
-    auto alive = rowsAlive;  // list may be rebuilt before the art lands
+    // artToken is set while a pushed page builds cards of its own (see
+    // openSection). Those Images die when that page is popped, not when the
+    // tab's list is rebuilt, so the fetch has to be tied to whichever of the
+    // two is the shorter-lived owner of this particular Image.
+    auto alive = artToken ? artToken : rowsAlive;
     stremio::fetchPosterAsync(it.id, it.poster, [art, alive](std::string path) {
         if (!*alive || path.empty()) return;
         art->setImageFromFile(path);
@@ -2876,6 +3864,7 @@ brls::Box* StremioTab::buildPosterCard(const stremio::LibItem& it, bool upToHead
         return true;
     });
     card->addGestureRecognizer(new brls::TapGestureRecognizer(card));
+    bindRemoveFromContinue(card, it);
     // A card in the page's FIRST strip cannot walk focus out on its own (the
     // frames keep it inside while they can still scroll), so it is handed the
     // way back to the header. Any strip below one has somewhere to go on its

@@ -115,4 +115,7 @@ vendored under `library/`.
 - [libutp](https://github.com/bittorrent/libutp) — uTP transport
 - [Stremio](https://www.stremio.com/) — account, library and addon protocol. This
   project is not affiliated with Stremio.
+- [curl](https://curl.se/docs/caextract.html) — the CA bundle in
+  `assets/cacert.pem`, Mozilla's root store, which is what certificates get
+  checked against on a console that mounts none
 - devkitPro / libnx — toolchain

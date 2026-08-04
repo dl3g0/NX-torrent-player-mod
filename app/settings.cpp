@@ -6,9 +6,11 @@
 #include <borealis/views/header.hpp>
 #include <borealis/views/label.hpp>
 #include <borealis/views/scrolling_frame.hpp>
+#include <borealis/views/tab_frame.hpp>
 #include <borealis/views/cells/cell_bool.hpp>
 #include <borealis/views/cells/cell_selector.hpp>
 
+#include <cctype>
 #include <cstdio>
 
 #include "config.hpp"
@@ -42,74 +44,99 @@ class AsyncLabel : public brls::Label
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
 };
 
-} // namespace
-
-void setUiScaleHook(std::function<void()> fn) { uiScaleHook = std::move(fn); }
-
-void applyUiScale()
+// The same guard for a Box that a background job fills with rows -- the Account
+// screen's addon list, whose fetch can land after B has popped it.
+class AsyncBox : public brls::Box
 {
-    // borealis lays out in a fixed 1280x720 logical space and multiplies it by
-    // windowScale to fill the output, so the UI keeps the same relative size
-    // whatever it is drawn to -- docked it is simply 1.5x bigger, with no more
-    // content on screen. Widening the logical space shrinks the UI instead; how
-    // far is the user's call, separately per mode, since a 1080p TV metres away
-    // and a 6" panel at arm's length do not want the same thing.
-    bool docked = brls::Application::windowWidth >= 1920;
-    uint32_t w  = (uint32_t)(docked ? config::get().dockedUiWidth
-                                    : config::get().handheldUiWidth);
-    uint32_t h  = w * 9 / 16;  // every offered width is 16:9, so this is exact
+  public:
+    ~AsyncBox() override { *alive = false; }
+    std::shared_ptr<bool> alive = std::make_shared<bool>(true);
+};
 
-    if (brls::Application::ORIGINAL_WINDOW_WIDTH == w) return;
+brls::View* generalPane();
+brls::View* playbackPane();
+brls::View* streamingPane();
+brls::View* stremioPane();
+brls::View* aboutPane();
 
-    brls::Application::ORIGINAL_WINDOW_WIDTH  = w;
-    brls::Application::ORIGINAL_WINDOW_HEIGHT = h;
+// ---------------------------------------------------------------------------
+// The panes. One per sidebar tab, each built fresh when its tab is entered
+// (TabFrame frees the previous one), so they read config at build time and
+// share nothing.
 
-    // Recomputes windowScale/contentWidth and relayouts the activity stack.
-    // Safe to call from the window-size-changed listener: that event is fired by
-    // onWindowResized *after* its own setWindowSize call, and setWindowSize does
-    // not fire it again -- so this is one extra layout pass, not a loop, and it
-    // lands before the next frame is drawn.
-    brls::Application::setWindowSize(brls::Application::windowWidth,
-                                     brls::Application::windowHeight);
-
-    // ... and because it does not fire it again, anything that keys off the UI
-    // size has to be told here. Editing the setting in Options reaches the
-    // header this way and no other.
-    if (uiScaleHook) uiScaleHook();
-}
-
-brls::View* SettingsActivity::createContentView()
+// The scrolling column a pane is. Returns the frame to hand to the tab; `list`
+// comes back as the box to fill.
+brls::ScrollingFrame* newPane(brls::Box** list)
 {
-    auto* box = new brls::Box();
-    box->setAxis(brls::Axis::COLUMN);
-    box->setGrow(1.0f);
-    // No side padding on the box: the ScrollingFrame pins its indicator to its
-    // own right edge, so any right padding here dragged the bar inward over the
-    // cells. The frame reaches the screen edge; the screen inset lives on the
-    // list's padding instead (which survives setContentView, unlike a margin).
-    box->setPadding(10.0f, 0.0f, 0.0f, 0.0f);
-
     auto* scroll = new brls::ScrollingFrame();
     scroll->setGrow(1.0f);
     // CENTERED, not the default NATURAL: NATURAL's pixel free-scroll hands focus
     // to the frame and re-grabs the topmost visible cell as you cross a page,
-    // which intermittently wedged the cursor on the Playback section and refused
-    // to go further. CENTERED moves focus one cell at a time and scrolls to keep
-    // it in view -- the same fix the Stremio list uses.
+    // which intermittently wedged the cursor and refused to go further.
+    // CENTERED moves focus one cell at a time and scrolls to keep it in view.
     scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
-    auto* list = new brls::Box();
-    list->setAxis(brls::Axis::COLUMN);
-    list->setPaddingLeft(60.0f);
-    list->setPaddingRight(40.0f);
-    // Breathing room so the last cell does not sit against the footer bar.
-    list->setPaddingBottom(40.0f);
 
+    auto* box = new brls::Box();
+    box->setAxis(brls::Axis::COLUMN);
+    // No margin: setContentView detaches the box and forces its width, so only
+    // padding survives. Right padding stays clear of the scrolling indicator,
+    // which the frame pins to its own edge.
+    box->setPadding(16.0f, 40.0f, 40.0f, 40.0f);
+    scroll->setContentView(box);
+
+    *list = box;
+    return scroll;
+}
+
+// A caption under the cell it belongs to.
+brls::Label* caption(const std::string& text)
+{
+    auto* l = new brls::Label();
+    l->setText(text);
+    l->setFontSize(15.0f);
+    l->setTextColor(theme::textMuted());
+    l->setLineHeight(1.4f);
+    l->setMargins(10.0f, 20.0f, 18.0f, 20.0f);
+    return l;
+}
+
+// Index of the stored width in the offered list. load() rejects anything it
+// does not offer, so the fallback only matters if the table is ever changed
+// without the defaults following it.
+int uiIndex(int width)
+{
+    const auto& ws = config::uiWidths();
+    for (size_t i = 0; i < ws.size(); i++)
+        if (ws[i] == width) return (int)i;
+    return 0;
+}
+
+// The list is shared between the two modes, but they do not default to the same
+// size -- so mark the default in each cell rather than in the table.
+std::vector<std::string> uiLabels(int dflt)
+{
+    std::vector<std::string> v = config::uiWidthLabels();
+    const auto& ws             = config::uiWidths();
+    for (size_t i = 0; i < ws.size(); i++)
+        if (ws[i] == dflt) v[i] += " (default)";
+    return v;
+}
+
+// Index of a stored language code in the offered list; "auto" (0) if we do not
+// know it -- a config.json edited by hand can say anything.
+int langIndex(const std::string& code)
+{
+    const auto& codes = config::langCodes();
+    for (size_t i = 0; i < codes.size(); i++)
+        if (codes[i] == code) return (int)i;
+    return 0;
+}
+
+brls::View* generalPane()
+{
+    brls::Box* list = nullptr;
+    auto* pane      = newPane(&list);
     config::Config& cfg = config::get();
-
-    // ---- general ---------------------------------------------------------
-    auto* general = new brls::Header();
-    general->setTitle("General");
-    list->addView(general);
 
     auto* startup = new brls::SelectorCell();
     startup->init("Category on startup", { "Local", "Stremio" },
@@ -141,13 +168,7 @@ brls::View* SettingsActivity::createContentView()
             // startup and is the only reader of this setting.
         });
     list->addView(variant);
-
-    auto* variantHint = new brls::Label();
-    variantHint->setText("Applies when you restart the app.");
-    variantHint->setFontSize(15.0f);
-    variantHint->setTextColor(theme::textMuted());
-    variantHint->setMargins(8.0f, 20.0f, 14.0f, 20.0f);
-    list->addView(variantHint);
+    list->addView(caption("The theme applies when you restart the app."));
 
     auto* accent = new brls::SelectorCell();
     accent->init(
@@ -192,27 +213,12 @@ brls::View* SettingsActivity::createContentView()
                     });
     list->addView(listStyle);
 
-    // Index of the stored width in the offered list. load() rejects anything it
-    // does not offer, so the fallback only matters if the table is ever changed
-    // without the defaults following it.
-    auto uiIndex = [](int width) {
-        const auto& ws = config::uiWidths();
-        for (size_t i = 0; i < ws.size(); i++)
-            if (ws[i] == width) return (int)i;
-        return 0;
-    };
-    // The list is shared between the two modes, but they do not default to the
-    // same size -- so mark the default in each cell rather than in the table.
-    auto uiLabels = [](int dflt) {
-        std::vector<std::string> v = config::uiWidthLabels();
-        const auto& ws             = config::uiWidths();
-        for (size_t i = 0; i < ws.size(); i++)
-            if (ws[i] == dflt) v[i] += " (default)";
-        return v;
-    };
+    auto* sizeHdr = new brls::Header();
+    sizeHdr->setTitle("UI size");
+    list->addView(sizeHdr);
 
     auto* dockedUi = new brls::SelectorCell();
-    dockedUi->init("UI size when docked", uiLabels(config::kDefaultDockedUiWidth),
+    dockedUi->init("Docked", uiLabels(config::kDefaultDockedUiWidth),
                    uiIndex(config::get().dockedUiWidth), [](int sel) {
                        config::get().dockedUiWidth = config::uiWidths()[sel];
                        config::save();
@@ -224,47 +230,25 @@ brls::View* SettingsActivity::createContentView()
     list->addView(dockedUi);
 
     auto* handheldUi = new brls::SelectorCell();
-    handheldUi->init("UI size in handheld",
-                     uiLabels(config::kDefaultHandheldUiWidth),
+    handheldUi->init("Handheld", uiLabels(config::kDefaultHandheldUiWidth),
                      uiIndex(config::get().handheldUiWidth), [](int sel) {
                          config::get().handheldUiWidth = config::uiWidths()[sel];
                          config::save();
                          brls::sync([] { applyUiScale(); });
                      });
     list->addView(handheldUi);
+    list->addView(caption(
+        "A wider logical space means a smaller UI. Stored per mode: a 1080p TV "
+        "metres away and a 6\" panel at arm's length do not want the same size."));
 
-    auto* logging = new brls::BooleanCell();
-    logging->init("Log file", cfg.logging, [](bool on) {
-        config::get().logging = on;
-        config::save();
-    });
-    list->addView(logging);
+    return pane;
+}
 
-    auto* logHint = new brls::Label();
-    logHint->setText(
-        "The log is written to the SD card continuously. Turn it on to diagnose a "
-        "problem, then restart the app.");
-    logHint->setFontSize(15.0f);
-    logHint->setTextColor(theme::textMuted());
-    // Belongs to the toggle above, but needs room to read as a caption rather
-    // than a squashed second line of it.
-    logHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
-    logHint->setLineHeight(1.4f);
-    list->addView(logHint);
-
-    // ---- playback --------------------------------------------------------
-    auto* playHdr = new brls::Header();
-    playHdr->setTitle("Playback");
-    list->addView(playHdr);
-
-    // Index of a stored code in the offered list; "auto" (0) if we do not know
-    // it -- a config.json edited by hand can say anything.
-    auto langIndex = [](const std::string& code) {
-        const auto& codes = config::langCodes();
-        for (size_t i = 0; i < codes.size(); i++)
-            if (codes[i] == code) return (int)i;
-        return 0;
-    };
+brls::View* playbackPane()
+{
+    brls::Box* list = nullptr;
+    auto* pane      = newPane(&list);
+    config::Config& cfg = config::get();
 
     auto* alang = new brls::SelectorCell();
     alang->init("Audio language", config::langLabels(),
@@ -288,47 +272,50 @@ brls::View* SettingsActivity::createContentView()
         config::save();
     });
     list->addView(subs);
-
-    auto* langHint = new brls::Label();
-    langHint->setText(
+    list->addView(caption(
         "Applies to the next video. A track in that language is picked when the "
         "file has one; otherwise it falls back to the file's default. Console "
-        "language is currently " + config::consoleLang() + ".");
-    langHint->setFontSize(15.0f);
-    langHint->setTextColor(theme::textMuted());
-    langHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
-    langHint->setLineHeight(1.4f);
-    list->addView(langHint);
+        "language is currently " + config::consoleLang() + "."));
+
+    auto* audioBoost = new brls::BooleanCell();
+    audioBoost->init("Boost quiet audio in handheld", cfg.audioBoost, [](bool on) {
+        config::get().audioBoost = on;
+        config::save();
+        // The player re-reads this every frame, so it reaches a video that is
+        // already playing as well as the next one.
+    });
+    list->addView(audioBoost);
+    list->addView(caption(
+        "A 5.1 soundtrack folded down to stereo plays much quieter than a "
+        "stereo one, and the console's speakers have no headroom left to make "
+        "that up. On by default. Never applied while docked \xE2\x80\x94 there the TV or "
+        "the receiver does the amplifying, so the film keeps its full dynamic "
+        "range."));
+
+    auto* hwdec = new brls::BooleanCell();
+    hwdec->init("Hardware decoding", cfg.hwDecode, [](bool on) {
+        config::get().hwDecode = on;
+        config::save();
+    });
+    list->addView(hwdec);
+    list->addView(caption(
+        "On by default. Turn it off to decode in software instead: slower, and "
+        "it may stutter on 1080p, but it sidesteps the GPU decode path."));
+
+    return pane;
+}
+
+brls::View* streamingPane()
+{
+    brls::Box* list = nullptr;
+    auto* pane      = newPane(&list);
+    config::Config& cfg = config::get();
 
     // A SelectorCell rather than a BooleanCell for the two settings whose value
     // needs saying more than "On"/"Off": BooleanCell hardcodes those two strings
     // in a private, non-virtual updateUI() that also re-runs 200ms after every
     // toggle (the end of its scale animation), so its text cannot be overridden
     // from here.
-    auto* governor = new brls::SelectorCell();
-    governor->init("Limit download rate", { "Off (default)", "On" },
-                   cfg.rateGovernor ? 1 : 0, [](int sel) {
-                       config::get().rateGovernor = sel == 1;
-                       config::save();
-                       // Takes effect immediately, even for a stream already
-                       // playing.
-                       torrentfs_set_governor(sel == 1 ? 1 : 0);
-                   });
-    list->addView(governor);
-
-    auto* governorHint = new brls::Label();
-    governorHint->setText(
-        "Once the playback buffer is comfortably ahead, cap the download speed "
-        "instead of bursting at full speed — the bursts overload the console's "
-        "network core and can stutter the system. Off by default, so downloads "
-        "run full speed. Streams with less than 10 s of buffer are never "
-        "limited.");
-    governorHint->setFontSize(15.0f);
-    governorHint->setTextColor(theme::textMuted());
-    governorHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
-    governorHint->setLineHeight(1.4f);
-    list->addView(governorHint);
-
     auto* ramStream = new brls::SelectorCell();
     ramStream->init("Stream to RAM (no SD cache)",
                     { "Off (Not recommended)", "On (Recommended)" },
@@ -339,30 +326,37 @@ brls::View* SettingsActivity::createContentView()
                         // the next video.
                     });
     list->addView(ramStream);
-
-    auto* ramHint = new brls::Label();
-    ramHint->setText(
+    list->addView(caption(
         "Keep downloaded pieces in memory instead of writing them to the SD "
         "card. Removes the brief stutter every time a piece finishes (the SD "
         "write hammers the system core, worse for bigger pieces), at the cost "
-        "of no resume and a limited seek-back range.");
-    ramHint->setFontSize(15.0f);
-    ramHint->setTextColor(theme::textMuted());
-    ramHint->setMargins(12.0f, 20.0f, 18.0f, 20.0f);
-    ramHint->setLineHeight(1.4f);
-    list->addView(ramHint);
+        "of no resume and a limited seek-back range."));
 
-    auto* hwdec = new brls::BooleanCell();
-    hwdec->init("Hardware decoding", cfg.hwDecode, [](bool on) {
-        config::get().hwDecode = on;
-        config::save();
-    });
-    list->addView(hwdec);
+    auto* governor = new brls::SelectorCell();
+    governor->init("Limit download rate", { "Off (default)", "On" },
+                   cfg.rateGovernor ? 1 : 0, [](int sel) {
+                       config::get().rateGovernor = sel == 1;
+                       config::save();
+                       // Takes effect immediately, even for a stream already
+                       // playing.
+                       torrentfs_set_governor(sel == 1 ? 1 : 0);
+                   });
+    list->addView(governor);
+    list->addView(caption(
+        "Once the playback buffer is comfortably ahead, cap the download speed "
+        "instead of bursting at full speed \xE2\x80\x94 the bursts overload the console's "
+        "network core and can stutter the system. Off by default, so downloads "
+        "run full speed. Streams with less than 10 s of buffer are never "
+        "limited."));
 
-    // ---- stremio ---------------------------------------------------------
-    auto* stremioHdr = new brls::Header();
-    stremioHdr->setTitle("Stremio");
-    list->addView(stremioHdr);
+    return pane;
+}
+
+brls::View* stremioPane()
+{
+    brls::Box* list = nullptr;
+    auto* pane      = newPane(&list);
+    config::Config& cfg = config::get();
 
     auto* hide4k = new brls::BooleanCell();
     hide4k->init("Hide 4K sources", cfg.hide4k, [](bool on) {
@@ -370,23 +364,31 @@ brls::View* SettingsActivity::createContentView()
         config::save();
     });
     list->addView(hide4k);
+    list->addView(caption(
+        "On by default: 4K streams are the heaviest in the swarm and the "
+        "console outputs 1080p docked, so they cost bandwidth it cannot show."));
 
-    // Poster cache: size + a Clear button. Clearing marks the library stale so
-    // the artwork is re-fetched next time the tab is focused.
+    // The account itself is not here: it has its own screen, off the header's
+    // profile button (see AccountActivity).
+
+    auto* cacheHdr = new brls::Header();
+    cacheHdr->setTitle("Poster cache");
+    list->addView(cacheHdr);
+
     auto humanMB = [](int64_t b) {
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.1f MB", b / (1024.0 * 1024.0));
         return std::string(buf);
     };
     auto* cacheLbl = new AsyncLabel();
-    cacheLbl->setText("Poster cache: reading...");
+    cacheLbl->setText("Reading...");
     cacheLbl->setFontSize(16.0f);
     cacheLbl->setTextColor(theme::textDim());
-    cacheLbl->setMargins(12.0f, 20.0f, 4.0f, 20.0f);
+    cacheLbl->setMargins(10.0f, 20.0f, 6.0f, 20.0f);
     list->addView(cacheLbl);
 
     // Off the UI thread: the size is a stat() per cached poster, and on a full
-    // cache that SD-card walk is most of a second -- long enough that Options
+    // cache that SD-card walk is most of a second -- long enough that the pane
     // took visibly too long to appear, since nothing is drawn until this whole
     // function returns. The label fills itself in a moment later instead.
     auto readCacheSize = [cacheLbl, humanMB]() {
@@ -394,8 +396,7 @@ brls::View* SettingsActivity::createContentView()
         brls::async([cacheLbl, live, humanMB]() {
             int64_t bytes = stremio::posterCacheBytes();
             brls::sync([cacheLbl, live, humanMB, bytes]() {
-                if (*live)
-                    cacheLbl->setText("Poster cache: " + humanMB(bytes));
+                if (*live) cacheLbl->setText(humanMB(bytes) + " on the SD card");
             });
         });
     };
@@ -408,7 +409,7 @@ brls::View* SettingsActivity::createContentView()
         auto live = cacheLbl->alive;
         // Deleting them is the same walk, so it goes off the thread too --
         // otherwise the whole UI stops until the card is done.
-        cacheLbl->setText("Poster cache: clearing...");
+        cacheLbl->setText("Clearing...");
         brls::async([live, readCacheSize]() {
             stremio::clearPosterCache();
             brls::sync([live, readCacheSize]() {
@@ -422,34 +423,35 @@ brls::View* SettingsActivity::createContentView()
     });
     list->addView(clearCache);
 
-    // The account itself is not here: it has its own screen, off the header's
-    // profile button (see AccountActivity).
+    return pane;
+}
 
-    // ---- updates ---------------------------------------------------------
-    auto* updHdr = new brls::Header();
-    updHdr->setTitle("Updates");
-    list->addView(updHdr);
+brls::View* aboutPane()
+{
+    brls::Box* list = nullptr;
+    auto* pane      = newPane(&list);
+    config::Config& cfg = config::get();
+
+    auto* version = new brls::Label();
+    version->setText(update::hasPending()
+                         ? "Version " APP_VERSION
+                           " \xE2\x80\x94 an update is installed, restart to use it"
+                         : "Version " APP_VERSION);
+    version->setFontSize(20.0f);
+    version->setTextColor(theme::text());
+    version->setMargins(4.0f, 20.0f, 16.0f, 20.0f);
+    list->addView(version);
 
     auto* checkUpd = new brls::BooleanCell();
-    checkUpd->init("Check on startup", cfg.checkUpdates, [](bool on) {
+    checkUpd->init("Check for updates on startup", cfg.checkUpdates, [](bool on) {
         config::get().checkUpdates = on;
         config::save();
     });
     list->addView(checkUpd);
 
-    auto* version = new brls::Label();
-    version->setText(update::hasPending()
-                         ? "Version " APP_VERSION
-                           " — an update is installed, restart to use it"
-                         : "Version " APP_VERSION);
-    version->setFontSize(15.0f);
-    version->setTextColor(theme::textMuted());
-    version->setMargins(12.0f, 20.0f, 8.0f, 20.0f);
-    list->addView(version);
-
     auto* changelog = new brls::Button();
     changelog->setText("View changelog");
-    changelog->setMargins(4.0f, 20.0f, 8.0f, 20.0f);
+    changelog->setMargins(14.0f, 20.0f, 8.0f, 20.0f);
     changelog->registerClickAction([](brls::View*) {
         // showChangelog raises its own blocking spinner while it loads, so the
         // user cannot re-press this or leave Options mid-fetch.
@@ -486,11 +488,81 @@ brls::View* SettingsActivity::createContentView()
     });
     list->addView(checkNow);
 
-    scroll->setContentView(list);
-    box->addView(scroll);
+    auto* diagHdr = new brls::Header();
+    diagHdr->setTitle("Diagnostics");
+    list->addView(diagHdr);
+
+    auto* logging = new brls::BooleanCell();
+    logging->init("Log file", cfg.logging, [](bool on) {
+        config::get().logging = on;
+        config::save();
+    });
+    list->addView(logging);
+    list->addView(caption(
+        "The log is written to the SD card continuously. Turn it on to diagnose "
+        "a problem, then restart the app."));
+
+    return pane;
+}
+
+}  // namespace
+
+void setUiScaleHook(std::function<void()> fn) { uiScaleHook = std::move(fn); }
+
+void applyUiScale()
+{
+    // borealis lays out in a fixed 1280x720 logical space and multiplies it by
+    // windowScale to fill the output, so the UI keeps the same relative size
+    // whatever it is drawn to -- docked it is simply 1.5x bigger, with no more
+    // content on screen. Widening the logical space shrinks the UI instead; how
+    // far is the user's call, separately per mode, since a 1080p TV metres away
+    // and a 6" panel at arm's length do not want the same thing.
+    bool docked = brls::Application::windowWidth >= 1920;
+    uint32_t w  = (uint32_t)(docked ? config::get().dockedUiWidth
+                                    : config::get().handheldUiWidth);
+    uint32_t h  = w * 9 / 16;  // every offered width is 16:9, so this is exact
+
+    if (brls::Application::ORIGINAL_WINDOW_WIDTH == w) return;
+
+    brls::Application::ORIGINAL_WINDOW_WIDTH  = w;
+    brls::Application::ORIGINAL_WINDOW_HEIGHT = h;
+
+    // Recomputes windowScale/contentWidth and relayouts the activity stack.
+    // Safe to call from the window-size-changed listener: that event is fired by
+    // onWindowResized *after* its own setWindowSize call, and setWindowSize does
+    // not fire it again -- so this is one extra layout pass, not a loop, and it
+    // lands before the next frame is drawn.
+    brls::Application::setWindowSize(brls::Application::windowWidth,
+                                     brls::Application::windowHeight);
+
+    // ... and because it does not fire it again, anything that keys off the UI
+    // size has to be told here. Editing the setting in Options reaches the
+    // header this way and no other.
+    if (uiScaleHook) uiScaleHook();
+}
+
+brls::View* SettingsActivity::createContentView()
+{
+    // A sidebar with a pane per category, rather than the one long scroll this
+    // used to be. Twenty-odd cells with a prose caption under half of them ran
+    // to several screens, and the section headers went past too fast to serve
+    // as landmarks -- you had to remember roughly how far down a setting was.
+    // The sidebar names the five groups up front and each pane now fits in a
+    // screen or close to it.
+    //
+    // TabFrame keeps only the visible tab alive: every pane below is rebuilt
+    // from config each time it is entered, which is also why none of them can
+    // hold a pointer into another.
+    auto* tabs = new brls::TabFrame();
+
+    tabs->addTab("General", [] { return generalPane(); });
+    tabs->addTab("Playback", [] { return playbackPane(); });
+    tabs->addTab("Streaming", [] { return streamingPane(); });
+    tabs->addTab("Stremio", [] { return stremioPane(); });
+    tabs->addTab("About", [] { return aboutPane(); });
 
     auto* frame = new brls::AppletFrame();
-    frame->pushContentView(box);
+    frame->pushContentView(tabs);
     // After pushContentView: it overwrites the title with the content view's.
     frame->setTitle("Options");
     return frame;
@@ -498,66 +570,262 @@ brls::View* SettingsActivity::createContentView()
 
 brls::View* AccountActivity::createContentView()
 {
-    auto* box = new brls::Box();
-    box->setAxis(brls::Axis::COLUMN);
-    box->setGrow(1.0f);
-    box->setPadding(20.0f, 60.0f, 40.0f, 60.0f);
+    // Was a header, a line of text and a button. It is the screen behind the
+    // header's profile button, so it should answer the questions you press that
+    // button to ask: who is signed in, how much is on the account, and what the
+    // addons -- which everything the Stremio side does depends on -- actually
+    // provide.
+    auto* root = new brls::Box();
+    root->setAxis(brls::Axis::COLUMN);
+    root->setGrow(1.0f);
+    root->setPadding(24.0f, 0.0f, 0.0f, 0.0f);
 
-    std::string key = stremio::loadAuthKey();
-
-    auto* hdr = new brls::Header();
-    hdr->setTitle("Stremio account");
-    box->addView(hdr);
+    std::string key   = stremio::loadAuthKey();
+    std::string email = stremio::loadEmail();
 
     if (key.empty())
     {
-        auto* signedOut = new brls::Label();
-        signedOut->setText(
-            "No account signed in. The sign-in form is on the Stremio tab.");
-        signedOut->setFontSize(18.0f);
-        signedOut->setTextColor(theme::textMuted());
-        signedOut->setMargins(20.0f, 0.0f, 0.0f, 4.0f);
-        signedOut->setLineHeight(1.4f);
-        box->addView(signedOut);
+        auto* box = new brls::Box();
+        box->setAxis(brls::Axis::COLUMN);
+        box->setGrow(1.0f);
+        box->setJustifyContent(brls::JustifyContent::CENTER);
+        box->setAlignItems(brls::AlignItems::CENTER);
+
+        auto* title = new brls::Label();
+        title->setText("Not signed in");
+        title->setFontSize(30.0f);
+        title->setTextColor(theme::text());
+        box->addView(title);
+
+        auto* sub = new brls::Label();
+        sub->setText("The sign-in form is on the Stremio tab.");
+        sub->setFontSize(18.0f);
+        sub->setTextColor(theme::textMuted());
+        sub->setMarginTop(10.0f);
+        box->addView(sub);
+
+        root->addView(box);
+
+        auto* frame = new brls::AppletFrame();
+        frame->pushContentView(root);
+        frame->setTitle("Account");
+        return frame;
     }
-    else
+
+    // ---- identity ---------------------------------------------------------
+    auto* head = new brls::Box();
+    head->setAxis(brls::Axis::ROW);
+    head->setAlignItems(brls::AlignItems::CENTER);
+    head->setMargins(0.0f, 60.0f, 28.0f, 60.0f);
+
+    // A monogram rather than an avatar: the API gives us no picture, and a
+    // letter in the accent reads as an account at a glance where a generic
+    // person icon would just be furniture.
+    auto* mono = new brls::Box();
+    mono->setWidth(84.0f);
+    mono->setHeight(84.0f);
+    mono->setCornerRadius(42.0f);
+    mono->setBackgroundColor(theme::accent());
+    mono->setJustifyContent(brls::JustifyContent::CENTER);
+    mono->setAlignItems(brls::AlignItems::CENTER);
+    mono->setShrink(0.0f);
     {
-        std::string who = stremio::loadEmail();
+        auto* l = new brls::Label();
+        std::string c = email.empty() ? "?" : std::string(1, email[0]);
+        if (!c.empty()) c[0] = (char)std::toupper((unsigned char)c[0]);
+        l->setText(c);
+        l->setFontSize(40.0f);
+        l->setTextColor(nvgRGB(255, 255, 255));
+        mono->addView(l);
+    }
+    head->addView(mono);
 
-        auto* label = new brls::Label();
-        label->setText("Signed in as");
-        label->setFontSize(16.0f);
-        label->setTextColor(theme::textMuted());
-        label->setMargins(20.0f, 0.0f, 2.0f, 4.0f);
-        box->addView(label);
-
-        auto* email = new brls::Label();
+    auto* who = new brls::Box();
+    who->setAxis(brls::Axis::COLUMN);
+    who->setGrow(1.0f);
+    who->setMarginLeft(24.0f);
+    {
+        auto* addr = new brls::Label();
         // The address is only kept so this screen can name the account -- the
         // API has no use for it once there is an authKey.
-        email->setText(who.empty() ? "this console" : who);
-        email->setFontSize(24.0f);
-        email->setTextColor(theme::text());
-        email->setMargins(0.0f, 0.0f, 24.0f, 4.0f);
-        box->addView(email);
+        addr->setText(email.empty() ? "this console" : email);
+        addr->setFontSize(28.0f);
+        addr->setTextColor(theme::text());
+        addr->setSingleLine(true);
+        who->addView(addr);
 
-        auto* logout = new brls::Button();
-        logout->setText("Sign out of Stremio");
-        logout->registerClickAction([logout](brls::View*) {
-            stremio::clearAuthKey();
-            // The addon collection belongs to that account.
-            stremio::clearAddonCache();
-            // The tab holds the key in memory and is only rebuilt when it is
-            // re-entered, so say what actually has to happen.
-            note("Signed out. Restart the app to get back to the sign-in "
-                 "screen.");
-            logout->setState(brls::ButtonState::DISABLED);
-            return true;
-        });
-        box->addView(logout);
+        auto* sub = new brls::Label();
+        sub->setText("Signed in to Stremio");
+        sub->setFontSize(17.0f);
+        sub->setTextColor(theme::textMuted());
+        sub->setMarginTop(4.0f);
+        who->addView(sub);
     }
+    head->addView(who);
+    root->addView(head);
+
+    // ---- the two figures --------------------------------------------------
+    auto* stats = new brls::Box();
+    stats->setAxis(brls::Axis::ROW);
+    stats->setMargins(0.0f, 60.0f, 26.0f, 60.0f);
+
+    // Returns the value label, so a count that is not known yet can be filled
+    // in when it lands.
+    auto stat = [&](const std::string& name, const std::string& value) {
+        auto* card = new brls::Box();
+        card->setAxis(brls::Axis::COLUMN);
+        card->setWidth(200.0f);
+        card->setPadding(18.0f, 20.0f, 18.0f, 22.0f);
+        card->setCornerRadius(10.0f);
+        card->setBackgroundColor(theme::surface());
+        card->setMarginRight(20.0f);
+
+        auto* v = new brls::Label();
+        v->setText(value);
+        v->setFontSize(34.0f);
+        v->setTextColor(theme::text());
+        card->addView(v);
+
+        auto* n = new brls::Label();
+        n->setText(name);
+        n->setFontSize(15.0f);
+        n->setTextColor(theme::textMuted());
+        n->setMarginTop(2.0f);
+        card->addView(n);
+
+        stats->addView(card);
+        return v;
+    };
+
+    int libN = stremio::libraryCount();
+    stat("In library", libN < 0 ? "\xE2\x80\x94" : std::to_string(libN));
+    brls::Label* addonCount = stat("Addons", "\xE2\x80\x94");
+    root->addView(stats);
+
+    // ---- the addons -------------------------------------------------------
+    auto* addonHdr = new brls::Header();
+    addonHdr->setTitle("Installed addons");
+    addonHdr->setMargins(0.0f, 60.0f, 0.0f, 60.0f);
+    root->addView(addonHdr);
+
+    auto* scroll = new brls::ScrollingFrame();
+    scroll->setGrow(1.0f);
+    scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
+    auto* addonList = new AsyncBox();
+    addonList->setAxis(brls::Axis::COLUMN);
+    addonList->setPadding(6.0f, 40.0f, 20.0f, 60.0f);
+    scroll->setContentView(addonList);
+    root->addView(scroll);
+
+    auto* pending = new brls::Label();
+    pending->setText("Reading the account's addons...");
+    pending->setFontSize(16.0f);
+    pending->setTextColor(theme::textMuted());
+    pending->setMarginTop(8.0f);
+    addonList->addView(pending);
+
+    // Free after the first call of the session, so this is normally instant.
+    auto live = addonList->alive;
+    stremio::fetchAddonsAsync(key, [addonList, live, addonCount,
+                                    pending](stremio::AddonsResult r) {
+        if (!*live) return;
+        pending->setVisibility(brls::Visibility::GONE);
+        if (!r.ok)
+        {
+            auto* err = new brls::Label();
+            err->setText("Could not read them: " + r.error);
+            err->setFontSize(16.0f);
+            err->setTextColor(theme::textWarn());
+            addonList->addView(err);
+            return;
+        }
+        addonCount->setText(std::to_string(r.addons.size()));
+
+        for (const auto& a : r.addons)
+        {
+            // Focusable, with nothing to activate: this is a list to read,
+            // and a ScrollingFrame scrolls by moving focus through its children
+            // -- with none of them focusable there was nothing for the stick to
+            // move to and the list could only be dragged by touch.
+            auto* row = new brls::Box();
+            row->setAxis(brls::Axis::ROW);
+            row->setAlignItems(brls::AlignItems::CENTER);
+            row->setPadding(14.0f, 20.0f, 14.0f, 20.0f);
+            row->setMarginBottom(8.0f);
+            row->setCornerRadius(8.0f);
+            row->setBackgroundColor(theme::scrim(14));
+            row->setFocusable(true);
+            row->setHighlightCornerRadius(8.0f);
+
+            auto* name = new brls::Label();
+            name->setText(a.name);
+            name->setFontSize(19.0f);
+            name->setTextColor(theme::text());
+            name->setSingleLine(true);
+            name->setGrow(1.0f);
+            name->setMarginRight(20.0f);
+            row->addView(name);
+
+            // What it actually serves, which is the only thing about an addon
+            // that changes what the app can do with it. An addon on the
+            // blocklist keeps whatever else it provides -- only its streams are
+            // ignored -- so that is said of the streams, not of the addon.
+            bool streamsOff = a.hasStream && stremio::isStreamAddonHidden(a.name);
+            std::string what;
+            auto add = [&](const char* s) {
+                if (!what.empty()) what += "  \xC2\xB7  ";
+                what += s;
+            };
+            if (a.hasMeta) add("Metadata");
+            if (a.hasStream) add(streamsOff ? "Streams (disabled)" : "Streams");
+            if (a.hasSubtitles) add("Subtitles");
+            if (what.empty()) what = "Nothing this app uses";
+
+            bool anyUsable =
+                a.hasMeta || a.hasSubtitles || (a.hasStream && !streamsOff);
+            if (!anyUsable) name->setTextColor(theme::textDim());
+
+            auto* kind = new brls::Label();
+            kind->setText(what);
+            kind->setFontSize(16.0f);
+            kind->setTextColor(anyUsable ? theme::textDim()
+                                         : theme::textFaint());
+            kind->setSingleLine(true);
+            kind->setShrink(0.0f);
+            row->addView(kind);
+
+            addonList->addView(row);
+        }
+
+        if (r.addons.empty())
+        {
+            auto* none = new brls::Label();
+            none->setText("None. Install them from Stremio on another device.");
+            none->setFontSize(16.0f);
+            none->setTextColor(theme::textMuted());
+            addonList->addView(none);
+        }
+    });
+
+    // ---- sign out ---------------------------------------------------------
+    auto* logout = new brls::Button();
+    logout->setText("Sign out of Stremio");
+    logout->setMargins(4.0f, 60.0f, 24.0f, 60.0f);
+    logout->registerClickAction([logout](brls::View*) {
+        stremio::clearAuthKey();
+        // The addon collection -- and every meta answer cached behind it --
+        // belongs to that account.
+        stremio::clearAddonCache();
+        // The tab holds the key in memory and is only rebuilt when it is
+        // re-entered, so say what actually has to happen.
+        note("Signed out. Restart the app to get back to the sign-in screen.");
+        logout->setState(brls::ButtonState::DISABLED);
+        return true;
+    });
+    root->addView(logout);
 
     auto* frame = new brls::AppletFrame();
-    frame->pushContentView(box);
+    frame->pushContentView(root);
     frame->setTitle("Account");
     return frame;
 }
