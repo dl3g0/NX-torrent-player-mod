@@ -38,6 +38,7 @@
 #include "http.hpp"
 #include "json.hpp"
 #include "theme.hpp"
+#include "i18n.hpp"
 
 namespace
 {
@@ -439,7 +440,11 @@ void selectActiveView(int index)
 const std::vector<std::string>& viewLabels()
 {
     static const std::vector<std::string> labels = {
-        " Continue", " Movies", " Shows", " Library", " Search"
+        std::string(" ") + tr("Continue"),
+        std::string(" ") + tr("Movies"),
+        std::string(" ") + tr("Shows"),
+        std::string(" ") + tr("Library"),
+        std::string(" ") + tr("Search"),
     };
     return labels;
 }
@@ -595,7 +600,7 @@ void loginAsync(const std::string& email, const std::string& password,
             else
             {
                 std::string msg = json::str(resp, "message");
-                r.error = msg.empty() ? "Wrong email or password" : msg;
+                r.error = msg.empty() ? tr("Wrong email or password") : msg;
             }
         }
         brls::sync([done, r]() { done(r); });
@@ -760,6 +765,8 @@ bool isStreamAddonHidden(const std::string& name)
     // Lives here rather than beside the source list that first needed it: the
     // Account screen has to mark the same addons, and two copies of a blocklist
     // is one copy too many.
+    // Not translatable: these are matched against the names the account's
+    // addons report, which are what they are whatever language the UI is in.
     static const char* kHidden[] = {
         "WatchHub", "Local Files", "Peario",
         "Public Domain Movies", "Public Domain Foreign Movies",
@@ -1487,7 +1494,7 @@ void fetchMetaAsync(const std::string& addonBase, const std::string& type,
                 r.videos.push_back(v);
             }
             if (r.videos.empty() && resp.find("\"meta\"") == std::string::npos)
-                r.error = "Reponse inattendue de l'addon";
+                r.error = tr("Unexpected answer from the addon");
             brls::Logger::info("[stremio] meta {} -> {} videos", id,
                                r.videos.size());
         }
@@ -1535,7 +1542,7 @@ void fetchStreamsAsync(const std::string& addonBase, const std::string& type,
                 // Season packs bundle every episode in one torrent; the addon
                 // says which file this stream is. Absent -> -1 (largest file).
                 s.fileIdx  = (int)json::integer(o, "fileIdx", -1);
-                if (s.name.empty() && s.title.empty()) s.name = "Source";
+                if (s.name.empty() && s.title.empty()) s.name = tr("Source");
                 r.streams.push_back(s);
             }
             brls::Logger::info("[stremio] streams {} -> {}", id, r.streams.size());
@@ -1575,7 +1582,7 @@ void fetchSubtitlesAsync(const std::string& authKey, const std::string& type,
     if (authKey.empty() || videoId.empty())
     {
         SubtitlesResult r;
-        r.error = "Not a Stremio playback";
+        r.error = tr("Not a Stremio playback");
         done(r);
         return;
     }
@@ -1885,13 +1892,13 @@ StremioTab::StremioTab()
     loginBox->addView(mark);
 
     auto* title = new brls::Label();
-    title->setText("Sign in to Stremio");
+    title->setText(tr("Sign in to Stremio"));
     title->setFontSize(30.0f);
     title->setTextColor(theme::text());
     loginBox->addView(title);
 
     auto* hint = new brls::Label();
-    hint->setText("Your library, your addons and their sources.");
+    hint->setText(tr("Your library, your addons and their sources."));
     hint->setFontSize(18.0f);
     hint->setTextColor(theme::textMuted());
     hint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
@@ -1903,15 +1910,15 @@ StremioTab::StremioTab()
     card->setWidth(kFormW);
     card->setMarginBottom(22.0f);
 
-    card->addView(loginField("EMAIL", "Not entered",
+    card->addView(loginField(tr("EMAIL"), tr("Not entered"),
                              [this]() { promptEmail(); }, &emailLabel));
-    card->addView(loginField("PASSWORD", "Not entered",
+    card->addView(loginField(tr("PASSWORD"), tr("Not entered"),
                              [this]() { promptPassword(); }, &passLabel));
     loginBox->addView(card);
 
     loginBtn = new brls::Button();
     loginBtn->setStyle(&brls::BUTTONSTYLE_PRIMARY);
-    loginBtn->setText("Sign in");
+    loginBtn->setText(tr("Sign in"));
     loginBtn->setWidth(kFormW);
     loginBtn->registerClickAction([this](brls::View*) { doLogin(); return true; });
     loginBox->addView(loginBtn);
@@ -2009,7 +2016,7 @@ StremioTab::StremioTab()
 
     // Y reloads the library on demand -- fires only while focus is on this tab.
     this->registerAction(
-        "Reload", brls::BUTTON_Y,
+        tr("Reload"), brls::BUTTON_Y,
         [this](brls::View*) {
             if (!authKey.empty()) loadLibrary();
             return true;
@@ -2022,7 +2029,7 @@ StremioTab::StremioTab()
     // neighbours so the directions are otherwise unused here. Hidden hints (R/L
     // already advertise "View").
     this->registerAction(
-        "View", brls::BUTTON_RIGHT,
+        tr("View"), brls::BUTTON_RIGHT,
         [this](brls::View*) {
             // The poster style lays the titles out horizontally, so Left/Right
             // belong to it entirely -- never consumed here, whether or not there
@@ -2045,7 +2052,7 @@ StremioTab::StremioTab()
         },
         true, false, brls::SOUND_NONE);
     this->registerAction(
-        "View", brls::BUTTON_LEFT,
+        tr("View"), brls::BUTTON_LEFT,
         [this](brls::View*) {
             if (posterStyle()) return false;  // see the RIGHT action above
             if (columnsShown)
@@ -2173,11 +2180,11 @@ void StremioTab::promptEmail()
         [this, live = alive](std::string out) {
             if (!*live) return;
             email = out;
-            emailLabel->setText(email.empty() ? "Not entered" : email);
+            emailLabel->setText(email.empty() ? tr("Not entered") : email);
             emailLabel->setTextColor(email.empty() ? theme::textFaint()
                                                    : theme::text());
         },
-        "Stremio email", "", 128, email);
+        tr("Stremio email"), "", 128, email);
 }
 
 void StremioTab::promptPassword()
@@ -2191,22 +2198,22 @@ void StremioTab::promptPassword()
             size_t n = password.size() > 16 ? 16 : password.size();
             std::string dots;
             for (size_t i = 0; i < n; i++) dots += "\xE2\x80\xA2";
-            passLabel->setText(password.empty() ? "Not entered" : dots);
+            passLabel->setText(password.empty() ? tr("Not entered") : dots);
             passLabel->setTextColor(password.empty() ? theme::textFaint()
                                                      : theme::text());
         },
-        "Stremio password", "", 128, "");
+        tr("Stremio password"), "", 128, "");
 }
 
 void StremioTab::doLogin()
 {
     if (email.empty() || password.empty())
     {
-        dialog("Enter an email and a password.");
+        dialog(tr("Enter an email and a password."));
         return;
     }
 
-    statusLabel->setText("Signing in...");
+    statusLabel->setText(tr("Signing in..."));
     loginBtn->setState(brls::ButtonState::DISABLED);
 
     stremio::loginAsync(email, password, [this, live = alive](stremio::LoginResult r) {
@@ -2221,7 +2228,7 @@ void StremioTab::doLogin()
             onAuthenticated(r.authKey, true);
         }
         else
-            dialog("Sign-in failed: " + r.error);
+            dialog(tr("Sign-in failed: ") + r.error);
     });
 }
 
@@ -2252,7 +2259,7 @@ void StremioTab::onAuthenticated(const std::string& key, bool announce)
     brls::Application::giveFocus(libraryBox);
 
     if (announce)
-        dialog("Signed in");
+        dialog(tr("Signed in"));
 
     loadLibrary();
 }
@@ -2378,7 +2385,7 @@ void StremioTab::draw(NVGcontext* vg, float x, float y, float width, float heigh
 
 void StremioTab::loadLibrary()
 {
-    showStatus("Loading library...", true);
+    showStatus(tr("Loading library..."), true);
     stremio::setLibraryCount("");  // header back to a plain title while loading
     parkFocusOffList();
 
@@ -2396,8 +2403,8 @@ void StremioTab::loadLibrary()
         if (!*live) return;
         if (!r.ok)
         {
-            showStatus("Error", false);
-            dialog("Library unavailable: " + r.error);
+            showStatus(tr("Error"), false);
+            dialog(tr("Library unavailable: ") + r.error);
             return;
         }
         libItems  = r.items;   // cached for Continue Watching + Library views
@@ -2478,7 +2485,8 @@ void StremioTab::renderView()
                 if (inProgress || watchedSeries) cw.push_back(it);
             }
             //  history -- Material glyph in the header title.
-            showItems(cw, "  Continue Watching", "Nothing in progress");
+            showItems(cw, std::string("  ") + tr("Continue Watching"),
+                      tr("Nothing in progress"));
             break;
         }
         case View::Library:
@@ -2488,26 +2496,29 @@ void StremioTab::renderView()
             std::vector<stremio::LibItem> lib;
             for (const auto& it : libItems)
                 if (!it.removed) lib.push_back(it);
-            showItems(lib, "  Library · " +  //  bookmark
-                                    std::to_string(lib.size()) + " items",
-                      "Library is empty");
+            showItems(lib,
+                      std::string("  ") + tr("Library") + " \xC2\xB7 " +
+                          std::to_string(lib.size()) + tr(" items"),
+                      tr("Library is empty"));
             break;
         }
         case View::PopularMovies:  //  movie
             loadFeatured("movie");  // the second section, in every style
             if (popMoviesLoaded)
-                showItems(popMovies, "  Popular Movies", "No popular movies");
+                showItems(popMovies, std::string("  ") + tr("Popular Movies"),
+                          tr("No popular movies"));
             else
                 loadCatalog("movie", popMovies, popMoviesLoaded,
-                            "  Popular Movies");
+                            std::string("  ") + tr("Popular Movies"));
             break;
         case View::PopularSeries:  //  tv (E02C renders as a TV here)
             loadFeatured("series");
             if (popSeriesLoaded)
-                showItems(popSeries, "  Popular Shows", "No popular shows");
+                showItems(popSeries, std::string("  ") + tr("Popular Shows"),
+                          tr("No popular shows"));
             else
                 loadCatalog("series", popSeries, popSeriesLoaded,
-                            "  Popular Shows");
+                            std::string("  ") + tr("Popular Shows"));
             break;
         case View::Search:
             renderSearch();
@@ -2526,8 +2537,10 @@ void StremioTab::renderSearch()
     rowsAlive  = std::make_shared<bool>(true);
     libList->clearViews();
     loadingBox->setVisibility(brls::Visibility::GONE);
-    stremio::setLibraryCount(searchQuery.empty() ? "  Search"
-                                                 : "  Search · " + searchQuery);
+    stremio::setLibraryCount(std::string("  ") + tr("Search") +
+                             (searchQuery.empty()
+                                  ? ""
+                                  : " \xC2\xB7 " + searchQuery));
 
     // In the poster style the list gives up its screen inset so the strips can
     // run to the edge (see renderView), so everything else on this page carries
@@ -2556,7 +2569,7 @@ void StremioTab::renderSearch()
     icon->setMargins(10.0f, 16.0f, 0.0f, 0.0f);
     bar->addView(icon);
     auto* barText = new brls::Label();
-    barText->setText(searchQuery.empty() ? "Search movies & shows..."
+    barText->setText(searchQuery.empty() ? tr("Search movies & shows...")
                                          : searchQuery);
     barText->setFontSize(24.0f);
     barText->setTextColor(searchQuery.empty() ? theme::textMuted()
@@ -2575,8 +2588,9 @@ void StremioTab::renderSearch()
         if (!searchLoaded || searchResults.empty())
         {
             auto* l = new brls::Label();
-            l->setText(!searchLoaded ? "Searching..."
-                                     : "No results for \"" + searchQuery + "\"");
+            l->setText(!searchLoaded
+                           ? tr("Searching...")
+                           : tr("No results for \"") + searchQuery + "\"");
             l->setFontSize(20.0f);
             l->setTextColor(theme::textMuted());
             l->setMargins(24.0f, 0.0f, 8.0f, 20.0f + inset);
@@ -2593,8 +2607,8 @@ void StremioTab::renderSearch()
                     if ((it.type == "series") == series) sel.push_back(it);
                 if (!sel.empty()) lastRow = addStripSection(title, sel, nullptr);
             };
-            section("Movies", false);
-            section("Shows", true);
+            section(tr("Movies"), false);
+            section(tr("Shows"), true);
         }
         else
         {
@@ -2618,8 +2632,8 @@ void StremioTab::renderSearch()
                 col->addView(h);
                 return col;
             };
-            auto* moviesCol = makeCol("Movies");
-            auto* showsCol  = makeCol("Shows");
+            auto* moviesCol = makeCol(tr("Movies"));
+            auto* showsCol  = makeCol(tr("Shows"));
 
             int nMovies = 0, nShows = 0;
             for (const auto& it : searchResults)
@@ -2631,7 +2645,7 @@ void StremioTab::renderSearch()
             auto emptyNote = [](brls::Box* col, int n) {
                 if (n) return;
                 auto* l = new brls::Label();
-                l->setText("None");
+                l->setText(tr("None"));
                 l->setFontSize(18.0f);
                 l->setTextColor(theme::textFaint());
                 l->setMarginLeft(20.0f);
@@ -2668,7 +2682,7 @@ void StremioTab::promptSearch()
                     renderSearch();
                 });
         },
-        "Search Stremio", "", 128, searchQuery);
+        tr("Search Stremio"), "", 128, searchQuery);
 }
 
 // Fetches Cinemeta's "top" catalog for `type` into `cache`, then renders it if
@@ -2681,7 +2695,7 @@ void StremioTab::loadCatalog(const char* type,
     *rowsAlive = false;
     rowsAlive  = std::make_shared<bool>(true);
     libList->clearViews();
-    showStatus("Loading...", true);
+    showStatus(tr("Loading..."), true);
     stremio::setLibraryCount(header);
 
     View want = view;  // if R moves on before this lands, drop it
@@ -2693,14 +2707,15 @@ void StremioTab::loadCatalog(const char* type,
             if (!*live || view != want) return;
             if (!r.ok)
             {
-                showStatus("Error", false);
-                dialog("Popular " + t + " unavailable: " + r.error);
+                showStatus(tr("Error"), false);
+                dialog(tr("This catalogue is unavailable: ") + r.error);
                 return;
             }
             cache  = r.items;
             loaded = true;
             showItems(cache, header,
-                      t == "series" ? "No popular shows" : "No popular movies");
+                      t == "series" ? tr("No popular shows")
+                                    : tr("No popular movies"));
         });
 }
 
@@ -2710,10 +2725,10 @@ const char* StremioTab::sectionTitle() const
 {
     switch (view)
     {
-        case View::ContinueWatching: return "Continue watching";
+        case View::ContinueWatching: return tr("Continue watching");
         case View::PopularMovies:
-        case View::PopularSeries:    return "Popular";
-        case View::Library:          return "Library";
+        case View::PopularSeries:    return tr("Popular");
+        case View::Library:          return tr("Library");
         default:                     return "";
     }
 }
@@ -2814,7 +2829,7 @@ brls::Box* StremioTab::buildSeeMoreCard(const std::string& title,
     card->addView(icon);
 
     auto* label = new brls::Label();
-    label->setText("See More");
+    label->setText(tr("See More"));
     label->setFontSize(21.0f);
     label->setTextColor(theme::textDim());
     label->setMarginTop(6.0f);
@@ -2846,7 +2861,7 @@ brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
     row->addGestureRecognizer(new brls::TapGestureRecognizer(row));
 
     auto* label = new brls::Label();
-    label->setText("See More");
+    label->setText(tr("See More"));
     label->setFontSize(21.0f);
     label->setTextColor(theme::textDim());
     row->addView(label);
@@ -2967,7 +2982,7 @@ void StremioTab::openSection(std::string title,
     // to say it. No item count: the page pages, so any number it showed would be
     // "how much has been scrolled so far", which is not worth a line.
     auto* h = new brls::Label();
-    h->setText(std::string(catType == "series" ? "Shows" : "Movies") + " - " +
+    h->setText(std::string(catType == "series" ? tr("Shows") : tr("Movies")) + " - " +
                title);
     h->setFontSize(28.0f);
     h->setSingleLine(true);
@@ -2992,7 +3007,7 @@ void StremioTab::openSection(std::string title,
     // genre empties the page for as long as the round trip takes, and an empty
     // screen with no explanation reads as a bug.
     auto* busy = new brls::Label();
-    busy->setText("Loading...");
+    busy->setText(tr("Loading..."));
     busy->setFontSize(20.0f);
     busy->setTextColor(theme::textMuted());
     busy->setMargins(24.0f, 0.0f, 0.0f, kPosterInset);
@@ -3076,7 +3091,7 @@ void StremioTab::openSection(std::string title,
         st->loading = true;
         if (st->items.empty())
         {
-            busy->setText("Loading...");
+            busy->setText(tr("Loading..."));
             busy->setVisibility(brls::Visibility::VISIBLE);
         }
 
@@ -3101,7 +3116,7 @@ void StremioTab::openSection(std::string title,
                     // to avoid.
                     if (st->items.empty())
                     {
-                        busy->setText(r.ok ? "Nothing here" : "Catalog unavailable");
+                        busy->setText(r.ok ? tr("Nothing here") : tr("Catalog unavailable"));
                         busy->setVisibility(brls::Visibility::VISIBLE);
                     }
                     return;
@@ -3166,7 +3181,8 @@ void StremioTab::openSection(std::string title,
     // Cinemeta's "year" catalog (the Featured strip) filters by YEAR through the
     // very same "genre" extra -- its options are 2026, 2025, ... So the row is
     // named after what it will actually hold, not after the Stremio prop.
-    genreCell->init(catId == "year" ? "Year" : "Genre", { "All" }, 0, onGenre);
+    genreCell->init(catId == "year" ? tr("Year") : tr("Genre"), { tr("All") }, 0,
+                    onGenre);
 
     stremio::fetchCatalogGenresAsync(
         kCinemeta, catType, catId,
@@ -3174,7 +3190,7 @@ void StremioTab::openSection(std::string title,
             if (!*live || !*pageAlive) return;
             if (g.empty()) return;  // no genres: the row stays at All
             st->genresList = g;
-            std::vector<std::string> labels{ "All" };
+            std::vector<std::string> labels{ tr("All") };
             for (const auto& x : g) labels.push_back(x);
             genreCell->setData(labels);
             genreCell->setSelection(0, true);  // silent: nothing has changed
@@ -3272,8 +3288,8 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
         const std::vector<stremio::LibItem>* feat = featuredCache();
         if (feat && !feat->empty())
             last = addStripSection(
-                "Featured", head(*feat),
-                overflows(*feat) ? buildSeeMoreCard("Featured", *feat,
+                tr("Featured"), head(*feat),
+                overflows(*feat) ? buildSeeMoreCard(tr("Featured"), *feat,
                                                    catalogType(), "year")
                                  : nullptr);
         finishList(last);
@@ -3306,7 +3322,7 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
             return col;
         };
         auto* popCol  = makeCol(sectionTitle());
-        auto* featCol = makeCol("Featured");
+        auto* featCol = makeCol(tr("Featured"));
         // No type tag on these rows: both columns are the one type this view is
         // about, and half a row is narrow enough already.
         for (const auto& it : head(items)) popCol->addView(buildItemRow(it, false));
@@ -3316,7 +3332,7 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
                 buildSeeMoreRow(sectionTitle(), items, catalogType(), "top"));
         if (overflows(*feat))
             featCol->addView(
-                buildSeeMoreRow("Featured", *feat, catalogType(), "year"));
+                buildSeeMoreRow(tr("Featured"), *feat, catalogType(), "year"));
 
         split->addView(popCol);
         split->addView(featCol);
@@ -3400,7 +3416,7 @@ std::string yearLine(std::string y)
     if (!open) return y;
 
     while (!y.empty() && y.back() == ' ') y.pop_back();
-    return y.empty() ? y : y + " – present";
+    return y.empty() ? y : y + tr(" – present");
 }
 
 // "Season 17 · Episode 7" from a state video_id ("tt123:17:7"), "" if it is not
@@ -3412,7 +3428,8 @@ std::string episodeLine(const std::string& videoId)
     if (p2 == std::string::npos || p2 == 0) return "";
     size_t p1 = videoId.rfind(':', p2 - 1);
     if (p1 == std::string::npos) return "";
-    return "Season " + videoId.substr(p1 + 1, p2 - p1 - 1) + " · Episode " +
+    return tr("Season ") + videoId.substr(p1 + 1, p2 - p1 - 1) +
+           " · " + tr("Episode ") +
            videoId.substr(p2 + 1);
 }
 
@@ -3445,13 +3462,13 @@ void StremioTab::bindRemoveFromContinue(brls::Box* card,
     // Just "Remove": the hint sits in the footer next to every other one, and
     // the full sentence pushed them all along.
     card->registerAction(
-        "Remove", brls::BUTTON_X,
+        tr("Remove"), brls::BUTTON_X,
         [this, live, key, id = it.id](brls::View*) {
             stremio::clearWatchStateAsync(key, id, [this, live, id](bool ok) {
                 if (!*live) return;
                 if (!ok)
                 {
-                    brls::Application::notify("Could not remove it");
+                    brls::Application::notify(tr("Could not remove it"));
                     return;
                 }
                 // Clear the same fields locally rather than dropping the item:
@@ -3777,7 +3794,7 @@ brls::Box* StremioTab::buildCardRow(const stremio::LibItem& it, bool showType)
         pill->setShrink(0.0f);
 
         auto* type = new brls::Label();
-        type->setText(it.type == "series" ? "Show" : "Movie");
+        type->setText(it.type == "series" ? tr("Show") : tr("Movie"));
         type->setFontSize(18.0f);
         type->setTextColor(theme::textDim());
         type->setSingleLine(true);
@@ -3903,7 +3920,7 @@ brls::Box* StremioTab::buildPosterCard(const stremio::LibItem& it, bool upToHead
     pill->setPositionRight(10.0f);
 
     auto* type = new brls::Label();
-    type->setText(it.type == "series" ? "Show" : "Movie");
+    type->setText(it.type == "series" ? tr("Show") : tr("Movie"));
     type->setFontSize(15.0f);
     type->setTextColor(nvgRGBA(255, 255, 255, 235));
     type->setSingleLine(true);
@@ -4034,7 +4051,7 @@ brls::Box* StremioTab::buildClassicRow(const stremio::LibItem& it, bool showType
     if (showType)
     {
         auto* type = new brls::Label();
-        type->setText(it.type == "series" ? "Show" : "Movie");
+        type->setText(it.type == "series" ? tr("Show") : tr("Movie"));
         type->setFontSize(19.0f);
         type->setTextColor(theme::textMuted());
         type->setMarginLeft(16.0f);

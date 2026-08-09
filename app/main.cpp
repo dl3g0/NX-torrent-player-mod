@@ -43,6 +43,8 @@ extern "C" {
 #include "torrentfs.h"
 }
 
+#include "i18n.hpp"
+
 namespace
 {
 
@@ -358,8 +360,8 @@ std::string magnetName(const std::string& magnet)
     }
     size_t h = magnet.find("btih:");
     if (h != std::string::npos)
-        return "Magnet " + magnet.substr(h + 5, 8);
-    return "Magnet";
+        return tr("Magnet ") + magnet.substr(h + 5, 8);
+    return tr("Magnet");
 }
 
 // The lower-cased btih info-hash of a magnet, or "" if it has none.
@@ -668,7 +670,7 @@ void pickAndPlay(const std::string& source, const std::string& title,
 {
     if (vids.empty())
     {
-        auto* d = new brls::Dialog("This torrent has no video file to stream.");
+        auto* d = new brls::Dialog(tr("This torrent has no video file to stream."));
         d->addButton("OK", []() {});
         d->open();
         return;
@@ -688,7 +690,7 @@ void pickAndPlay(const std::string& source, const std::string& title,
         rows.push_back(row);
     }
     brls::Application::pushActivity(new ListActivity(
-        title, "Pick a file", rows, [source, vids](int i) {
+        title, tr("Pick a file"), rows, [source, vids](int i) {
             brls::Logger::info("Playing {} file {} ({})", source, vids[i].index,
                                vids[i].name);
             brls::Application::pushActivity(
@@ -707,7 +709,7 @@ void playEntry(const TorrentEntry& e)
         if (!magnetFilesCached(h))
         {
             auto* d = new brls::Dialog(
-                "Still fetching this magnet's files -- please wait.");
+                tr("Still fetching this magnet's files -- please wait."));
             d->addButton("OK", []() {});
             d->open();
             return;
@@ -755,7 +757,7 @@ LocalRow makeLocalRow(const TorrentEntry& e)
     // Keep the placeholder "Magnet <hash>" name while resolving. Since only one
     // resolves at a time, the queued ones start with a "(waiting)" suffix; the
     // resolver's onStart drops it (and shows the spinner) when its turn comes.
-    name->setText(e.needsResolve ? e.name + "  (waiting)" : e.name);
+    name->setText(e.needsResolve ? e.name + tr("  (waiting)") : e.name);
     row->addView(name);
 
     brls::ProgressSpinner* spinner = nullptr;
@@ -846,8 +848,8 @@ std::string promptMagnetInput()
     if (R_FAILED(swkbdCreate(&kbd, 0)))
         return "";
     swkbdConfigMakePresetDefault(&kbd);
-    swkbdConfigSetHeaderText(&kbd, "Magnet link or info hash");
-    swkbdConfigSetGuideText(&kbd, "magnet:?xt=... or a 40-character hash");
+    swkbdConfigSetHeaderText(&kbd, tr("Magnet link or info hash"));
+    swkbdConfigSetGuideText(&kbd, tr("magnet:?xt=... or a 40-character hash"));
     swkbdConfigSetStringLenMax(&kbd, 2000);
     char raw[2048] = { 0 };
     Result rc = swkbdShow(&kbd, raw, sizeof(raw));
@@ -859,7 +861,7 @@ std::string promptMagnetInput()
     if (magnet.empty())
     {
         auto* d = new brls::Dialog(
-            "That does not look like a magnet link or an info hash.");
+            tr("That does not look like a magnet link or an info hash."));
         d->addButton("OK", []() {});
         d->open();
         return "";
@@ -889,15 +891,15 @@ brls::View* buildEmptyState()
     box->setPadding(0, 80, 0, 80);
 
     auto* title = new brls::Label();
-    title->setText("No torrents found");
+    title->setText(tr("No torrents found"));
     title->setFontSize(26);
     title->setHorizontalAlign(brls::HorizontalAlign::CENTER);
     title->setMargins(0, 0, 18, 0);
     box->addView(title);
 
     auto* hint = new brls::Label();
-    hint->setText("Drop .torrent files in this folder on your SD card, or add "
-                  "magnet links to magnet.txt inside it (one per line):");
+    hint->setText(tr("Drop .torrent files in this folder on your SD card, or add "
+                  "magnet links to magnet.txt inside it (one per line):"));
     hint->setFontSize(20);
     hint->setTextColor(theme::textDim());  // light gray (text_disabled is
                                                 // too dark on the dark theme)
@@ -1054,14 +1056,14 @@ void registerRowDelete(brls::Box* list, brls::Box* row, TorrentEntry e,
                        std::shared_ptr<MagnetWidgets> widgets)
 {
     row->registerAction(
-        "Delete", brls::BUTTON_Y,
+        tr("Delete"), brls::BUTTON_Y,
         [list, row, e, widgets](brls::View*) {
             std::string msg = e.isMagnet
-                                  ? "Remove this magnet from the list?"
-                                  : "Delete this .torrent file from the SD card?";
+                                  ? tr("Remove this magnet from the list?")
+                                  : tr("Delete this .torrent file from the SD card?");
             auto* d = new brls::Dialog(msg + "\n\n" + e.name);
-            d->addButton("Cancel", []() {});
-            d->addButton("Delete", [list, row, e, widgets]() {
+            d->addButton(tr("Cancel"), []() {});
+            d->addButton(tr("Delete"), [list, row, e, widgets]() {
                 deleteEntryRow(list, row, e, widgets);
             });
             d->open();
@@ -1131,7 +1133,7 @@ brls::View* buildLocalTab()
     // "Add magnet" at the top: adds it to the list (and magnet.txt) via the
     // on-screen keyboard, and resolves its name in the background. Does not play.
     auto* addBtn = new brls::Button();
-    addBtn->setText("+  Add magnet");
+    addBtn->setText(tr("+  Add magnet"));
     addBtn->setMarginBottom(14.0f);
     addBtn->registerClickAction([list, widgets, alive, onStart, onEach](brls::View*) {
         std::string magnet = promptMagnetInput();
@@ -1352,7 +1354,7 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
         // sits under two more boxes than the local list) never hands it over.
         brls::Button* active = tab == config::Tab::STREMIO ? stremioBtn : localBtn;
         v->registerAction(
-            "Back", brls::BUTTON_B,
+            tr("Back"), brls::BUTTON_B,
             [active](brls::View*) {
                 brls::Application::giveFocus(active);
                 return true;
@@ -1360,7 +1362,7 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
             false, false, brls::SOUND_BACK);
     };
 
-    stremioBtn->setText("Stremio");
+    stremioBtn->setText(tr("Stremio"));
     stremioBtn->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
     stremioBtn->setMarginLeft(8.0f);
     stremioBtn->registerClickAction([select](brls::View*) {
@@ -1370,7 +1372,7 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     bar->addView(stremioBtn);
 
 
-    localBtn->setText("Local");
+    localBtn->setText(tr("Local"));
     localBtn->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
     localBtn->registerClickAction([select](brls::View*) {
         select(config::Tab::LOCAL);
@@ -1667,11 +1669,11 @@ brls::View* buildBrowser()
     // (The text glyph renders a touch smaller than the icon -- a borealis hint
     // quirk -- but this keeps them side by side; the R action is hidden so it
     // does not add a second chip.)
-    frame->registerAction("  View", brls::BUTTON_LB, [](brls::View*) {
+    frame->registerAction(std::string("  ") + tr("View"), brls::BUTTON_LB, [](brls::View*) {
         stremio::cycleActiveView(-1);
         return true;
     }, false, false, brls::SOUND_NONE);
-    frame->registerAction("View", brls::BUTTON_RB, [](brls::View*) {
+    frame->registerAction(tr("View"), brls::BUTTON_RB, [](brls::View*) {
         stremio::cycleActiveView(+1);
         return true;
     }, true, false, brls::SOUND_NONE);
@@ -1706,6 +1708,10 @@ int main(int argc, char* argv[])
     ensureAppDataDir();
 
     config::load();
+    // Straight after the config it reads, and before anything can build a view:
+    // tr() is resolved when a string is handed to a view, and the header, the
+    // tab bar and the browser are built once and never again.
+    i18n::load();
     // The engine default already matches the config default, but the config
     // may say otherwise: hand it over before any torrentfs can be opened.
     torrentfs_set_governor(config::get().rateGovernor ? 1 : 0);

@@ -22,6 +22,8 @@ extern "C" {
 #include "torrentfs.h"
 }
 
+#include "i18n.hpp"
+
 namespace
 {
 
@@ -118,7 +120,7 @@ std::vector<std::string> uiLabels(int dflt)
     std::vector<std::string> v = config::uiWidthLabels();
     const auto& ws             = config::uiWidths();
     for (size_t i = 0; i < ws.size(); i++)
-        if (ws[i] == dflt) v[i] += " (default)";
+        if (ws[i] == dflt) v[i] += tr(" (default)");
     return v;
 }
 
@@ -139,13 +141,32 @@ brls::View* generalPane()
     config::Config& cfg = config::get();
 
     auto* startup = new brls::SelectorCell();
-    startup->init("Category on startup", { "Local", "Stremio" },
+    startup->init(tr("Category on startup"), { tr("Local"), tr("Stremio") },
                   cfg.startupTab == config::Tab::STREMIO ? 1 : 0, [](int sel) {
                       config::get().startupTab =
                           sel == 1 ? config::Tab::STREMIO : config::Tab::LOCAL;
                       config::save();
                   });
     list->addView(startup);
+
+    // Same startup-only story as the theme below, for the same reason plus one
+    // of its own: a view reads its strings when it is built, and the header,
+    // the tab bar and the browser behind this screen were built once at launch.
+    auto* language = new brls::SelectorCell();
+    language->init(
+        tr("Language"), i18n::langLabels(),
+        [] {
+            const auto& ids = i18n::langIds();
+            for (size_t i = 0; i < ids.size(); i++)
+                if (ids[i] == config::get().language) return (int)i;
+            return 0;
+        }(),
+        [](int sel) {
+            config::get().language = i18n::langIds()[(size_t)sel];
+            config::save();
+        });
+    list->addView(language);
+    list->addView(caption(tr("The language applies when you restart the app.")));
 
     // Startup-only, unlike every other cell here: borealis states the variant is
     // not expected to change while the app runs, and the views already on screen
@@ -155,7 +176,7 @@ brls::View* generalPane()
                                                           "system" };
     auto* variant = new brls::SelectorCell();
     variant->init(
-        "Theme", { "Dark (default)", "Light", "Follow the console" },
+        tr("Theme"), { tr("Dark (default)"), tr("Light"), tr("Follow the console") },
         [] {
             for (size_t i = 0; i < kVariantIds.size(); i++)
                 if (kVariantIds[i] == config::get().themeVariant) return (int)i;
@@ -168,14 +189,14 @@ brls::View* generalPane()
             // startup and is the only reader of this setting.
         });
     list->addView(variant);
-    list->addView(caption("The theme applies when you restart the app."));
+    list->addView(caption(tr("The theme applies when you restart the app.")));
 
     auto* accent = new brls::SelectorCell();
     accent->init(
-        "Accent colour",
+        tr("Accent colour"),
         [] {
             std::vector<std::string> v = theme::schemeLabels();
-            if (!v.empty()) v[0] += " (default)";  // schemes() is default-first
+            if (!v.empty()) v[0] += tr(" (default)");  // schemes() is default-first
             return v;
         }(),
         [] {
@@ -200,7 +221,7 @@ brls::View* generalPane()
     static const std::vector<std::string> kListStyles = { "posters", "cards",
                                                           "classic" };
     auto* listStyle = new brls::SelectorCell();
-    listStyle->init("List style", { "Posters (default)", "Cards", "Classic" },
+    listStyle->init(tr("List style"), { tr("Posters (default)"), tr("Cards"), tr("Classic") },
                     [&] {
                         for (size_t i = 0; i < kListStyles.size(); i++)
                             if (kListStyles[i] == cfg.listStyle) return (int)i;
@@ -214,11 +235,11 @@ brls::View* generalPane()
     list->addView(listStyle);
 
     auto* sizeHdr = new brls::Header();
-    sizeHdr->setTitle("UI size");
+    sizeHdr->setTitle(tr("UI size"));
     list->addView(sizeHdr);
 
     auto* dockedUi = new brls::SelectorCell();
-    dockedUi->init("Docked", uiLabels(config::kDefaultDockedUiWidth),
+    dockedUi->init(tr("Docked"), uiLabels(config::kDefaultDockedUiWidth),
                    uiIndex(config::get().dockedUiWidth), [](int sel) {
                        config::get().dockedUiWidth = config::uiWidths()[sel];
                        config::save();
@@ -230,16 +251,13 @@ brls::View* generalPane()
     list->addView(dockedUi);
 
     auto* handheldUi = new brls::SelectorCell();
-    handheldUi->init("Handheld", uiLabels(config::kDefaultHandheldUiWidth),
+    handheldUi->init(tr("Handheld"), uiLabels(config::kDefaultHandheldUiWidth),
                      uiIndex(config::get().handheldUiWidth), [](int sel) {
                          config::get().handheldUiWidth = config::uiWidths()[sel];
                          config::save();
                          brls::sync([] { applyUiScale(); });
                      });
     list->addView(handheldUi);
-    list->addView(caption(
-        "A wider logical space means a smaller UI. Stored per mode: a 1080p TV "
-        "metres away and a 6\" panel at arm's length do not want the same size."));
 
     return pane;
 }
@@ -251,7 +269,7 @@ brls::View* playbackPane()
     config::Config& cfg = config::get();
 
     auto* alang = new brls::SelectorCell();
-    alang->init("Audio language", config::langLabels(),
+    alang->init(tr("Audio language"), config::langLabels(),
                 langIndex(cfg.audioLang), [](int sel) {
                     config::get().audioLang = config::langCodes()[sel];
                     config::save();
@@ -259,7 +277,7 @@ brls::View* playbackPane()
     list->addView(alang);
 
     auto* slang = new brls::SelectorCell();
-    slang->init("Subtitle language", config::langLabels(),
+    slang->init(tr("Subtitle language"), config::langLabels(),
                 langIndex(cfg.subLang), [](int sel) {
                     config::get().subLang = config::langCodes()[sel];
                     config::save();
@@ -267,18 +285,14 @@ brls::View* playbackPane()
     list->addView(slang);
 
     auto* subs = new brls::BooleanCell();
-    subs->init("Subtitles", cfg.subtitles, [](bool on) {
+    subs->init(tr("Subtitles"), cfg.subtitles, [](bool on) {
         config::get().subtitles = on;
         config::save();
     });
     list->addView(subs);
-    list->addView(caption(
-        "Applies to the next video. A track in that language is picked when the "
-        "file has one; otherwise it falls back to the file's default. Console "
-        "language is currently " + config::consoleLang() + "."));
 
     auto* audioBoost = new brls::BooleanCell();
-    audioBoost->init("Boost quiet audio in handheld", cfg.audioBoost, [](bool on) {
+    audioBoost->init(tr("Boost quiet audio in handheld"), cfg.audioBoost, [](bool on) {
         config::get().audioBoost = on;
         config::save();
         // The player re-reads this every frame, so it reaches a video that is
@@ -286,21 +300,17 @@ brls::View* playbackPane()
     });
     list->addView(audioBoost);
     list->addView(caption(
-        "A 5.1 soundtrack folded down to stereo plays much quieter than a "
-        "stereo one, and the console's speakers have no headroom left to make "
-        "that up. On by default. Never applied while docked \xE2\x80\x94 there the TV or "
-        "the receiver does the amplifying, so the film keeps its full dynamic "
-        "range."));
+        tr("On by default. Lifts a 5.1 mix folded down to stereo, which plays "
+        "much quieter.")));
 
     auto* hwdec = new brls::BooleanCell();
-    hwdec->init("Hardware decoding", cfg.hwDecode, [](bool on) {
+    hwdec->init(tr("Hardware decoding"), cfg.hwDecode, [](bool on) {
         config::get().hwDecode = on;
         config::save();
     });
     list->addView(hwdec);
     list->addView(caption(
-        "On by default. Turn it off to decode in software instead: slower, and "
-        "it may stutter on 1080p, but it sidesteps the GPU decode path."));
+        tr("On by default. Off decodes in software: slower, may stutter on 1080p.")));
 
     return pane;
 }
@@ -317,8 +327,8 @@ brls::View* streamingPane()
     // toggle (the end of its scale animation), so its text cannot be overridden
     // from here.
     auto* ramStream = new brls::SelectorCell();
-    ramStream->init("Stream to RAM (no SD cache)",
-                    { "Off (Not recommended)", "On (Recommended)" },
+    ramStream->init(tr("Stream to RAM (no SD cache)"),
+                    { tr("Off (Not recommended)"), tr("On (Recommended)") },
                     cfg.ramStream ? 1 : 0, [](int sel) {
                         config::get().ramStream = sel == 1;
                         config::save();
@@ -327,13 +337,12 @@ brls::View* streamingPane()
                     });
     list->addView(ramStream);
     list->addView(caption(
-        "Keep downloaded pieces in memory instead of writing them to the SD "
-        "card. Removes the brief stutter every time a piece finishes (the SD "
-        "write hammers the system core, worse for bigger pieces), at the cost "
-        "of no resume and a limited seek-back range."));
+        tr("Keep pieces in memory instead of writing them to the SD card. Removes "
+        "the stutter on each finished piece, at the cost of no resume and a "
+        "limited seek-back range.")));
 
     auto* governor = new brls::SelectorCell();
-    governor->init("Limit download rate", { "Off (default)", "On" },
+    governor->init(tr("Limit download rate"), { tr("Off (default)"), tr("On") },
                    cfg.rateGovernor ? 1 : 0, [](int sel) {
                        config::get().rateGovernor = sel == 1;
                        config::save();
@@ -343,11 +352,8 @@ brls::View* streamingPane()
                    });
     list->addView(governor);
     list->addView(caption(
-        "Once the playback buffer is comfortably ahead, cap the download speed "
-        "instead of bursting at full speed \xE2\x80\x94 the bursts overload the console's "
-        "network core and can stutter the system. Off by default, so downloads "
-        "run full speed. Streams with less than 10 s of buffer are never "
-        "limited."));
+        tr("Once the buffer is comfortably ahead, cap the download speed instead "
+        "of bursting \xE2\x80\x94 the bursts can stutter the system. Off by default.")));
 
     return pane;
 }
@@ -359,20 +365,17 @@ brls::View* stremioPane()
     config::Config& cfg = config::get();
 
     auto* hide4k = new brls::BooleanCell();
-    hide4k->init("Hide 4K sources", cfg.hide4k, [](bool on) {
+    hide4k->init(tr("Hide 4K sources"), cfg.hide4k, [](bool on) {
         config::get().hide4k = on;
         config::save();
     });
     list->addView(hide4k);
-    list->addView(caption(
-        "On by default: 4K streams are the heaviest in the swarm and the "
-        "console outputs 1080p docked, so they cost bandwidth it cannot show."));
 
     // The account itself is not here: it has its own screen, off the header's
     // profile button (see AccountActivity).
 
     auto* cacheHdr = new brls::Header();
-    cacheHdr->setTitle("Poster cache");
+    cacheHdr->setTitle(tr("Poster cache"));
     list->addView(cacheHdr);
 
     auto humanMB = [](int64_t b) {
@@ -381,7 +384,7 @@ brls::View* stremioPane()
         return std::string(buf);
     };
     auto* cacheLbl = new AsyncLabel();
-    cacheLbl->setText("Reading...");
+    cacheLbl->setText(tr("Reading..."));
     cacheLbl->setFontSize(16.0f);
     cacheLbl->setTextColor(theme::textDim());
     cacheLbl->setMargins(10.0f, 20.0f, 6.0f, 20.0f);
@@ -396,26 +399,26 @@ brls::View* stremioPane()
         brls::async([cacheLbl, live, humanMB]() {
             int64_t bytes = stremio::posterCacheBytes();
             brls::sync([cacheLbl, live, humanMB, bytes]() {
-                if (*live) cacheLbl->setText(humanMB(bytes) + " on the SD card");
+                if (*live) cacheLbl->setText(humanMB(bytes) + tr(" on the SD card"));
             });
         });
     };
     readCacheSize();
 
     auto* clearCache = new brls::Button();
-    clearCache->setText("Clear poster cache");
+    clearCache->setText(tr("Clear poster cache"));
     clearCache->setMargins(4.0f, 20.0f, 18.0f, 20.0f);
     clearCache->registerClickAction([cacheLbl, readCacheSize](brls::View*) {
         auto live = cacheLbl->alive;
         // Deleting them is the same walk, so it goes off the thread too --
         // otherwise the whole UI stops until the card is done.
-        cacheLbl->setText("Clearing...");
+        cacheLbl->setText(tr("Clearing..."));
         brls::async([live, readCacheSize]() {
             stremio::clearPosterCache();
             brls::sync([live, readCacheSize]() {
                 stremio::markLibraryStale();  // library reloads on return
-                note("Poster cache cleared. The library reloads when you go "
-                     "back to it.");
+                note(tr("Poster cache cleared. The library reloads when you go "
+                     "back to it."));
                 if (*live) readCacheSize();
             });
         });
@@ -433,24 +436,25 @@ brls::View* aboutPane()
     config::Config& cfg = config::get();
 
     auto* version = new brls::Label();
-    version->setText(update::hasPending()
-                         ? "Version " APP_VERSION
-                           " \xE2\x80\x94 an update is installed, restart to use it"
-                         : "Version " APP_VERSION);
+    version->setText(
+        update::hasPending()
+            ? tr("Version ") + std::string(APP_VERSION) +
+                  tr(" \xE2\x80\x94 an update is installed, restart to use it")
+            : tr("Version ") + std::string(APP_VERSION));
     version->setFontSize(20.0f);
     version->setTextColor(theme::text());
     version->setMargins(4.0f, 20.0f, 16.0f, 20.0f);
     list->addView(version);
 
     auto* checkUpd = new brls::BooleanCell();
-    checkUpd->init("Check for updates on startup", cfg.checkUpdates, [](bool on) {
+    checkUpd->init(tr("Check for updates on startup"), cfg.checkUpdates, [](bool on) {
         config::get().checkUpdates = on;
         config::save();
     });
     list->addView(checkUpd);
 
     auto* changelog = new brls::Button();
-    changelog->setText("View changelog");
+    changelog->setText(tr("View changelog"));
     changelog->setMargins(14.0f, 20.0f, 8.0f, 20.0f);
     changelog->registerClickAction([](brls::View*) {
         // showChangelog raises its own blocking spinner while it loads, so the
@@ -461,26 +465,27 @@ brls::View* aboutPane()
     list->addView(changelog);
 
     auto* checkNow = new brls::Button();
-    checkNow->setText("Check now");
+    checkNow->setText(tr("Check now"));
     checkNow->setMargins(4.0f, 20.0f, 18.0f, 20.0f);
     checkNow->registerClickAction([checkNow](brls::View*) {
         checkNow->setState(brls::ButtonState::DISABLED);
-        checkNow->setText("Checking...");
+        checkNow->setText(tr("Checking..."));
         update::checkAsync([checkNow](update::Release r) {
             checkNow->setState(brls::ButtonState::ENABLED);
-            checkNow->setText("Check now");
+            checkNow->setText(tr("Check now"));
             // Asked for explicitly, so unlike the startup check this one says
             // something either way.
             if (!r.ok)
-                note("Could not check for updates: " + r.error);
+                note(tr("Could not check for updates: ") + r.error);
             else if (!r.newer)
-                note("You are on the latest version (" APP_VERSION ").");
+                note(tr("You are on the latest version (") +
+                     std::string(APP_VERSION) + ").");
             else if (r.url.empty())
                 // Newer, but nothing we can install: say so rather than claim
                 // this is the latest.
-                note("Version " + r.version +
-                     " is out, but that release has no .nro to install. "
-                     "Get it from GitHub.");
+                note(tr("Version ") + r.version +
+                     tr(" is out, but that release has no .nro to install. "
+                        "Get it from GitHub."));
             else
                 update::promptInstall(r);
         });
@@ -489,18 +494,18 @@ brls::View* aboutPane()
     list->addView(checkNow);
 
     auto* diagHdr = new brls::Header();
-    diagHdr->setTitle("Diagnostics");
+    diagHdr->setTitle(tr("Diagnostics"));
     list->addView(diagHdr);
 
     auto* logging = new brls::BooleanCell();
-    logging->init("Log file", cfg.logging, [](bool on) {
+    logging->init(tr("Log file"), cfg.logging, [](bool on) {
         config::get().logging = on;
         config::save();
     });
     list->addView(logging);
     list->addView(caption(
-        "The log is written to the SD card continuously. Turn it on to diagnose "
-        "a problem, then restart the app."));
+        tr("The log is written to the SD card continuously. Turn it on to diagnose "
+        "a problem, then restart the app.")));
 
     return pane;
 }
@@ -555,16 +560,16 @@ brls::View* SettingsActivity::createContentView()
     // hold a pointer into another.
     auto* tabs = new brls::TabFrame();
 
-    tabs->addTab("General", [] { return generalPane(); });
-    tabs->addTab("Playback", [] { return playbackPane(); });
-    tabs->addTab("Streaming", [] { return streamingPane(); });
+    tabs->addTab(tr("General"), [] { return generalPane(); });
+    tabs->addTab(tr("Playback"), [] { return playbackPane(); });
+    tabs->addTab(tr("Streaming"), [] { return streamingPane(); });
     tabs->addTab("Stremio", [] { return stremioPane(); });
-    tabs->addTab("About", [] { return aboutPane(); });
+    tabs->addTab(tr("About"), [] { return aboutPane(); });
 
     auto* frame = new brls::AppletFrame();
     frame->pushContentView(tabs);
     // After pushContentView: it overwrites the title with the content view's.
-    frame->setTitle("Options");
+    frame->setTitle(tr("Options"));
     return frame;
 }
 
@@ -592,13 +597,13 @@ brls::View* AccountActivity::createContentView()
         box->setAlignItems(brls::AlignItems::CENTER);
 
         auto* title = new brls::Label();
-        title->setText("Not signed in");
+        title->setText(tr("Not signed in"));
         title->setFontSize(30.0f);
         title->setTextColor(theme::text());
         box->addView(title);
 
         auto* sub = new brls::Label();
-        sub->setText("The sign-in form is on the Stremio tab.");
+        sub->setText(tr("The sign-in form is on the Stremio tab."));
         sub->setFontSize(18.0f);
         sub->setTextColor(theme::textMuted());
         sub->setMarginTop(10.0f);
@@ -608,7 +613,7 @@ brls::View* AccountActivity::createContentView()
 
         auto* frame = new brls::AppletFrame();
         frame->pushContentView(root);
-        frame->setTitle("Account");
+        frame->setTitle(tr("Account"));
         return frame;
     }
 
@@ -648,14 +653,14 @@ brls::View* AccountActivity::createContentView()
         auto* addr = new brls::Label();
         // The address is only kept so this screen can name the account -- the
         // API has no use for it once there is an authKey.
-        addr->setText(email.empty() ? "this console" : email);
+        addr->setText(email.empty() ? tr("this console") : email);
         addr->setFontSize(28.0f);
         addr->setTextColor(theme::text());
         addr->setSingleLine(true);
         who->addView(addr);
 
         auto* sub = new brls::Label();
-        sub->setText("Signed in to Stremio");
+        sub->setText(tr("Signed in to Stremio"));
         sub->setFontSize(17.0f);
         sub->setTextColor(theme::textMuted());
         sub->setMarginTop(4.0f);
@@ -698,13 +703,13 @@ brls::View* AccountActivity::createContentView()
     };
 
     int libN = stremio::libraryCount();
-    stat("In library", libN < 0 ? "\xE2\x80\x94" : std::to_string(libN));
-    brls::Label* addonCount = stat("Addons", "\xE2\x80\x94");
+    stat(tr("In library"), libN < 0 ? "\xE2\x80\x94" : std::to_string(libN));
+    brls::Label* addonCount = stat(tr("Addons"), "\xE2\x80\x94");
     root->addView(stats);
 
     // ---- the addons -------------------------------------------------------
     auto* addonHdr = new brls::Header();
-    addonHdr->setTitle("Installed addons");
+    addonHdr->setTitle(tr("Installed addons"));
     addonHdr->setMargins(0.0f, 60.0f, 0.0f, 60.0f);
     root->addView(addonHdr);
 
@@ -718,7 +723,7 @@ brls::View* AccountActivity::createContentView()
     root->addView(scroll);
 
     auto* pending = new brls::Label();
-    pending->setText("Reading the account's addons...");
+    pending->setText(tr("Reading the account's addons..."));
     pending->setFontSize(16.0f);
     pending->setTextColor(theme::textMuted());
     pending->setMarginTop(8.0f);
@@ -733,7 +738,7 @@ brls::View* AccountActivity::createContentView()
         if (!r.ok)
         {
             auto* err = new brls::Label();
-            err->setText("Could not read them: " + r.error);
+            err->setText(tr("Could not read them: ") + r.error);
             err->setFontSize(16.0f);
             err->setTextColor(theme::textWarn());
             addonList->addView(err);
@@ -776,10 +781,10 @@ brls::View* AccountActivity::createContentView()
                 if (!what.empty()) what += "  \xC2\xB7  ";
                 what += s;
             };
-            if (a.hasMeta) add("Metadata");
-            if (a.hasStream) add(streamsOff ? "Streams (disabled)" : "Streams");
-            if (a.hasSubtitles) add("Subtitles");
-            if (what.empty()) what = "Nothing this app uses";
+            if (a.hasMeta) add(tr("Metadata"));
+            if (a.hasStream) add(streamsOff ? tr("Streams (disabled)") : tr("Streams"));
+            if (a.hasSubtitles) add(tr("Subtitles"));
+            if (what.empty()) what = tr("Nothing this app uses");
 
             bool anyUsable =
                 a.hasMeta || a.hasSubtitles || (a.hasStream && !streamsOff);
@@ -800,7 +805,7 @@ brls::View* AccountActivity::createContentView()
         if (r.addons.empty())
         {
             auto* none = new brls::Label();
-            none->setText("None. Install them from Stremio on another device.");
+            none->setText(tr("None. Install them from Stremio on another device."));
             none->setFontSize(16.0f);
             none->setTextColor(theme::textMuted());
             addonList->addView(none);
@@ -809,7 +814,7 @@ brls::View* AccountActivity::createContentView()
 
     // ---- sign out ---------------------------------------------------------
     auto* logout = new brls::Button();
-    logout->setText("Sign out of Stremio");
+    logout->setText(tr("Sign out of Stremio"));
     logout->setMargins(4.0f, 60.0f, 24.0f, 60.0f);
     logout->registerClickAction([logout](brls::View*) {
         stremio::clearAuthKey();
@@ -818,7 +823,7 @@ brls::View* AccountActivity::createContentView()
         stremio::clearAddonCache();
         // The tab holds the key in memory and is only rebuilt when it is
         // re-entered, so say what actually has to happen.
-        note("Signed out. Restart the app to get back to the sign-in screen.");
+        note(tr("Signed out. Restart the app to get back to the sign-in screen."));
         logout->setState(brls::ButtonState::DISABLED);
         return true;
     });
@@ -826,6 +831,6 @@ brls::View* AccountActivity::createContentView()
 
     auto* frame = new brls::AppletFrame();
     frame->pushContentView(root);
-    frame->setTitle("Account");
+    frame->setTitle(tr("Account"));
     return frame;
 }

@@ -11,6 +11,7 @@
 #include <string>
 
 #include "appdata.hpp"
+#include "i18n.hpp"
 
 namespace config
 {
@@ -198,7 +199,9 @@ const std::vector<std::string>& langLabels()
 {
     static std::vector<std::string> v = [] {
         std::vector<std::string> o;
-        for (const auto& l : kLangs) o.push_back(l.label);
+        // Translated here, not in kLangs: that table is built before main(),
+        // where the language is not known yet. This runs on first use.
+        for (const auto& l : kLangs) o.push_back(tr(l.label));
         return o;
     }();
     return v;
@@ -253,6 +256,7 @@ void load()
     cfg.hwDecode     = readBool(body, "hwDecode", cfg.hwDecode);
     cfg.audioBoost   = readBool(body, "audioBoost", cfg.audioBoost);
 
+    cfg.language     = readStr(body, "language", cfg.language);
     cfg.accent       = readStr(body, "accent", cfg.accent);
     cfg.themeVariant = readStr(body, "themeVariant", cfg.themeVariant);
     cfg.listStyle    = readStr(body, "listStyle", cfg.listStyle);
@@ -292,6 +296,7 @@ bool save()
                  "  \"audioBoost\": %s,\n"
                  "  \"dockedUiWidth\": %d,\n"
                  "  \"handheldUiWidth\": %d,\n"
+                 "  \"language\": \"%s\",\n"
                  "  \"accent\": \"%s\",\n"
                  "  \"themeVariant\": \"%s\",\n"
                  "  \"listStyle\": \"%s\"\n"
@@ -304,7 +309,7 @@ bool save()
                  cfg.subLang.c_str(), cfg.subtitles ? "true" : "false",
                  cfg.hwDecode ? "true" : "false",
                  cfg.audioBoost ? "true" : "false", cfg.dockedUiWidth,
-                 cfg.handheldUiWidth, cfg.accent.c_str(),
+                 cfg.handheldUiWidth, cfg.language.c_str(), cfg.accent.c_str(),
                  cfg.themeVariant.c_str(), cfg.listStyle.c_str());
     std::fclose(f);
     return true;

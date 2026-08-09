@@ -13,6 +13,7 @@
 
 #include "http.hpp"
 #include "json.hpp"
+#include "i18n.hpp"
 
 #ifndef APP_VERSION
 #define APP_VERSION "0.0.0"
@@ -104,7 +105,7 @@ void checkAsync(std::function<void(Release)> done)
     if (selfNro.empty())
     {
         Release r;
-        r.error = "unknown install path";
+        r.error = tr("unknown install path");
         brls::sync([done, r]() { done(r); });
         return;
     }
@@ -125,7 +126,7 @@ void checkAsync(std::function<void(Release)> done)
         {
             // No releases yet, or a rate-limit / error body.
             r.error = json::str(resp, "message");
-            if (r.error.empty()) r.error = "no release found";
+            if (r.error.empty()) r.error = tr("no release found");
             brls::Logger::info("[update] no tag_name: {}", r.error);
             brls::sync([done, r]() { done(r); });
             return;
@@ -218,7 +219,7 @@ void fetchNotesAsync(
         if (!any)
         {
             std::string m =
-                firstErr.empty() ? "no changelog for this version" : firstErr;
+                firstErr.empty() ? tr("no changelog for this version") : firstErr;
             brls::sync([done, m]() { done(false, "", "", m); });
             return;
         }
@@ -264,7 +265,7 @@ class ChangelogActivity : public brls::Activity
 
         auto* frame = new brls::AppletFrame();
         frame->pushContentView(scroll);
-        frame->setTitle("Changelog — " + title);
+        frame->setTitle(tr("Changelog — ") + title);
         return frame;
     }
 
@@ -287,7 +288,7 @@ void downloadAsync(const Release& r, std::function<void(float)> progress,
     std::string dest = pendingPath();
     if (dest.empty() || url.empty())
     {
-        brls::sync([done]() { done("nothing to download"); });
+        brls::sync([done]() { done(tr("nothing to download")); });
         return;
     }
 
@@ -355,7 +356,7 @@ void showChangelog(const std::string& version)
     box->addView(sp);
 
     auto* label = new brls::Label();
-    label->setText("Loading changelog...");
+    label->setText(tr("Loading changelog..."));
     label->setFontSize(19.0f);
     label->setMarginTop(20.0f);
     label->setHorizontalAlign(brls::HorizontalAlign::CENTER);
@@ -371,7 +372,7 @@ void showChangelog(const std::string& version)
         // it was covering (the Options list, or the update prompt).
         loading->close([ok, title, notes, err]() {
             if (!ok)
-                note("Could not load the changelog: " + err);
+                note(tr("Could not load the changelog: ") + err);
             else
                 showNotes(title, notes);
         });
@@ -383,13 +384,13 @@ void promptInstall(const Release& r)
     // Just the release's own title -- it already reads "0.2.0 — <overview>". The
     // full body lives one tap away under "View changelog"; a modal is the wrong
     // place for pages of markdown (and it does not scroll).
-    std::string msg = "Version " + r.version + " is available.";
+    std::string msg = tr("Version ") + r.version + tr(" is available.");
     if (r.size > 0) msg += "  (" + humanMB(r.size) + ")";
     if (!r.title.empty()) msg += "\n\n" + r.title;
 
     auto* ask = new brls::Dialog(msg);
-    ask->addButton("Later", []() {});
-    ask->addButton("View changelog", [r]() {
+    ask->addButton(tr("Later"), []() {});
+    ask->addButton(tr("View changelog"), [r]() {
         // A dialog button dismisses the prompt before its callback runs, so
         // re-open the prompt first: it then waits UNDER the changelog, and backing
         // out returns the user to it to choose Update / Later rather than dropping
@@ -398,7 +399,7 @@ void promptInstall(const Release& r)
         promptInstall(r);
         showChangelog(r.version);
     });
-    ask->addButton("Update", [r]() {
+    ask->addButton(tr("Update"), [r]() {
         // Its own dialog, with a label we keep writing into. Not cancelable:
         // there is no partial file to leave behind (http::download cleans up),
         // but B-ing out mid-transfer would leave the callbacks writing to a
@@ -409,7 +410,7 @@ void promptInstall(const Release& r)
         box->setPadding(24.0f, 30.0f, 24.0f, 30.0f);
 
         auto* label = new brls::Label();
-        label->setText("Downloading... 0%");
+        label->setText(tr("Downloading... 0%"));
         label->setFontSize(20.0f);
         label->setHorizontalAlign(brls::HorizontalAlign::CENTER);
         box->addView(label);
@@ -443,12 +444,12 @@ void promptInstall(const Release& r)
             [label, track, fill](float f) {
                 if (f < 0)
                 {
-                    label->setText("Downloading...");  // server gave no size
+                    label->setText(tr("Downloading..."));  // server gave no size
                     return;
                 }
                 if (f > 1.0f) f = 1.0f;  // a server lying about its size
                 int pct = (int)(f * 100);
-                label->setText("Downloading... " + std::to_string(pct) + "%");
+                label->setText(tr("Downloading... ") + std::to_string(pct) + "%");
                 // Pixels off the track as laid out, not a percentage of what we
                 // asked for: the two are not the same number (see setShrink).
                 float w = track->getWidth();
@@ -458,7 +459,7 @@ void promptInstall(const Release& r)
                 prog->close([err]() {
                     if (!err.empty())
                     {
-                        note("Update failed: " + err);
+                        note(tr("Update failed: ") + err);
                         return;
                     }
                     // The .nro on disk is only swapped once we let go of it, so
@@ -466,12 +467,12 @@ void promptInstall(const Release& r)
                     // rather than leave the user on a build that is already
                     // obsolete, with an update they will forget they installed.
                     auto* d = new brls::Dialog(
-                        "Update installed. The app will restart to use it.");
+                        tr("Update installed. The app will restart to use it."));
                     d->setCancelable(false);
-                    d->addButton("Restart", []() {
+                    d->addButton(tr("Restart"), []() {
                         if (!restartNow())
-                            note("Close and reopen the app to use the new "
-                                 "version.");
+                            note(tr("Close and reopen the app to use the new "
+                                 "version."));
                     });
                     d->open();
                 });

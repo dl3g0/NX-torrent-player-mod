@@ -85,6 +85,14 @@ struct Config
     // theme::current()), so this is not validated here.
     std::string accent = "purple";
 
+    // The UI language, as an i18n::langIds() id: "en" (what the app is written
+    // in, and the default) or "fr". Deliberately not the console's language --
+    // the app ships English strings and only a translation of them, so guessing
+    // from the system would hand a half-French UI to someone who never asked
+    // for one. Read at startup only (see i18n::load()): the strings are taken
+    // when a view is built, and the header, tab bar and browser are built once.
+    std::string language = "en";
+
     // "dark", "light" or "system" (the console's own setting). Dark is what the
     // app has always been. Read at startup only: borealis does not support
     // swapping the variant while running. Anything unrecognised behaves as

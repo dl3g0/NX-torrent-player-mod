@@ -16,6 +16,7 @@
 #include "config.hpp"
 #include "player.hpp"
 #include "theme.hpp"
+#include "i18n.hpp"
 
 namespace
 {
@@ -381,7 +382,7 @@ void showAddons(const std::string& authKey, const std::string& type,
                 const PlayerArt& art, const WatchInfo& inWatch)
 {
     brls::Application::pushActivity(
-        new LoadingActivity("Addons...", label, art.posterPath));
+        new LoadingActivity(tr("Addons..."), label, art.posterPath));
 
     // The player asks the subtitle addons for this same (type, id) pair, so it
     // travels on the WatchInfo (see AddonSourcePicker::startAddonSources, which
@@ -394,7 +395,7 @@ void showAddons(const std::string& authKey, const std::string& type,
         if (!r.ok)
         {
             closeLoading();
-            dialog("Addons unavailable: " + r.error);
+            dialog(tr("Addons unavailable: ") + r.error);
             return;
         }
 
@@ -404,7 +405,7 @@ void showAddons(const std::string& authKey, const std::string& type,
         if (usable->empty())
         {
             closeLoading();
-            dialog("No addon provides a source for this title.");
+            dialog(tr("No addon provides a source for this title."));
             return;
         }
 
@@ -412,7 +413,7 @@ void showAddons(const std::string& authKey, const std::string& type,
         for (const auto& a : *usable) { Row row; row.label = a.name; rows.push_back(row); }
 
         swapLoading(new ListActivity(
-            label, "Pick an addon", rows,
+            label, tr("Pick an addon"), rows,
             [usable, type, videoId, label, art, watch](int i) {
                 showStreams((*usable)[i], type, videoId, label, art, watch);
             },
@@ -438,20 +439,20 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
                  const PlayerArt& art, const WatchInfo& watch)
 {
     brls::Application::pushActivity(
-        new LoadingActivity("Sources...", label, art.posterPath));
+        new LoadingActivity(tr("Sources..."), label, art.posterPath));
 
     stremio::fetchStreamsAsync(
         addon.base, type, videoId, [label, art, watch](stremio::StreamsResult r) {
             if (!r.ok)
             {
                 closeLoading();
-                dialog("Sources unavailable: " + r.error);
+                dialog(tr("Sources unavailable: ") + r.error);
                 return;
             }
             if (r.streams.empty())
             {
                 closeLoading();
-                dialog("This addon has no source for this title.");
+                dialog(tr("This addon has no source for this title."));
                 return;
             }
 
@@ -469,9 +470,9 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
             {
                 closeLoading();
                 dialog(hidden4k > 0
-                           ? "This addon only offers 4K sources, which are "
-                             "hidden in Options."
-                           : "This addon has no source for this title.");
+                           ? tr("This addon only offers 4K sources, which are "
+                                "hidden in Options.")
+                           : tr("This addon has no source for this title."));
                 return;
             }
 
@@ -489,7 +490,7 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
                 Row row;
                 row.label = deEmoji(joinSpace(nameLines));
                 if (row.label.empty() && !titleLines.empty()) row.label = titleLines[0];
-                if (row.label.empty()) row.label = "Source";
+                if (row.label.empty()) row.label = tr("Source");
 
                 // The whole title the addon gives (filename plus seeders, size,
                 // provider) rather than only the seeders/size line: that line
@@ -506,13 +507,13 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
             }
 
             swapLoading(new ListActivity(
-                label, "Pick a source", rows,
+                label, tr("Pick a source"), rows,
                 [streams, art, label, watch](int i) {
                     const auto& s = (*streams)[i];
                     if (s.infoHash.empty())
                     {
-                        dialog("Unsupported source: only torrents (infoHash) "
-                               "can be played for now.");
+                        dialog(tr("Unsupported source: only torrents (infoHash) "
+                               "can be played for now."));
                         return;
                     }
                     // Addons hand back a bare infoHash. Our magnet loader
@@ -571,7 +572,7 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
         for (const auto& v : *eps)
         {
             Row row;
-            row.label  = "Episode " + std::to_string(v.episode);
+            row.label  = tr("Episode ") + std::to_string(v.episode);
             row.sub    = v.title;
             row.artId  = v.thumbnail.empty() ? "" : v.id;
             row.artUrl = v.thumbnail;
@@ -582,9 +583,9 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
     };
     std::vector<Row> rows = buildRows();
 
-    std::string title = item.name + " - Season " + std::to_string(season);
+    std::string title = item.name + tr(" - Season ") + std::to_string(season);
     auto* epList = new ListActivity(
-        title, "Pick an episode", rows,
+        title, tr("Pick an episode"), rows,
         [authKey, type, eps, title, item, art](int i) {
             // The show's poster stays in front (it identifies the series at a
             // glance); the background becomes this episode's own still, which is
@@ -829,12 +830,12 @@ class AddonSourcePicker : public brls::Activity
         auto live = alive;
         stremio::fetchAddonsAsync(authKey, [this, live](stremio::AddonsResult r) {
             if (!*live) return;
-            if (!r.ok) { showSourcesMessage("Addons unavailable", true); return; }
+            if (!r.ok) { showSourcesMessage(tr("Addons unavailable"), true); return; }
             addons = std::make_shared<std::vector<stremio::Addon>>(
                 usableStreamAddons(r.addons, type));
             if (addons->empty())
             {
-                showSourcesMessage("No addon provides a source for this title",
+                showSourcesMessage(tr("No addon provides a source for this title"),
                                    true);
                 return;
             }
@@ -878,19 +879,19 @@ class AddonSourcePicker : public brls::Activity
             // message again rather than an empty row (buildSourceCards on an empty
             // list would clear to nothing and drop the notice).
             if (hit->second.empty())
-                showSourcesMessage("No source from this addon", false);
+                showSourcesMessage(tr("No source from this addon"), false);
             else
                 buildSourceCards(hit->second);
             return;
         }
 
-        showSourcesMessage("Loading sources...", false);
+        showSourcesMessage(tr("Loading sources..."), false);
         auto live = alive;
         stremio::fetchStreamsAsync(
             (*addons)[i].base, type, videoId,
             [this, live, i](stremio::StreamsResult r) {
                 if (!*live || activeAddon != i) return;  // switched away meanwhile
-                if (!r.ok) { showSourcesMessage("Sources unavailable", false); return; }
+                if (!r.ok) { showSourcesMessage(tr("Sources unavailable"), false); return; }
                 // The Switch outputs 1080p docked, so 4K streams cost bandwidth
                 // for pixels it cannot show; hidden by default (Options).
                 std::vector<stremio::Stream> playable;
@@ -900,7 +901,7 @@ class AddonSourcePicker : public brls::Activity
                 streamCache[i] = playable;
                 if (playable.empty())
                 {
-                    showSourcesMessage("No source from this addon", false);
+                    showSourcesMessage(tr("No source from this addon"), false);
                     return;
                 }
                 buildSourceCards(playable);
@@ -946,7 +947,7 @@ class AddonSourcePicker : public brls::Activity
         auto titleLines = splitLines(s.title);
         std::string head = deEmoji(joinSpace(nameLines));
         if (head.empty() && !titleLines.empty()) head = deEmoji(titleLines[0]);
-        if (head.empty()) head = "Source";
+        if (head.empty()) head = tr("Source");
 
         auto* card = new SourceCard();
         card->setFocusable(true);
@@ -969,8 +970,8 @@ class AddonSourcePicker : public brls::Activity
             [stream, cardArt, cardW, cardLabel](brls::View*) {
                 if (stream.infoHash.empty())
                 {
-                    dialog("Unsupported source: only torrents (infoHash) can be "
-                           "played for now.");
+                    dialog(tr("Unsupported source: only torrents (infoHash) can be "
+                           "played for now."));
                     return true;
                 }
                 std::string magnet =
@@ -1111,8 +1112,8 @@ void bindLibraryToggle(brls::View* host, const std::string& authKey,
                        const stremio::LibItem& item)
 {
     auto hint = [](const std::string& id) {
-        return stremio::inLibrary(id) ? "Remove from library"
-                                      : "Add to library";
+        return stremio::inLibrary(id) ? tr("Remove from library")
+                                      : tr("Add to library");
     };
 
     host->registerAction(
@@ -1130,8 +1131,8 @@ void bindLibraryToggle(brls::View* host, const std::string& authKey,
                 authKey, item, add, [repaint, add](bool ok) {
                     repaint();
                     if (!ok)
-                        dialog(add ? "Could not add it to your library."
-                                   : "Could not remove it from your library.");
+                        dialog(add ? tr("Could not add it to your library.")
+                                   : tr("Could not remove it from your library."));
                 });
             repaint();
             return true;
@@ -1196,7 +1197,7 @@ class MovieDetailActivity : public AddonSourcePicker
         right->addView(titleL);
 
         metaLine = new brls::Label();
-        metaLine->setText(item.type == "series" ? "Show" : "Film");
+        metaLine->setText(item.type == "series" ? tr("Show") : tr("Film"));
         metaLine->setFontSize(19.0f);
         metaLine->setTextColor(theme::textBody());
         metaLine->setMarginTop(14.0f);
@@ -1236,7 +1237,7 @@ class MovieDetailActivity : public AddonSourcePicker
 
         // A focusable placeholder so borealis has a focus target until the addon
         // list arrives (loadAddons then moves focus onto the tab bar).
-        showSourcesMessage("Loading...", true);
+        showSourcesMessage(tr("Loading..."), true);
 
         root->addView(right);
 
@@ -1321,7 +1322,7 @@ class EpisodeDetailActivity : public AddonSourcePicker
         watch   = std::move(w);
         type    = "series";
         videoId = ep.id;
-        label   = ep.title.empty() ? ("Episode " + std::to_string(ep.episode))
+        label   = ep.title.empty() ? (tr("Episode ") + std::to_string(ep.episode))
                                     : ep.title;
     }
 
@@ -1372,8 +1373,8 @@ class EpisodeDetailActivity : public AddonSourcePicker
             line += s;
         };
         add(formatYear(ep.released));
-        add("Season " + std::to_string(ep.season));
-        add("Episode " + std::to_string(ep.episode));
+        add(tr("Season ") + std::to_string(ep.season));
+        add(tr("Episode ") + std::to_string(ep.episode));
         if (!seriesRating.empty()) add(kStar + " " + seriesRating);
         metaLine->setText(line);
         metaLine->setFontSize(18.0f);
@@ -1470,26 +1471,26 @@ class EpisodeDetailActivity : public AddonSourcePicker
             // view's parents, and the cursor is usually down in the sources.
             if (!prevId.empty())
             {
-                auto* b = arrow("\xEE\x97\x8B", true, "Previous episode",
+                auto* b = arrow("\xEE\x97\x8B", true, tr("Previous episode"),
                                 prevId, 8.0f);
                 nav->addView(b);
                 root->registerAction(
-                    "Previous episode", brls::BUTTON_LB,
+                    tr("Previous episode"), brls::BUTTON_LB,
                     [trigger, b, id = prevId](brls::View*) {
-                        trigger(b, id, "Previous episode");
+                        trigger(b, id, tr("Previous episode"));
                         return true;
                     },
                     false, false, brls::SOUND_CLICK);
             }
             if (!nextId.empty())
             {
-                auto* b = arrow("\xEE\x97\x8C", false, "Next episode", nextId,
+                auto* b = arrow("\xEE\x97\x8C", false, tr("Next episode"), nextId,
                                 0.0f);
                 nav->addView(b);
                 root->registerAction(
-                    "Next episode", brls::BUTTON_RB,
+                    tr("Next episode"), brls::BUTTON_RB,
                     [trigger, b, id = nextId](brls::View*) {
-                        trigger(b, id, "Next episode");
+                        trigger(b, id, tr("Next episode"));
                         return true;
                     },
                     false, false, brls::SOUND_CLICK);
@@ -1523,7 +1524,7 @@ class EpisodeDetailActivity : public AddonSourcePicker
         sourcesScroll = hs;
         root->addView(hs);
 
-        showSourcesMessage("Loading...", true);
+        showSourcesMessage(tr("Loading..."), true);
 
         auto* frame = new GradientAppletFrame();
         frame->pushContentView(root);
@@ -1642,7 +1643,7 @@ class SeriesDetailActivity : public brls::Activity
         right->addView(titleL);
 
         metaLine = new brls::Label();
-        metaLine->setText("Show");
+        metaLine->setText(tr("Show"));
         metaLine->setFontSize(19.0f);
         metaLine->setTextColor(theme::textBody());
         metaLine->setMarginTop(14.0f);
@@ -1679,7 +1680,7 @@ class SeriesDetailActivity : public brls::Activity
         hs->setContentView(episodesRow);
         right->addView(hs);
 
-        showEpisodesMessage("Loading...", true);
+        showEpisodesMessage(tr("Loading..."), true);
 
         root->addView(right);
 
@@ -1759,7 +1760,8 @@ class SeriesDetailActivity : public brls::Activity
                 if (!r.ok || r.videos.empty())
                 {
                     showEpisodesMessage(
-                        r.ok ? "No episodes found" : "Episodes unavailable", true);
+                        r.ok ? tr("No episodes found") : tr("Episodes unavailable"),
+                        true);
                     return;
                 }
                 seriesRating = r.imdbRating;
@@ -1787,13 +1789,13 @@ class SeriesDetailActivity : public brls::Activity
             if (v.season >= 0) count[v.season]++;
         seasons.clear();
         for (const auto& kv : count) seasons.push_back(kv.first);
-        if (seasons.empty()) { showEpisodesMessage("No episodes", true); return; }
+        if (seasons.empty()) { showEpisodesMessage(tr("No episodes"), true); return; }
 
         for (size_t i = 0; i < seasons.size(); i++)
         {
             auto* b = new brls::Button();
-            b->setText(seasons[i] == 0 ? std::string("Specials")
-                                       : "Season " + std::to_string(seasons[i]));
+            b->setText(seasons[i] == 0 ? std::string(tr("Specials"))
+                                       : tr("Season ") + std::to_string(seasons[i]));
             b->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
             if (i) b->setMarginLeft(6.0f);
             int idx = (int)i;
@@ -1886,7 +1888,7 @@ class SeriesDetailActivity : public brls::Activity
                   [](const stremio::Video& a, const stremio::Video& b) {
                       return a.episode < b.episode;
                   });
-        if (eps.empty()) { showEpisodesMessage("No episodes", false); return; }
+        if (eps.empty()) { showEpisodesMessage(tr("No episodes"), false); return; }
 
         // The episode the account is mid-way through (local just-played record
         // wins over the library snapshot, same rule as progressFor): diving into
@@ -1929,7 +1931,7 @@ class SeriesDetailActivity : public brls::Activity
         if (marginLeft) col->setMarginLeft(24.0f);
 
         auto* cap = new brls::Label();
-        std::string t = v.title.empty() ? ("Episode " + std::to_string(v.episode))
+        std::string t = v.title.empty() ? (tr("Episode ") + std::to_string(v.episode))
                                         : v.title;
         cap->setText(std::to_string(v.episode) + " \xC2\xB7 " + t);  // middle dot
         cap->setFontSize(20.0f);
@@ -2303,7 +2305,7 @@ void openEpisodeById(const std::string& authKey, const std::string& seriesId,
     // for a second. So that path stays put and swaps only once the meta is in.
     if (!replaceCurrent)
         brls::Application::pushActivity(
-            new LoadingActivity("Next episode...", "Stremio", art.posterPath));
+            new LoadingActivity(tr("Next episode..."), "Stremio", art.posterPath));
 
     // Cinemeta keys on the IMDB id and carries the whole episode list, which is
     // also where the one AFTER this comes from -- so the card keeps working
@@ -2319,7 +2321,7 @@ void openEpisodeById(const std::string& authKey, const std::string& seriesId,
             {
                 if (!replaceCurrent) closeLoading();
                 if (onFail) onFail();
-                dialog("Could not open that episode.");
+                dialog(tr("Could not open that episode."));
                 return;
             }
 
@@ -2336,7 +2338,7 @@ void openEpisodeById(const std::string& authKey, const std::string& seriesId,
             w.itemId  = seriesId;
             w.videoId = v->id;
             w.type    = "series";
-            w.displayTitle = (v->title.empty() ? "Episode" : v->title) + "  (" +
+            w.displayTitle = (v->title.empty() ? tr("Episode") : v->title) + "  (" +
                              std::to_string(v->season) + " \xC2\xB7 " +
                              std::to_string(v->episode) + ")";
 

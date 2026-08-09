@@ -32,6 +32,8 @@ extern "C" {
 #include "torrent.h"  // magnet metadata-fetch progress counters
 }
 
+#include "i18n.hpp"
+
 // See setMagnetResolvedHook (player.hpp): fired with the played magnet and its
 // resolved name so the Local tab can save a name it did not have yet.
 static std::function<void(const std::string&, const std::string&)>
@@ -76,14 +78,14 @@ std::string episodeLabelOf(const std::string& videoId)
     if (s.empty() || e.empty()) return "";
     if (s.find_first_not_of("0123456789") != std::string::npos) return "";
     if (e.find_first_not_of("0123456789") != std::string::npos) return "";
-    return "Season " + s + " \xC2\xB7 Episode " + e;
+    return tr("Season ") + s + " \xC2\xB7 " + tr("Episode ") + e;
 }
 
 // The playback speeds offered, in order. L/R in the player step through this
 // list and the panel's Speed row lists it -- one definition so the two cannot
 // disagree. mpv resamples the audio to keep the pitch at any of them.
 const std::vector<double> kSpeeds = { 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0 };
-const std::vector<std::string> kSpeedLabels = { "0.5x",  "0.75x", "Normal",
+const std::vector<std::string> kSpeedLabels = { "0.5x",  "0.75x", tr("Normal"),
                                                 "1.25x", "1.5x",  "1.75x",
                                                 "2x" };
 
@@ -231,7 +233,7 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
         }
         else if (title.rfind("magnet:", 0) == 0)
         {
-            title = "Torrent";
+            title = tr("Torrent");
         }
         else
         {
@@ -259,8 +261,8 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
 {
     if (statusLabel)
         statusLabel->setText(source.rfind("magnet:", 0) == 0
-                                 ? "Fetching metadata..."
-                                 : "Opening torrent...");
+                                 ? tr("Fetching metadata...")
+                                 : tr("Opening torrent..."));
 
     auto liveFlag = this->alive;
     brls::async([this, liveFlag, source, fileIndex]() {
@@ -282,7 +284,7 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
             if (!t)
             {
                 brls::Logger::error("torrentfs_open failed: {}", e);
-                if (statusLabel) statusLabel->setText("Failed: " + e);
+                if (statusLabel) statusLabel->setText(tr("Failed: ") + e);
                 return;
             }
             tfs = t;
@@ -291,7 +293,7 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
             if (g_magnetResolvedHook && source.compare(0, 7, "magnet:") == 0)
                 g_magnetResolvedHook(source, torrentfs_name(t));
             if (!startMpv() && statusLabel)
-                statusLabel->setText("Player initialisation failed");
+                statusLabel->setText(tr("Player initialisation failed"));
         });
     });
 }
@@ -463,7 +465,7 @@ void MpvView::registerPlayerActions()
     // Y locks / unlocks every other control for the session (see toggleLock).
     // Registered first, and never gated, so it is always the way out of a lock.
     this->registerAction(
-        "Lock", brls::BUTTON_Y,
+        tr("Lock"), brls::BUTTON_Y,
         [this](brls::View*) {
             toggleLock();
             return true;
@@ -472,7 +474,7 @@ void MpvView::registerPlayerActions()
 
     // B returns to the browser.
     this->registerAction(
-        "Back", brls::BUTTON_B,
+        tr("Back"), brls::BUTTON_B,
         [this](brls::View*) {
             if (controlsLocked) { flashLock(); return true; }
             // Scrubbing: B cancels the seek and returns to where playback was,
@@ -488,7 +490,7 @@ void MpvView::registerPlayerActions()
     // A toggles pause during playback (ignored while still buffering). Tapping the
     // video does the same (see the gesture in buildLoadingOverlay).
     this->registerAction(
-        "Pause", brls::BUTTON_A,
+        tr("Pause"), brls::BUTTON_A,
         [this](brls::View*) {
             if (controlsLocked) { flashLock(); return true; }
             // While the next-episode card is up and the video is running, A
@@ -521,11 +523,11 @@ void MpvView::registerPlayerActions()
     };
 
     this->registerAction(
-        "Seek -", brls::BUTTON_LEFT,
+        tr("Seek -"), brls::BUTTON_LEFT,
         [scrub](brls::View*) { return scrub(-kSeekStepSecs); },
         false, true, brls::SOUND_NONE);
     this->registerAction(
-        "Seek +", brls::BUTTON_RIGHT,
+        tr("Seek +"), brls::BUTTON_RIGHT,
         [scrub](brls::View*) { return scrub(kSeekStepSecs); },
         false, true, brls::SOUND_NONE);
 
@@ -539,17 +541,17 @@ void MpvView::registerPlayerActions()
         return true;
     };
     this->registerAction(
-        "Slower", brls::BUTTON_LB,
+        tr("Slower"), brls::BUTTON_LB,
         [speedStep](brls::View*) { return speedStep(-1); },
         false, false, brls::SOUND_NONE);
     this->registerAction(
-        "Faster", brls::BUTTON_RB,
+        tr("Faster"), brls::BUTTON_RB,
         [speedStep](brls::View*) { return speedStep(1); },
         false, false, brls::SOUND_NONE);
 
     // ZR toggles the network/torrent info panel.
     this->registerAction(
-        "Info", brls::BUTTON_RT,
+        tr("Info"), brls::BUTTON_RT,
         [this](brls::View*) {
             if (controlsLocked) { flashLock(); return true; }
             infoShown = !infoShown;
@@ -564,7 +566,7 @@ void MpvView::registerPlayerActions()
 
     // X opens the audio/subtitle picker for the current video.
     this->registerAction(
-        "Options", brls::BUTTON_X,
+        tr("Options"), brls::BUTTON_X,
         [this](brls::View*) {
             if (controlsLocked) { flashLock(); return true; }
             openTrackMenu();
@@ -793,7 +795,7 @@ constexpr float kPanelW = 560.0f;
 // the nearest preset -- which is what the old dropdown did.
 std::string subDelayText(double d)
 {
-    if (d == 0.0) return "None";
+    if (d == 0.0) return tr("None");
     char b[32];
     std::snprintf(b, sizeof(b), "%+.2f s", d);
     return b;
@@ -861,10 +863,10 @@ void MpvView::loadOnlineSub(int index)
 
     const stremio::Subtitle& sub = onlineSubs[index];
     std::string title = config::langLabelFor(sub.lang);
-    if (title.empty()) title = "Subtitle";
+    if (title.empty()) title = tr("Subtitle");
     if (!sub.addon.empty()) title += " - " + sub.addon;
 
-    brls::Application::notify("Downloading " + title + "...");
+    brls::Application::notify(tr("Downloading ") + title + "...");
 
     auto live = this->alive;
     stremio::downloadSubtitleAsync(
@@ -872,7 +874,7 @@ void MpvView::loadOnlineSub(int index)
             if (!*live) return;
             if (path.empty() || !mpv)
             {
-                brls::Application::notify("Subtitle download failed");
+                brls::Application::notify(tr("Subtitle download failed"));
                 return;
             }
             // "cached" rather than "select": picking the same subtitle twice
@@ -883,11 +885,11 @@ void MpvView::loadOnlineSub(int index)
                                   title.c_str(),  lang.c_str(), nullptr };
             if (mpv_command(mpv, cmd) < 0)
             {
-                brls::Application::notify("Subtitle could not be loaded");
+                brls::Application::notify(tr("Subtitle could not be loaded"));
                 return;
             }
             loadedSubs.insert(index);
-            brls::Application::notify(title + " loaded");
+            brls::Application::notify(title + tr(" loaded"));
             brls::Logger::info("[player] loaded subtitle {}", path);
         });
 }
@@ -917,7 +919,7 @@ void MpvView::setSubDelay(double seconds)
     if (subDelaySink)
         subDelaySink(subDelay);
     else
-        flashPill("Subtitles  " + subDelayText(subDelay));
+        flashPill(tr("Subtitles  ") + subDelayText(subDelay));
 }
 
 // Steps through kSpeeds. Clamped at both ends rather than wrapping: running
@@ -940,7 +942,7 @@ void MpvView::nudgeSpeed(int dir)
     char v[24];
     std::snprintf(v, sizeof(v), "%.4g", playSpeed);
     mpv_set_property_string(mpv, "speed", v);
-    flashPill("Speed  " + kSpeedLabels[(size_t)next]);
+    flashPill(tr("Speed  ") + kSpeedLabels[(size_t)next]);
 }
 
 void MpvView::flashPill(const std::string& text)
@@ -970,7 +972,7 @@ void MpvView::updateNextCard()
     if (want && nextCardSub)
     {
         std::string sub = episodeLabelOf(watch.nextVideoId);
-        nextCardSub->setText(sub.empty() ? "Up next" : sub);
+        nextCardSub->setText(sub.empty() ? tr("Up next") : sub);
     }
     nextCard->setVisibility(want ? brls::Visibility::VISIBLE
                                  : brls::Visibility::GONE);
@@ -1030,14 +1032,14 @@ void MpvView::openTrackMenu()
         std::string s = lang;
         for (auto& c : s) c = (char)std::toupper((unsigned char)c);
         if (!title.empty()) s += (s.empty() ? "" : " - ") + title;
-        if (s.empty()) s = "Track " + std::to_string(id);
+        if (s.empty()) s = tr("Track ") + std::to_string(id);
         return s;  // full name kept: the cell truncates/marquees, the dropdown shows it whole
     };
 
     // Walk mpv's track-list once, splitting audio and subtitle tracks and noting
     // which is selected. Subtitles get an "Off" entry so the one selector both
     // switches and disables them.
-    std::vector<std::string> aLabels, sLabels{ "Off" };
+    std::vector<std::string> aLabels, sLabels{ tr("Off") };
     std::vector<int64_t> aIds, sIds{ -1 };
     int aCur = 0, sCur = 0;  // sCur 0 = Off
 
@@ -1118,7 +1120,7 @@ void MpvView::openTrackMenu()
     // B closes it. Registered on the panel, and actions bubble from the focused
     // cell up the parents, so it works wherever the cursor is inside.
     panel->registerAction(
-        "Close", brls::BUTTON_B,
+        tr("Close"), brls::BUTTON_B,
         [](brls::View*) {
             brls::Application::popActivity();
             return true;
@@ -1126,7 +1128,7 @@ void MpvView::openTrackMenu()
         false, false, brls::SOUND_BACK);
 
     auto* title = new brls::Label();
-    title->setText("Playback");
+    title->setText(tr("Playback"));
     title->setFontSize(28.0f);
     title->setTextColor(theme::text());
     title->setMarginBottom(4.0f);
@@ -1169,14 +1171,14 @@ void MpvView::openTrackMenu()
         mpv_set_property_string(mpv, prop, v);
     };
 
-    content->addView(panelSection("AUDIO", 8.0f));
+    content->addView(panelSection(tr("AUDIO"), 8.0f));
 
     // Always show the track, even when there is only one -- it tells you what
     // is playing (language/title).
     if (!aLabels.empty())
     {
         auto* a = new TrackCell();
-        a->init("Track", aLabels, aCur, [this, aIds](int sel) {
+        a->init(tr("Track"), aLabels, aCur, [this, aIds](int sel) {
             char v[24];
             std::snprintf(v, sizeof(v), "%lld", (long long)aIds[sel]);
             mpv_set_property_string(mpv, "aid", v);
@@ -1189,7 +1191,7 @@ void MpvView::openTrackMenu()
     {
         playSpeed = getScale("speed");
         auto* sp  = new brls::SelectorCell();
-        sp->init("Speed", kSpeedLabels, nearest(kSpeeds, playSpeed),
+        sp->init(tr("Speed"), kSpeedLabels, nearest(kSpeeds, playSpeed),
                  [this, setScale](int sel) {
                      playSpeed = kSpeeds[(size_t)sel];
                      setScale("speed", playSpeed);
@@ -1197,7 +1199,7 @@ void MpvView::openTrackMenu()
         content->addView(sp);
     }
 
-    content->addView(panelSection("SUBTITLES", 18.0f));
+    content->addView(panelSection(tr("SUBTITLES"), 18.0f));
 
     // ---- subtitles: one list, wherever they come from --------------------
     // The tracks muxed into the file and the ones the account's Stremio
@@ -1233,7 +1235,7 @@ void MpvView::openTrackMenu()
         {
             if (loadedSubs.count((int)i)) continue;
             std::string l = config::langLabelFor(onlineSubs[i].lang);
-            if (l.empty()) l = "Unknown";
+            if (l.empty()) l = tr("Unknown");
             if (!onlineSubs[i].addon.empty()) l += " - " + onlineSubs[i].addon;
             picks.push_back({ -1, (int)i });
             labels.push_back(l);
@@ -1247,9 +1249,9 @@ void MpvView::openTrackMenu()
             note = nullptr;  // local torrent: no addons were ever in play
         else if (onlineSubState == SubFetch::Busy ||
                  onlineSubState == SubFetch::Idle)
-            note = "Searching addons...";
+            note = tr("Searching addons...");
         else if (onlineSubState == SubFetch::Failed)
-            note = "Addons unavailable";
+            note = tr("Addons unavailable");
         if (note)
         {
             picks.push_back({ kNoteSid, -1 });
@@ -1259,7 +1261,7 @@ void MpvView::openTrackMenu()
         if (labels.size() > 1)  // something besides "Off"
         {
             auto* s = new TrackCell();
-            s->init("Subtitles", labels, cur, [this, picks](int sel) {
+            s->init(tr("Subtitles"), labels, cur, [this, picks](int sel) {
                 const Pick& p = picks[(size_t)sel];
                 if (p.sid == kNoteSid) return;  // the status entry: not a choice
                 if (p.sub >= 0)
@@ -1281,7 +1283,7 @@ void MpvView::openTrackMenu()
         else  // nothing anywhere: say so rather than offering a bare "Off"
         {
             auto* s = new brls::SelectorCell();
-            s->init("Subtitles", { "None" }, 0, [](int) {});
+            s->init(tr("Subtitles"), { tr("None") }, 0, [](int) {});
             content->addView(s);
         }
     }
@@ -1295,7 +1297,7 @@ void MpvView::openTrackMenu()
     {
         const std::vector<double> scales = { 0.75, 0.9, 1.0, 1.15, 1.3, 1.5 };
         auto* z = new brls::SelectorCell();
-        z->init("Subtitle size",
+        z->init(tr("Subtitle size"),
                 { "75%", "90%", "100%", "115%", "130%", "150%" },
                 nearest(scales, getScale("sub-scale")),
                 [scales, setScale](int sel) { setScale("sub-scale", scales[sel]); });
@@ -1314,7 +1316,7 @@ void MpvView::openTrackMenu()
         // selector could only ever show the nearest preset, which is how
         // +0.10 s used to display as "None".
         auto* sd = new brls::DetailCell();
-        sd->setText("Subtitle delay");
+        sd->setText(tr("Subtitle delay"));
         sd->setDetailText(subDelayText(subDelay));
         sd->setDetailTextColor(
             brls::Application::getTheme()["brls/list/listItem_value_color"]);
@@ -1326,9 +1328,8 @@ void MpvView::openTrackMenu()
         subDelaySink = [sd](double d) { sd->setDetailText(subDelayText(d)); };
 
         auto* hint = new brls::Label();
-        hint->setText("L / R shift the subtitles by 0.1 s. Later is positive. "
-                      "The video keeps playing behind this, which is the only "
-                      "way to see whether it lands.");
+        hint->setText(tr("L / R shift the subtitles by 0.1 s. Later is positive. "
+                      "The video keeps playing behind this."));
         hint->setFontSize(15.0f);
         hint->setTextColor(theme::textMuted());
         hint->setLineHeight(1.35f);
@@ -1343,11 +1344,11 @@ void MpvView::openTrackMenu()
             return true;
         };
         panel->registerAction(
-            "Subtitles earlier", brls::BUTTON_LB,
+            tr("Subtitles earlier"), brls::BUTTON_LB,
             [nudge](brls::View*) { return nudge(-0.1); }, false, true,
             brls::SOUND_NONE);
         panel->registerAction(
-            "Subtitles later", brls::BUTTON_RB,
+            tr("Subtitles later"), brls::BUTTON_RB,
             [nudge](brls::View*) { return nudge(0.1); }, false, true,
             brls::SOUND_NONE);
     }
@@ -1610,7 +1611,7 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     column->addView(titleLabel);
 
     statusLabel = new brls::Label();
-    statusLabel->setText("Connecting to peers...");
+    statusLabel->setText(tr("Connecting to peers..."));
     statusLabel->setFontSize(21);
     statusLabel->setTextColor(theme.getColor("brls/text"));
     statusLabel->setHorizontalAlign(brls::HorizontalAlign::CENTER);
@@ -1661,7 +1662,7 @@ void MpvView::buildLoadingOverlay(const std::string& title)
 
     // Hint that B cancels and returns to the list.
     auto* backHint = new brls::Label();
-    backHint->setText("Press B to go back");
+    backHint->setText(tr("Press B to go back"));
     backHint->setFontSize(18);
     backHint->setTextColor(dimText);
     backHint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
@@ -1693,7 +1694,7 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     bufferOverlay->addView(bufSpinner);
 
     auto* bufLabel = new brls::Label();
-    bufLabel->setText("Buffering...");
+    bufLabel->setText(tr("Buffering..."));
     bufLabel->setFontSize(18);
     bufLabel->setTextColor(nvgRGB(255, 255, 255));
     bufLabel->setMargins(0, 0, 0, 12);
@@ -1900,7 +1901,7 @@ void MpvView::buildLoadingOverlay(const std::string& title)
         headRow->addView(glyph);
 
         auto* head = new brls::Label();
-        head->setText("Next episode");
+        head->setText(tr("Next episode"));
         head->setFontSize(23.0f);
         head->setTextColor(nvgRGB(255, 255, 255));
         headRow->addView(head);
@@ -2170,9 +2171,10 @@ void MpvView::updateLoadingOverlay()
 
         const char* status;
         if (!fileLoaded)
-            status = (peers > 0) ? "Downloading header..." : "Connecting to peers...";
+            status = (peers > 0) ? tr("Downloading header...")
+                                 : tr("Connecting to peers...");
         else
-            status = "Buffering...";
+            status = tr("Buffering...");
         statusLabel->setText(status);
 
         char sbuf[192];
@@ -2577,7 +2579,7 @@ void MpvView::logStats()
     // The piece the player is blocked on: when ph freezes, this says why.
     int pst = -1, phv = 0, prq = 0, ptot = 0;
     torrentfs_piece_debug(tfs, ph, &pst, &phv, &prq, &ptot);
-    static const char* kSt[] = { "NEEDED", "INFLIGHT", "DONE", "VERIFYING" };
+    static const char* kSt[] = { tr("NEEDED"), tr("INFLIGHT"), tr("DONE"), tr("VERIFYING") };
     const char* pstName = (pst >= 0 && pst <= 3) ? kSt[pst] : "?";
 
     // Syscall-latency peaks since the last sample: during a console freeze

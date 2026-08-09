@@ -1,6 +1,7 @@
 #include "theme.hpp"
 
 #include "config.hpp"
+#include "i18n.hpp"
 
 namespace theme
 {
@@ -139,7 +140,8 @@ const std::vector<std::string>& schemeLabels()
 {
     static std::vector<std::string> v = [] {
         std::vector<std::string> o;
-        for (const auto& s : kSchemes) o.push_back(s.label);
+        // See langLabels(): kSchemes is a pre-main table, this is not.
+        for (const auto& s : kSchemes) o.push_back(tr(s.label));
         return o;
     }();
     return v;
