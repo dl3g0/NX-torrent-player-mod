@@ -64,23 +64,6 @@ Este mod transforma la aplicación original añadiendo nuevas funciones de inici
   - Subtítulos al Iniciar: **Desactivados (OFF)**
   - Filtro: **Ocultar fuentes 4K Activado (ON)**
 
----
-
-## 📸 Capturas de Pantalla
-
-<table>
-  <tr>
-    <td><img src="assets/image1.webp" alt="Pestaña de Torrents Locales" width="100%"></td>
-    <td><img src="assets/image2.webp" alt="Biblioteca de Stremio" width="100%"></td>
-  </tr>
-  <tr>
-    <td><img src="assets/image4.webp" alt="Selector de Episodios" width="100%"></td>
-    <td><img src="assets/image3.webp" alt="Reproductor de Vídeo" width="100%"></td>
-  </tr>
-</table>
-
----
-
 ## 📥 Instalación
 
 1. Descarga el archivo `NX-torrent-player.nro` desde los [Releases de GitHub](https://github.com/dl3g0/NX-torrent-player-mod/releases).
