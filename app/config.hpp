@@ -24,8 +24,10 @@ constexpr int kDefaultHandheldUiWidth = 1280;
 
 struct Config
 {
+    int configVersion = 4;
+
     // Which category the browser opens on.
-    Tab startupTab = Tab::LOCAL;
+    Tab startupTab = Tab::STREMIO;
 
     // Writes the log to APPDATA_LOG. Off by default: it is unbuffered and the
     // engine dumps a [stats] line every 2s, so it writes to the SD card
@@ -33,50 +35,46 @@ struct Config
     // otherwise.
     bool logging = false;
 
-    // Preferred track languages, as ISO-639-1 ("fr") or "auto" -- which means
-    // the console's own language, so the app matches the system out of the box.
-    std::string audioLang = "auto";
-    std::string subLang   = "auto";
+    // Preferred track languages, as ISO-639-1 ("es") or "auto".
+    std::string audioLang = "es";
+    std::string subLang   = "es";
 
     // Show subtitles at all. Off means mpv loads none rather than picking one.
-    bool subtitles = true;
+    bool subtitles = false;
 
     // Lift the loudness of a 5.1 track downmixed to stereo (mpv's dynaudnorm).
     // On by default -- a 5.1 master folded to stereo sits well below a native
-    // stereo track, and the console's own speakers have no headroom left to
-    // make that up. Only ever applied in handheld for that reason: docked, the
-    // TV or receiver does the amplifying and the compression is just a
-    // flattened dynamic range nobody asked for. Applied live, so docking
-    // mid-film drops it (see MpvView::pumpEvents).
+    // stereo track on the Switch's own speakers. Handheld only, and switchable
+    // in Options.
     bool audioBoost = true;
 
-    // Hardware video decoding (nvtegra). On by default. Turn it off to decode in
-    // software instead -- slower and it may stutter on 1080p, but it sidesteps the
-    // GPU decode path, which helps tell whether the random freezes come from it.
+    // Hardware-accelerated video decode. On by default. Off decodes in
+    // software (ffmpeg) -- slower, and high-bitrate 1080p may drop frames, but
+    // useful as a fallback if the nvtegra path ever misbehaves on a release.
     bool hwDecode = true;
 
-    // Ask GitHub for a newer release at startup. On by default, but it is a
-    // network call the user did not ask for -- offline or on a metered
-    // connection, being able to turn it off matters.
-    bool checkUpdates = true;
+    // Holds pieces of the in-flight video in RAM rather than writing them to
+    // the SD card. Faster, saves SD wear and avoids SD write stalls; playback
+    // cannot be resumed after the app closes and seek-back is limited to the
+    // RAM buffer (kRamStreamBufferSize in torrentfs.c). Off by default.
+    bool ramStream = true;
 
-    // Hides 4K sources in the Stremio source list. On by default: they are the
-    // heaviest streams in the swarm and the Switch outputs 1080p docked, so
-    // they cost bandwidth we cannot show.
-    bool hide4k = true;
-
-    // Download-rate limiter (torrentfs_set_governor): once the playback buffer
-    // is comfortably ahead, cap downloading to a backlog-tied rate instead of
-    // bursting at wifi line rate — those bursts saturate the OS network core and
-    // can stutter the console. Off by default: it trades download speed for
-    // network calm, and it never limits anything while the buffer is under 10 s
-    // anyway. Never touches streams that struggle to keep up.
+    // Once the playback buffer is comfortably ahead (>= 30 s), cap download
+    // throughput to ~2x the stream's bitrate instead of bursting at full line
+    // rate. Off by default (full line rate always).
     bool rateGovernor = false;
 
-    // UI size, as the logical width borealis lays its views out in: windowScale
-    // is the output width over this, so a *wider* logical space means a
-    // *smaller* UI. Stored per mode because the right answer differs -- 1280
-    // (borealis' own default) fills a 6" panel but wastes most of a TV.
+    // Filter 4K (2160p) sources from Stremio addon stream lists so the user is
+    // not offered streams the Switch's decoder cannot handle smoothly. On by
+    // default.
+    bool hide4k = true;
+
+    // Check GitHub for a newer release on launch. Free when there is no wifi
+    // (the request simply fails and the app carries on), non-blocking.
+    bool checkUpdates = true;
+
+    // Logical UI width to lay out in, for docked and handheld separately. One
+    // of kUiScales (1280 to 1920). 1280 is 100% (the stock size).
     int dockedUiWidth   = kDefaultDockedUiWidth;
     int handheldUiWidth = kDefaultHandheldUiWidth;
 
@@ -85,13 +83,8 @@ struct Config
     // theme::current()), so this is not validated here.
     std::string accent = "purple";
 
-    // The UI language, as an i18n::langIds() id: "en" (what the app is written
-    // in, and the default) or "fr". Deliberately not the console's language --
-    // the app ships English strings and only a translation of them, so guessing
-    // from the system would hand a half-French UI to someone who never asked
-    // for one. Read at startup only (see i18n::load()): the strings are taken
-    // when a view is built, and the header, tab bar and browser are built once.
-    std::string language = "en";
+    // The UI language, as an i18n::langIds() id: "es" (default), "en" or "fr".
+    std::string language = "es";
 
     // "dark", "light" or "system" (the console's own setting). Dark is what the
     // app has always been. Read at startup only: borealis does not support
@@ -106,14 +99,6 @@ struct Config
     // app shipped with). Anything unrecognised behaves as "cards" -- the style
     // is compared against the other two, never validated at read time.
     std::string listStyle = "posters";
-
-    // RAM streaming (torrentfs_set_ram_stream): keep verified pieces in a
-    // bounded RAM window instead of writing them to the SD card. On by default
-    // -- it removes the per-piece playback stutter (the SD write of a finished
-    // piece hammers the filesystem core, the more so the bigger the piece). The
-    // trade is that nothing is persisted and seeking far back re-downloads, and
-    // it needs a full-RAM launch. Applies to the next video.
-    bool ramStream = true;
 };
 
 // The live settings. Mutate, then call save().

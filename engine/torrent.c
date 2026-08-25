@@ -274,6 +274,93 @@ static void meta_worker(void *arg) {
     }
 }
 
+typedef struct {
+    char *data;
+    size_t len;
+} membuf;
+
+static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
+    membuf *m = userdata;
+    size_t add = size * nmemb;
+    if (m->len + add > 4 * 1024 * 1024) return 0;  // sanity cap
+    char *grown = realloc(m->data, m->len + add + 1);
+    if (!grown) return 0;
+    m->data = grown;
+    memcpy(m->data + m->len, ptr, add);
+    m->len += add;
+    m->data[m->len] = '\0';
+    return add;
+}
+
+static uint8_t *fetch_http_torrent_cache(const uint8_t info_hash[20], size_t *out_len) {
+    char hex_lower[41];
+    char hex_upper[41];
+    for (int i = 0; i < 20; i++) {
+        snprintf(hex_lower + i * 2, 3, "%02x", info_hash[i]);
+        snprintf(hex_upper + i * 2, 3, "%02X", info_hash[i]);
+    }
+    hex_lower[40] = '\0';
+    hex_upper[40] = '\0';
+
+    const char *mirrors[] = {
+        "https://itorrents.org/torrent/%s.torrent",
+        "https://btcache.me/torrent/%s",
+        "https://torrage.info/torrent.php?h=%s"
+    };
+
+    for (size_t m = 0; m < sizeof(mirrors) / sizeof(mirrors[0]); m++) {
+        const char *h = (m == 0) ? hex_upper : hex_lower;
+        char url[256];
+        snprintf(url, sizeof(url), mirrors[m], h);
+
+        membuf resp = {0};
+        CURL *curl = curl_easy_init();
+        if (!curl) continue;
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 4L);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        CURLcode rc = curl_easy_perform(curl);
+        long status = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+        curl_easy_cleanup(curl);
+
+        if (rc != CURLE_OK || status != 200 || resp.len < 20 || !resp.data) {
+            free(resp.data);
+            continue;
+        }
+
+        be_node *root = be_parse(resp.data, resp.len);
+        if (!root) {
+            free(resp.data);
+            continue;
+        }
+        be_node *info = be_dict_get(root, "info");
+        if (!info || info->type != BE_DICT || !info->raw || info->rawlen == 0) {
+            be_free(root);
+            free(resp.data);
+            continue;
+        }
+
+        uint8_t *meta = malloc(info->rawlen);
+        if (meta) {
+            memcpy(meta, info->raw, info->rawlen);
+            *out_len = info->rawlen;
+            be_free(root);
+            free(resp.data);
+            tlog("metadata obtained from HTTP cache: %s", url);
+            return meta;
+        }
+        be_free(root);
+        free(resp.data);
+    }
+    return NULL;
+}
+
 int torrent_load_magnet(torrent_meta *t, const char *magnet_uri,
                         char *err, size_t errlen) {
     return torrent_load_magnet_peers(t, magnet_uri, NULL, 0, NULL, err, errlen);
@@ -368,6 +455,9 @@ int torrent_load_magnet_peers(torrent_meta *t, const char *magnet_uri,
 
     uint8_t *metadata = fetch.metadata;
     size_t meta_len   = fetch.meta_len;
+    if (!metadata) {
+        metadata = fetch_http_torrent_cache(m.info_hash, &meta_len);
+    }
     if (!metadata) {
         magnet_free(&m);
         torrent_meta_state = META_FAIL;
@@ -494,24 +584,6 @@ void torrent_unload(torrent_meta *t) {
 //---------------------------------------------------------------------------
 // Tracker announce
 //---------------------------------------------------------------------------
-
-typedef struct {
-    char *data;
-    size_t len;
-} membuf;
-
-static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
-    membuf *m = userdata;
-    size_t add = size * nmemb;
-    if (m->len + add > 4 * 1024 * 1024) return 0;  // sanity cap
-    char *grown = realloc(m->data, m->len + add + 1);
-    if (!grown) return 0;
-    m->data = grown;
-    memcpy(m->data + m->len, ptr, add);
-    m->len += add;
-    m->data[m->len] = '\0';
-    return add;
-}
 
 static void urlencode_bytes(const uint8_t *in, size_t len, char *out) {
     static const char hex[] = "0123456789ABCDEF";

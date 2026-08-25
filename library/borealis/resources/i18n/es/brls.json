@@ -1,0 +1,13 @@
+﻿{
+    hints: {
+        ok: Aceptar,
+        back: Atrás,
+        exit: Salir
+    },
+    crash_frame: {
+        button: Aceptar
+    },
+    thumbnail_sidebar: {
+        save: Guardar
+    }
+}

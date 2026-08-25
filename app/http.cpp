@@ -67,6 +67,7 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
     curl_easy_setopt(curl, CURLOPT_URL, url);
     // GitHub answers 403 to a request with no User-Agent.
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NX-torrent-player");
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
@@ -111,6 +112,7 @@ bool get(const std::string& url, std::string& resp, std::string& err,
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     // GitHub answers 403 to a request with no User-Agent.
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NX-torrent-player");
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
@@ -183,6 +185,7 @@ bool download(const std::string& url, const std::string& path, std::string& err,
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     // GitHub answers 403 to a request with no User-Agent.
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NX-torrent-player");
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fileWriteCb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
@@ -235,6 +238,53 @@ std::string urlEncode(const std::string& s)
         }
     }
     return out;
+}
+
+std::string resolveRedirect(const std::string& url)
+{
+    if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)
+        return url;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) return url;
+
+    char errbuf[CURL_ERROR_SIZE] = { 0 };
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    verifyTls(curl);
+    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 6L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT,
+                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                     "AppleWebKit/537.36 (KHTML, like Gecko) "
+                     "Chrome/120.0.0.0 Safari/537.36");
+
+    CURLcode rc = curl_easy_perform(curl);
+    std::string finalUrl = url;
+    if (rc == CURLE_OK)
+    {
+        char* eff = nullptr;
+        if (curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff) == CURLE_OK && eff && eff[0])
+            finalUrl = eff;
+    }
+    else
+    {
+        curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+        curl_easy_setopt(curl, CURLOPT_RANGE, "0-0");
+        rc = curl_easy_perform(curl);
+        if (rc == CURLE_OK)
+        {
+            char* eff = nullptr;
+            if (curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff) == CURLE_OK && eff && eff[0])
+                finalUrl = eff;
+        }
+    }
+
+    curl_easy_cleanup(curl);
+    brls::Logger::info("[http] resolveRedirect: {} -> {}", url, finalUrl);
+    return finalUrl;
 }
 
 } // namespace http

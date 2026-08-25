@@ -1,121 +1,118 @@
-<img src="https://github.com/shodowlo/NX-torrent-player/blob/main/assets/NX-torrent-player-banner.png?raw=true" alt="NX Torrent Player" width="640">
+<img src="https://github.com/shodowlo/NX-torrent-player/blob/main/assets/NX-torrent-player-banner.png?raw=true" alt="NX Torrent Player MOD" width="640">
 
-# NX Torrent Player
+# NX Torrent Player (MOD)
 
-**NX Torrent Player: Stremio on Nintendo Switch**
+**NX Torrent Player (MOD): Stremio y Reproductor de Torrents & Streams para Nintendo Switch**
 
-A homebrew video player with a BitTorrent engine built in. It does not download
-a file and then play it: it downloads the pieces it is about to need, in order,
-and starts playing after a few seconds of buffer. Sign in to a Stremio account
-and your library, addons and sources are included too.
+Versión: **v0.0.1 (MOD by dl3g0)**  
+Repositorio: [https://github.com/dl3g0/NX-torrent-player-mod](https://github.com/dl3g0/NX-torrent-player-mod)  
+Basado en el proyecto original **NX Torrent Player** creado por **shodowlo**.
 
-> Requires a Switch running custom firmware (Atmosphère).
+> Requiere una consola Nintendo Switch con Custom Firmware (Atmosphère).
 
 ---
 
-## Features
+## 🌟 Novedades y Modificaciones de este Fork vs Versión Original (por dl3g0)
 
-- **Streams torrents** — playback starts on the first pieces; the engine keeps
-  downloading ahead of the playhead, and re-centres on it when you seek.
-- **Stremio integration** — sign in, browse your library, drill down through
-  seasons → episodes → addons → sources, artwork and all.
-- **Local torrents & magnets** — drop `.torrent` files on the SD card, or add
-  magnet links (a `magnet.txt` file, or the on-screen keyboard). A magnet's name
-  and file list are resolved and cached so you can pick which video to stream.
-- **Player** — audio/subtitle track menu, analog scrubbing (either stick), touch
-  controls, a control lock (Y), and auto-resume where you left off.
-- **borealis** UI: Horizon look, controller-first, touch works too.
+Este mod transforma la aplicación original añadiendo nuevas funciones de inicio de sesión, rediseño de navegación, compatibilidad con Debrid y optimizaciones clave en el reproductor:
 
-## Screenshots
+### 1. 🔗 Inicio de Sesión Rápido mediante Stremio Link (`https://link.stremio.com`)
+- **Stremio Device Link**: Ahora puedes iniciar sesión en segundos sin necesidad de escribir tu correo y contraseña con el mando. La app genera un código de activación y una URL para autorizar la Switch desde el navegador de tu móvil o PC.
+- **Sondeo Asíncrono (*Polling*)**: Detección automática al autorizar en la web, guardando el token de sesión (`authKey`) de forma segura en la SD.
+- **Login Manual Clásico**: Se mantiene también el inicio de sesión por correo y contraseña con teclado Swkbd.
+
+### 2. 🏠 Pestaña "Inicio" (Home) con Catálogos Dinámicos de Addons
+- **Catálogos Unificados**: Muestra en carruseles horizontales las películas populares, series populares, películas destacadas, series destacadas y todos los catálogos personalizados que tengas instalados en tu cuenta de Stremio (Cyberflix, Netflix, Disney+, HBO Max, Prime Video, Anime, etc.).
+- **Botón "Ver más" (*See More*)**: Permite abrir cualquier catálogo en vista de cuadrícula completa con desplazamiento infinito para explorar cientos de títulos.
+- **Carga Asíncrona Progresiva**: Los catálogos se dibujan de manera no bloqueante en tiempo real; la app nunca se congela esperando respuestas de addons lentos.
+
+### 3. 🎬 Pestañas Dedicadas y Corrección de Navegación
+- **Pestaña Continuar Viendo (*Continue Watching*)**: Seguimiento exacto de tus reproducciones en curso, barra de progreso y acceso con un toque al último capítulo visto.
+- **Pestañas Películas y Series**: Explorador categorizado por géneros y tendencias.
+- **Pestaña Biblioteca (*Library*)**: Sincronización completa con tus contenidos guardados en Stremio.
+- **Búsqueda Interactiva (*Search*)**: Búsqueda global de títulos con teclado en pantalla.
+- **Corrección de Bug de Búsqueda**: Corregido el fallo donde la barra y resultados de búsqueda quedaban pegados en pantalla al regresar a la pestaña Inicio o alternar pestañas.
+
+### 4. 🎛️ Tarjetas de Fuentes / Streams de 500px y Soporte de Emojis
+- **Tarjetas Rediseñadas a 500px**:
+  - Etiqueta superior con el nombre del addon y calidad destacada (`[1080p] Torrentio`, `[RD+] Debrid`, etc.).
+  - Título completo de la versión/release con efecto de **marquesina automática (*auto-scroll*)** al enfocar con el cursor.
+  - Indicadores secundarios con número de semillas (seeders), tamaño de archivo y proveedor.
+- **Fuente de Emojis Integrada (`OpenMoji.ttf`)**: Soporte nativo para visualizar banderas de idioma (🇪🇸, 🇲🇽, 🇬🇧, 🇯🇵) e iconos decorativos (👤, 💾, 🎬, ⭐, 🔊, ⚙️) en los nombres de las fuentes.
+
+### 5. 🚀 Soporte Completo para Streaming Debrid / HTTP / HTTPS
+- Compatibilidad directa con enlaces de **Real-Debrid**, **AllDebrid**, **Torbox**, **Premiumize** y fuentes HTTP directas devueltas por addons.
+- Resolución automática de redirecciones HTTP y optimización de búferes de red en `mpv`.
+
+### 6. 📝 Motor de Subtítulos Optimizado y Estable
+- **Extracción de Fuente Oficial de Switch**: Exporta la fuente compartida del sistema a `/switch/NX-torrent-player/subfont.ttf` para un renderizado nítido de subtítulos ASS/SSA y SRT.
+- **Carga Diferida y Asíncrona**: Gestión fluida de archivos con más de 10-30 pistas de subtítulos incrustadas o subtítulos online (OpenSubtitles v3) sin congelar la app.
+- **Eliminación de Bucle de Búfer**: Corregido el bloqueo de búfer infinito al cambiar entre pistas de subtítulos en reproducción.
+
+### 7. 🧲 Mejoras en el Motor BitTorrent y Resolver de Magnets
+- **MagnetResolver Inteligente**: Captura, procesa y deduplica automáticamente todos los trackers enviados por el addon (`stream.sources`).
+- **Respaldo por Caché HTTP de Metadatos**: Si los seeders P2P tardan o no devuelven la metadata por BEP 9, el motor consulta automáticamente cachés públicas (`itorrents.org`, `btcache.me`, etc.) para comenzar la reproducción de inmediato.
+- **Timeout de Conexión de 3s**: Mayor tolerancia para conexiones Wi-Fi y NATs residenciales.
+- **Búfer Inicial Reducido a 5s**: Arranque de vídeo mucho más rápido.
+
+### 8. 🌐 Traducción Completa al Español y Configuración por Defecto
+- Traducción integral al **Español (Latinoamérica y España)** de todos los menús, opciones, botones, diálogos y pistas.
+- **Ajustes por defecto optimizados para nueva instalación**:
+  - Pestaña al Iniciar: **Stremio**
+  - Idioma de Interfaz: **Español**
+  - Idioma de Audio y Subtítulos: **Español**
+  - Subtítulos al Iniciar: **Desactivados (OFF)**
+  - Filtro: **Ocultar fuentes 4K Activado (ON)**
+
+---
+
+## 📸 Capturas de Pantalla
 
 <table>
   <tr>
-    <td><img src="assets/image1.webp" alt="Local torrents tab" width="100%"></td>
-    <td><img src="assets/image2.webp" alt="Stremio library" width="100%"></td>
+    <td><img src="assets/image1.webp" alt="Pestaña de Torrents Locales" width="100%"></td>
+    <td><img src="assets/image2.webp" alt="Biblioteca de Stremio" width="100%"></td>
   </tr>
   <tr>
-    <td><img src="assets/image4.webp" alt="Episode picker" width="100%"></td>
-    <td><img src="assets/image3.webp" alt="Player" width="100%"></td>
+    <td><img src="assets/image4.webp" alt="Selector de Episodios" width="100%"></td>
+    <td><img src="assets/image3.webp" alt="Reproductor de Vídeo" width="100%"></td>
   </tr>
 </table>
 
-## Install
+---
 
-1. Download `NX-torrent-player.nro` from the [releases](../../releases), or
-   build it (below).
-2. Put it on your SD card in `/switch/NX-torrent-player/` (create the folder).
-3. Launch it from the **Homebrew Menu**.
+## 📥 Instalación
 
-Updating is done from inside the app (Options → Check on startup is on by
-default); it replaces its own .nro and restarts.
+1. Descarga el archivo `NX-torrent-player.nro` desde los [Releases de GitHub](https://github.com/dl3g0/NX-torrent-player-mod/releases).
+2. Cópialo en tu tarjeta microSD en la ruta `/switch/NX-torrent-player/NX-torrent-player.nro`.
+3. Inicia la aplicación desde el **Homebrew Menu** en tu Nintendo Switch.
 
-## Usage
+> **Actualizaciones**: La aplicación incluye un actualizador integrado que busca nuevas versiones automáticamente desde `https://github.com/dl3g0/NX-torrent-player-mod`.
 
-### Local torrents & magnets
+---
 
-Drop `.torrent` files into `sdmc:/switch/NX-torrent-player/torrents/`
-(sub-folders are scanned too) and they appear in the **Local** tab with the
-torrent's total size.
+## 🛠 Compilación desde el Código Fuente
 
-Magnet links show up in the same list. Add them either by editing
-`torrents/magnet.txt` (one magnet link or bare info-hash per line) or with the
-**Add magnet** button at the top of the tab (on-screen keyboard). A magnet's
-name and file list are fetched in the background — a spinner shows which one is
-resolving — and cached, so next time it lists and opens instantly.
+Para compilar con **devkitPro / devkitA64**:
 
-Press **Y** on an entry to remove it (a magnet is dropped from the list; a
-`.torrent` file is deleted from the SD card). When a torrent — local or magnet —
-holds several videos, you get to pick which one; if it has no video, it says so.
+```bash
+# Configuración con CMake
+mkdir build && cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=/opt/devkitpro/cmake/Switch.cmake
 
-
-### Stremio
-
-In the **Stremio** tab, sign in with your email and password. The session is
-kept and survives a restart (sign out from Options).
-
-Pick a title → for a show, a season, then an episode → an addon → a source.
-Sources are whatever your addons return; only BitTorrent ones can be 
-played, and the ones that can't say so up front. 4K sources
-are hidden by default — the Switch outputs 1080p docked, so they cost bandwidth
-for pixels it cannot show. Turn that off in Options.
-
-## Building
-
-devkitPro is not needed locally — build in the official Docker image, keeping
-the build tree in a named volume so it survives between runs:
-
-```sh
-# configure once, on a fresh volume
-docker run --rm -v st_build:/build -v "$PWD":/project -w /build \
-    devkitpro/devkita64:latest sh -c "cmake /project"
-
-# build
-docker run --rm -v st_build:/build -v "$PWD":/project -w /build \
-    devkitpro/devkita64:latest \
-    sh -c "cmake --build . --target NX-torrent-player.nro"
-
-# copy the .nro out of the volume
-docker run --rm -v st_build:/build -v "$PWD":/project \
-    devkitpro/devkita64:latest sh -c "cp /build/NX-torrent-player.nro /project/"
+# Compilación del .nro
+make -j$(nproc) NX-torrent-player.nro
 ```
 
-On Windows/Git Bash, prefix each command with `MSYS_NO_PATHCONV=1`, or the
-container paths get rewritten. Adding or removing a source file needs a `cmake .`
-pass first, since the sources are globbed.
+---
 
-Dependencies come from devkitPro's portlibs (`switch-mpv`, `switch-curl`,
-`switch-libwebp`, `switch-mbedtls`…) and are already in the image. borealis is
-vendored under `library/`.
+## 👏 Créditos y Agradecimientos
 
-## Credits
-
-- [borealis](https://github.com/xfangfang/borealis) — UI framework (vendored,
-  with one local patch: see `library/borealis/VENDORED.md`)
-- [mpv](https://mpv.io/) — playback
-- [libutp](https://github.com/bittorrent/libutp) — uTP transport
-- [Stremio](https://www.stremio.com/) — account, library and addon protocol. This
-  project is not affiliated with Stremio.
-- [curl](https://curl.se/docs/caextract.html) — the CA bundle in
-  `assets/cacert.pem`, Mozilla's root store, which is what certificates get
-  checked against on a console that mounts none
-- devkitPro / libnx — toolchain
+- **dl3g0** — Desarrollo y mantenimiento de este mod/fork, inicio de sesión por Stremio Link, soporte Debrid, optimización de subtítulos, resolver de magnets, pestañas dinámicas de catálogo y traducciones.
+- **shodowlo** — Creador del proyecto original [NX-torrent-player](https://github.com/shodowlo/NX-torrent-player).
+- [borealis](https://github.com/xfangfang/borealis) — Framework UI estilo Horizon para Nintendo Switch.
+- [mpv](https://mpv.io/) — Motor de reproducción multimedia de alto rendimiento.
+- [libutp](https://github.com/bittorrent/libutp) — Transporte uTP para BitTorrent.
+- [Stremio](https://www.stremio.com/) — Protocolo de cuentas, bibliotecas y addons.
+- [OpenMoji](https://openmoji.org/) — Fuente de emojis de código abierto.
+- [devkitPro](https://devkitpro.org/) / libnx — Cadena de herramientas de desarrollo para Nintendo Switch.

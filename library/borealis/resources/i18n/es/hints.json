@@ -1,0 +1,14 @@
+﻿{
+   ok: Aceptar,
+  cancel: Cancelar,
+  back: Atrás,
+  exit: Salir,
+  exit_hint: Saldrás de la aplicación,
+  open: Abrir,
+  on: Activado,
+  off: Desactivado,
+  delete: Eliminar,
+  save: Guardar,
+  input: Por favor ingresa...,
+  submit: Enviar
+}

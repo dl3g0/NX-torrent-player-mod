@@ -33,4 +33,7 @@ bool download(const std::string& url, const std::string& path, std::string& err,
 // Percent-encodes a URL path segment.
 std::string urlEncode(const std::string& s);
 
+// Resolves HTTP redirects (301/302/307/308) to retrieve the effective direct media URL.
+std::string resolveRedirect(const std::string& url);
+
 } // namespace http

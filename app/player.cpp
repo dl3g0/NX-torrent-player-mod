@@ -23,6 +23,7 @@
 #include "appdata.hpp"
 #include "browse.hpp"  // openEpisodeById, for the next-episode card
 #include "config.hpp"
+#include "http.hpp"
 #include "stremio.hpp"  // cached artwork -> blurred background
 #include "theme.hpp"    // muted text for the in-menu hints
 
@@ -53,9 +54,8 @@ void* getProcAddress(void*, const char* name)
 }
 
 // Seconds of video mpv must buffer before playback starts (and the loading
-// screen reaches 100% / hands over to the video). Bump this for smoother
-// playback on scarce swarms at the cost of a longer wait.
-constexpr double kBufferSecs = 15.0;
+// screen reaches 100% / hands over to the video).
+constexpr double kBufferSecs = 5.0;
 
 // The loudness boost (Options -> Boost quiet audio). Realtime normalisation to
 // a consistent target: quiet 5.1 dialogue comes up without clipping the loud
@@ -218,6 +218,9 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
     this->setFocusable(true);
     this->setHideHighlight(true);
 
+    streamSource = source;
+    isHttpStream = (source.rfind("http://", 0) == 0 || source.rfind("https://", 0) == 0);
+
     // Build the UI BEFORE touching the engine. torrentfs_open used to run right
     // here and return early on failure, leaving a view with no children at all
     // -- a plain black screen with nothing to say what went wrong.
@@ -234,6 +237,10 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
         else if (title.rfind("magnet:", 0) == 0)
         {
             title = tr("Torrent");
+        }
+        else if (isHttpStream)
+        {
+            title = tr("Stream");
         }
         else
         {
@@ -259,6 +266,26 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
 // it inline froze the whole app on a black screen until it finished or failed.
 void MpvView::startEngine(const std::string& source, int fileIndex)
 {
+    if (isHttpStream)
+    {
+        if (statusLabel)
+            statusLabel->setText(tr("Connecting to stream..."));
+
+        auto liveFlag = this->alive;
+        std::string rawUrl = streamSource;
+        brls::async([this, liveFlag, rawUrl]() {
+            std::string directUrl = http::resolveRedirect(rawUrl);
+            brls::sync([this, liveFlag, directUrl]() {
+                if (!*liveFlag)
+                    return;
+                this->streamSource = directUrl;
+                if (!startMpv() && statusLabel)
+                    statusLabel->setText(tr("Player initialisation failed"));
+            });
+        });
+        return;
+    }
+
     if (statusLabel)
         statusLabel->setText(source.rfind("magnet:", 0) == 0
                                  ? tr("Fetching metadata...")
@@ -284,7 +311,9 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
             if (!t)
             {
                 brls::Logger::error("torrentfs_open failed: {}", e);
-                if (statusLabel) statusLabel->setText(tr("Failed: ") + e);
+                engineFailed = true;
+                engineError  = e.empty() ? tr("No peer provided the metadata") : e;
+                if (statusLabel) statusLabel->setText(tr("Failed: ") + engineError);
                 return;
             }
             tfs = t;
@@ -292,8 +321,12 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
             // metadata resolved, hand the real name back so it can be saved.
             if (g_magnetResolvedHook && source.compare(0, 7, "magnet:") == 0)
                 g_magnetResolvedHook(source, torrentfs_name(t));
-            if (!startMpv() && statusLabel)
-                statusLabel->setText(tr("Player initialisation failed"));
+            if (!startMpv())
+            {
+                engineFailed = true;
+                engineError  = tr("Player initialisation failed");
+                if (statusLabel) statusLabel->setText(engineError);
+            }
         });
     });
 }
@@ -301,6 +334,30 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
 // Brings mpv up against the now-open engine. False if anything failed.
 bool MpvView::startMpv()
 {
+#if defined(__SWITCH__)
+    {
+        static bool s_fontExported = false;
+        if (!s_fontExported)
+        {
+            PlFontData font;
+            if (R_SUCCEEDED(plGetSharedFontByType(&font, PlSharedFontType_Standard)))
+            {
+                std::string fontPath = std::string(APPDATA_DIR) + "/subfont.ttf";
+                FILE* f = std::fopen(fontPath.c_str(), "wb");
+                if (f)
+                {
+                    std::fwrite(font.address, 1, font.size, f);
+                    std::fclose(f);
+                    setenv("MPV_HOME", APPDATA_DIR, 1);
+                    brls::Logger::info("[player] exported Switch standard font ({} bytes) to {}",
+                                       font.size, fontPath);
+                    s_fontExported = true;
+                }
+            }
+        }
+    }
+#endif
+
     mpv = mpv_create();
     if (!mpv)
     {
@@ -316,7 +373,13 @@ bool MpvView::startMpv()
     mpv_set_option_string(mpv, "hwdec", hwDec ? "auto" : "no");
     if (hwDec)
         mpv_set_option_string(mpv, "hwdec-extra-frames", "32");
+
+#if defined(__SWITCH__)
+    mpv_set_option_string(mpv, "config", "yes");
+    mpv_set_option_string(mpv, "config-dir", APPDATA_DIR);
+#else
     mpv_set_option_string(mpv, "config", "no");
+#endif
     mpv_set_option_string(mpv, "terminal", "no");
     // Switch audio output is stereo; force a proper downmix or 5.1 dialogue
     // (centre channel) is dropped.
@@ -336,26 +399,18 @@ bool MpvView::startMpv()
     // track when nothing matches, so a wrong guess costs nothing.
     std::string alang = config::mpvLangList(config::get().audioLang);
     if (!alang.empty()) mpv_set_option_string(mpv, "alang", alang.c_str());
+    bool subOn = config::get().subtitles;
     std::string slang = config::mpvLangList(config::get().subLang);
     if (!slang.empty()) mpv_set_option_string(mpv, "slang", slang.c_str());
-    // "no" means: load no subtitle track at all, rather than pick one and hide
-    // it -- which also saves decoding them.
-    mpv_set_option_string(mpv, "sid", config::get().subtitles ? "auto" : "no");
+    mpv_set_option_string(mpv, "sid", "auto");
+    mpv_set_option_string(mpv, "sub-visibility", subOn ? "yes" : "no");
+    mpv_set_option_string(mpv, "sub-auto", "auto");
 
-    // Subtitle look. mpv's defaults are a 55pt face with a hard 3.0 black border,
-    // no shadow and no blur -- heavy, and the outline reads as a sticker cut out
-    // of the picture. This is the streaming-service treatment instead: a slightly
-    // smaller semibold face, a thinner outline softened by a touch of blur, and a
-    // real drop shadow to lift it off bright scenes.
-    //
-    // NOT setting sub-font: this toolchain's libass (0.17.3) is built without
-    // fontconfig, so there is no font provider to resolve a family name against.
-    // Naming one risks losing subtitle rendering altogether, which is far worse
-    // than a face we did not choose.
-    //
-    // Colours are opaque on purpose. mpv takes #AARRGGBB, but ASS stores alpha
-    // inverted and it is not worth betting the look on which convention wins
-    // here -- the softness comes from blur and shadow offset, not from alpha.
+    mpv_set_option_string(mpv, "sub-ass", "yes");
+    mpv_set_option_string(mpv, "sub-font-provider", "none");
+    mpv_set_option_string(mpv, "sub-font", "sans-serif");
+
+    // Subtitle look.
     mpv_set_option_string(mpv, "sub-font-size", "46");
     mpv_set_option_string(mpv, "sub-bold", "yes");
     mpv_set_option_string(mpv, "sub-color", "#FFFFFF");
@@ -364,25 +419,8 @@ bool MpvView::startMpv()
     mpv_set_option_string(mpv, "sub-shadow-color", "#000000");
     mpv_set_option_string(mpv, "sub-shadow-offset", "1.4");
     mpv_set_option_string(mpv, "sub-blur", "0.35");
-    // A little tracking: bold sans at this size sets too tight otherwise.
     mpv_set_option_string(mpv, "sub-spacing", "0.4");
-    // Off the very bottom edge (mpv default 34), clear of the seek bar.
     mpv_set_option_string(mpv, "sub-margin-y", "50");
-    // The one debatable line: without it none of the above reaches ASS/SSA subs,
-    // which keep whatever the release baked in. "yes" restyles them for a
-    // consistent look but flattens hand-styled signs (typical in anime rips);
-    // "scale" -- mpv's default -- would leave those alone. Border names are the
-    // 0.37 spelling; they became sub-outline-* in 0.38.
-    mpv_set_option_string(mpv, "sub-ass-override", "yes");
-    // Subtitles pulled from an addon are frequently CP1252, not UTF-8 (that is
-    // what OpenSubtitles has on file for most European languages), and this
-    // toolchain's mpv is built without uchardet -- so "auto" cannot detect
-    // anything and every accented character came out mangled. Naming a codepage
-    // without a "+" means "use it only if the text is not valid UTF-8", so a
-    // UTF-8 file is still read as UTF-8. CP1252 is the right guess for the
-    // languages this app offers; a Cyrillic or Greek subtitle would still need
-    // its own, which is a setting nobody has asked for yet.
-    mpv_set_option_string(mpv, "sub-codepage", "cp1252");
     mpv_set_option_string(mpv, "cache", "yes");
     // Never let mpv auto-pause playback to rebuffer -- once we start, we keep
     // playing. We do the initial buffering ourselves: start paused, fill the
@@ -391,13 +429,34 @@ bool MpvView::startMpv()
     mpv_set_option_string(mpv, "pause", "yes");
     // Give the demuxer enough headroom to buffer kBufferSecs before we unpause.
     mpv_set_option_string(mpv, "demuxer-max-bytes", "128MiB");
+    mpv_set_option_string(mpv, "demuxer-max-back-bytes", "64MiB");
     mpv_set_option_string(mpv, "demuxer-readahead-secs", "30");
-    // With cache=yes, mpv's cache-secs (default 10) *overrides*
-    // demuxer-readahead-secs, so the demuxer stopped at exactly 10 s of
-    // readahead. kBufferSecs is 15, so "buffered enough" could never become
-    // true and the loading screen hung forever no matter how much was
-    // downloaded. Must stay comfortably above kBufferSecs.
     mpv_set_option_string(mpv, "cache-secs", "60");
+
+    if (isHttpStream)
+    {
+        mpv_set_option_string(mpv, "tls-ca-file", "romfs:/cacert.pem");
+        mpv_set_option_string(mpv, "tls-verify", "no");
+        mpv_set_option_string(mpv, "user-agent",
+                              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/120.0.0.0 Safari/537.36");
+        mpv_set_option_string(mpv, "http-header-fields", "Accept: */*");
+        mpv_set_option_string(mpv, "stream-lavf-o",
+                              "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5,multiple_requests=1");
+        mpv_set_option_string(mpv, "demuxer-lavf-analyzeduration", "0.5");
+        mpv_set_option_string(mpv, "demuxer-lavf-probescore", "25");
+        mpv_set_option_string(mpv, "demuxer-seekable-cache", "yes");
+        mpv_set_option_string(mpv, "force-seekable", "yes");
+        mpv_set_option_string(mpv, "hr-seek", "yes");
+        mpv_set_option_string(mpv, "hr-seek-framedrop", "yes");
+        mpv_set_option_string(mpv, "framedrop", "vo");
+        mpv_set_option_string(mpv, "network-timeout", "60");
+        mpv_set_option_string(mpv, "cache-pause", "yes");
+        mpv_set_option_string(mpv, "cache-pause-initial", "yes");
+        mpv_set_option_string(mpv, "cache-pause-wait", "5.0");
+    }
+
     // On Switch the hardware decoder's GPU work is async; without a glFinish
     // after mpv's render, glfwSwapBuffers can present before the video is drawn
     // (black frame). This is what the other Switch mpv players set too.
@@ -434,9 +493,8 @@ bool MpvView::startMpv()
     {
         char st[32];
         std::snprintf(st, sizeof(st), "%.1f", watch.resumeSec);
-        mpv_set_option_string(mpv, "start", st);
-        brls::Logger::info("[player] resuming at {}s (Stremio watch state)",
-                           (int)watch.resumeSec);
+        mpv_set_property_string(mpv, "start", st);
+        brls::Logger::info("[player] resume @ {}s", st);
     }
 
     // Buffered-seconds feed for the engine's calm mode, as an async observe:
@@ -446,14 +504,25 @@ bool MpvView::startMpv()
     // lag spikes. Property-change events arrive through pumpEvents instead.
     mpv_observe_property(mpv, 0, "demuxer-cache-duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "demuxer-cache-idle", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv, 0, "paused-for-cache", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv, 0, "core-idle", MPV_FORMAT_FLAG);
     mpv_observe_property(mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
 
-    // Wire our torrent:// stream (source/stream.c) and start playback.
-    stream_register(mpv, tfs);
-    const char* cmd[] = { "loadfile", "torrent://stream", nullptr };
-    mpv_command(mpv, cmd);
-    brls::Logger::info("loadfile torrent://stream issued");
+    if (isHttpStream)
+    {
+        const char* cmd[] = { "loadfile", streamSource.c_str(), nullptr };
+        mpv_command(mpv, cmd);
+        brls::Logger::info("loadfile http/debrid stream issued: {}", streamSource);
+    }
+    else
+    {
+        // Wire our torrent:// stream (source/stream.c) and start playback.
+        stream_register(mpv, tfs);
+        const char* cmd[] = { "loadfile", "torrent://stream", nullptr };
+        mpv_command(mpv, cmd);
+        brls::Logger::info("loadfile torrent://stream issued");
+    }
     return true;
 }
 
@@ -507,28 +576,29 @@ void MpvView::registerPlayerActions()
         },
         false, false, brls::SOUND_CLICK);
 
-    // Left/right scrub. The first nudge pauses and pins the cursor to the
-    // current position; further nudges move it. allowRepeating so holding the
-    // stick scrubs continuously. A commits (see the Pause action), B leaves.
+    // Left/right relative seek (10s skip).
     auto scrub = [this](double delta) {
         if (controlsLocked) { flashLock(); return true; }
         if (!ready || !mpv)
             return true;
-        if (!seeking)
-            beginSeek();
-        seekTarget += delta;
-        if (seekTarget < 0.0) seekTarget = 0.0;
-        if (seekDur > 0.0 && seekTarget > seekDur) seekTarget = seekDur;
+        char v[32];
+        std::snprintf(v, sizeof(v), "%.1f", delta);
+        const char* cmd[] = { "seek", v, "relative", nullptr };
+        mpv_command_async(mpv, 0, cmd);
+
+        std::string text = delta > 0 ? ("+ " + std::to_string((int)delta) + "s")
+                                     : ("- " + std::to_string((int)(-delta)) + "s");
+        flashPill(text);
         return true;
     };
 
     this->registerAction(
         tr("Seek -"), brls::BUTTON_LEFT,
-        [scrub](brls::View*) { return scrub(-kSeekStepSecs); },
+        [scrub](brls::View*) { return scrub(-10.0); },
         false, true, brls::SOUND_NONE);
     this->registerAction(
         tr("Seek +"), brls::BUTTON_RIGHT,
-        [scrub](brls::View*) { return scrub(kSeekStepSecs); },
+        [scrub](brls::View*) { return scrub(10.0); },
         false, true, brls::SOUND_NONE);
 
     // L / R step the playback speed. These actions only fire while the player
@@ -881,13 +951,11 @@ void MpvView::loadOnlineSub(int index)
             // then re-selects the track already loaded instead of adding a
             // duplicate. The title and language are what the Subtitles row
             // will show for it from here on.
-            const char* cmd[] = { "sub-add",      path.c_str(), "cached",
+            const char* cmd[] = { "sub-add",      path.c_str(), "select",
                                   title.c_str(),  lang.c_str(), nullptr };
-            if (mpv_command(mpv, cmd) < 0)
-            {
-                brls::Application::notify(tr("Subtitle could not be loaded"));
-                return;
-            }
+            mpv_command_async(mpv, 0, cmd);
+            int visible = 1;
+            mpv_set_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &visible);
             loadedSubs.insert(index);
             brls::Application::notify(title + tr(" loaded"));
             brls::Logger::info("[player] loaded subtitle {}", path);
@@ -1085,6 +1153,12 @@ void MpvView::openTrackMenu()
                 }
             }
         mpv_free_node_contents(&node);
+
+        int subVis = 0;
+        if (mpv_get_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &subVis) < 0 || !subVis)
+        {
+            sCur = 0; // If sub-visibility is off, selection is "Off"
+        }
     }
 
     // ---- the panel ------------------------------------------------------
@@ -1269,14 +1343,18 @@ void MpvView::openTrackMenu()
                     loadOnlineSub(p.sub);
                     return;
                 }
-                if (p.sid < 0)
+                if (p.sid <= 0)
                 {
-                    mpv_set_property_string(mpv, "sid", "no");
+                    int64_t sid = 0;
+                    mpv_set_property(mpv, "sid", MPV_FORMAT_INT64, &sid);
+                    int visible = 0;
+                    mpv_set_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &visible);
                     return;
                 }
-                char v[24];
-                std::snprintf(v, sizeof(v), "%lld", (long long)p.sid);
-                mpv_set_property_string(mpv, "sid", v);
+                int64_t sid = p.sid;
+                mpv_set_property(mpv, "sid", MPV_FORMAT_INT64, &sid);
+                int visible = 1;
+                mpv_set_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &visible);
             });
             content->addView(s);
         }
@@ -1445,37 +1523,44 @@ void MpvView::pumpEvents()
         switch (ev->event_id)
         {
             case MPV_EVENT_FILE_LOADED:
-                // Header downloaded and demuxed: we're now buffering, not
-                // connecting.
                 fileLoaded = true;
+                if (isHttpStream)
+                    ready = true;
                 brls::Logger::info("[mpv event] file loaded");
-                // Ask the subtitle addons now: the buffering wait is dead time
-                // for the network anyway, and the list has to be there before
-                // the first X press for the menu to be worth anything.
                 fetchOnlineSubs();
+                break;
+            case MPV_EVENT_PLAYBACK_RESTART:
+                if (isHttpStream)
+                {
+                    fileLoaded = true;
+                    ready = true;
+                }
+                brls::Logger::info("[mpv event] playback restart (first frame)");
                 break;
             case MPV_EVENT_END_FILE:
             {
-                // Played to the end (not stop/error): close the player and
-                // return. B is handled separately and pops only one level.
                 auto* ef = (mpv_event_end_file*)ev->data;
-                if (ef && ef->reason == MPV_END_FILE_REASON_EOF && !ended)
+                if (ef)
                 {
-                    ended   = true;
-                    int pops = watch.endPop;
-                    brls::Logger::info("[mpv event] EOF -> pop {}", pops);
-                    // Deferred: we are inside draw()'s pumpEvents, and popping
-                    // (which frees this view) mid-draw is unsafe.
-                    brls::sync([pops]() { popActivities(pops); });
+                    if (ef->reason == MPV_END_FILE_REASON_EOF && !ended)
+                    {
+                        ended   = true;
+                        int pops = watch.endPop;
+                        brls::Logger::info("[mpv event] EOF -> pop {}", pops);
+                        brls::sync([pops]() { popActivities(pops); });
+                    }
+                    else if (ef->reason == MPV_END_FILE_REASON_ERROR)
+                    {
+                        brls::Logger::error("[mpv event] error loading file: {}", ef->error);
+                        if (statusLabel)
+                        {
+                            statusLabel->setText(tr("Failed to load stream (network or link error)."));
+                            if (statsLabel) statsLabel->setText(tr("Press B to go back"));
+                        }
+                    }
                 }
                 break;
             }
-            case MPV_EVENT_PLAYBACK_RESTART:
-                // First frame is decoded, but with cache-pause-initial mpv is
-                // still buffering-paused here; readiness is driven off buffered
-                // seconds in updateLoadingOverlay(), not this event.
-                brls::Logger::info("[mpv event] playback restart (first frame)");
-                break;
             case MPV_EVENT_LOG_MESSAGE:
             {
                 auto* m = (mpv_event_log_message*)ev->data;
@@ -1502,9 +1587,15 @@ void MpvView::pumpEvents()
                     else if (std::strcmp(p->name, "duration") == 0)
                         obsDur = v;
                 }
-                else if (p->format == MPV_FORMAT_FLAG &&
-                         std::strcmp(p->name, "demuxer-cache-idle") == 0)
-                    obsCacheIdle = *(int*)p->data != 0;
+                else if (p->format == MPV_FORMAT_FLAG)
+                {
+                    if (std::strcmp(p->name, "demuxer-cache-idle") == 0)
+                        obsCacheIdle = *(int*)p->data != 0;
+                    else if (std::strcmp(p->name, "paused-for-cache") == 0)
+                        obsPausedForCache = *(int*)p->data != 0;
+                    else if (std::strcmp(p->name, "core-idle") == 0)
+                        obsCoreIdle = *(int*)p->data != 0;
+                }
                 break;
             }
             default:
@@ -2100,6 +2191,38 @@ void MpvView::updateLoadingOverlay()
     if (!loadingOverlay)
         return;
 
+    if (isHttpStream)
+    {
+        if (fileLoaded && mpv)
+        {
+            ready = true;
+            shownPct = 100;
+            barFill->setWidthPercentage(100.0f);
+            char pb[16];
+            std::snprintf(pb, sizeof(pb), "100%%");
+            percentLabel->setText(pb);
+        }
+        else
+        {
+            auto now  = std::chrono::steady_clock::now();
+            double dt = std::chrono::duration<double>(now - lastSample).count();
+            if (dt >= 0.5)
+            {
+                lastSample = now;
+                statusLabel->setText(tr("Connecting to stream..."));
+                statsLabel->setText(tr("Streaming via Debrid / HTTP"));
+            }
+        }
+        return;
+    }
+
+    if (engineFailed)
+    {
+        if (statusLabel)
+            statusLabel->setText(tr("Failed: ") + engineError);
+        return;
+    }
+
     // The engine isn't open yet: for a magnet that means we're walking the
     // swarm for whoever will serve the metadata, one peer at a time. Show that
     // count -- without it the screen looks frozen for a minute and there is no
@@ -2111,7 +2234,8 @@ void MpvView::updateLoadingOverlay()
         if (statusLabel && total > 0)
         {
             char b[96];
-            std::snprintf(b, sizeof(b), "Metadata: peer %d / %d", tried,
+            std::snprintf(b, sizeof(b), "%s: %d / %d",
+                          tr("Fetching metadata..."), tried,
                           total);
             statusLabel->setText(b);
         }
@@ -2126,15 +2250,16 @@ void MpvView::updateLoadingOverlay()
     {
         // Async-observed values (pumpEvents): no sync mpv call on this thread.
         double secs = obsCacheSecs;
+        double target = isHttpStream ? 5.0 : kBufferSecs;
         if (secs >= 0.0)
         {
-            pct = (int)(secs / kBufferSecs * 100.0);
-            if (secs >= kBufferSecs)
+            pct = (int)(secs / target * 100.0);
+            if (secs >= target)
                 ready = true;  // buffered enough -> unpause and show video
         }
 
         // Safety net for short files / a full demuxer cache: if there's nothing
-        // left to read, don't wait for the full kBufferSecs.
+        // left to read, don't wait for the full target.
         if (obsCacheIdle && pct > 0)
             ready = true;
     }
@@ -2189,14 +2314,27 @@ void MpvView::updateLoadingOverlay()
 
 void MpvView::updateBufferIndicator()
 {
-    if (!bufferOverlay || !mpv)
+    if (!bufferOverlay || !mpv || userPaused || !ready)
+    {
+        if (buffering)
+        {
+            buffering = false;
+            bufferOverlay->setVisibility(brls::Visibility::GONE);
+        }
         return;
+    }
 
-    // Show the badge when the demuxer has almost nothing buffered ahead (the
-    // stream is struggling); hide it once it recovers. Small hysteresis so it
-    // doesn't flicker.
-    double secs = obsCacheSecs;  // async-observed; no sync mpv call per frame
-    bool stalling = buffering ? (secs < 1.0) : (secs < 0.25);
+    bool stalling = false;
+    if (isHttpStream)
+    {
+        stalling = obsPausedForCache && obsCoreIdle;
+    }
+    else
+    {
+        double secs = obsCacheSecs;  // async-observed; no sync mpv call per frame
+        stalling = buffering ? (secs < 1.0) : (secs < 0.25);
+    }
+
     if (stalling != buffering)
     {
         buffering = stalling;
@@ -2215,6 +2353,51 @@ void MpvView::updateInfoOverlay()
     double dt = std::chrono::duration<double>(now - infoLastSample).count();
     if (dt < 0.5)
         return;
+
+    if (isHttpStream)
+    {
+        infoLastSample = now;
+        double buf = 0.0, fps = 0.0;
+        int64_t w = 0, h = 0, drop = 0, decDrop = 0;
+        char* hwdec = nullptr;
+        char* vcodec = nullptr;
+        if (mpv)
+        {
+            mpv_get_property(mpv, "demuxer-cache-duration", MPV_FORMAT_DOUBLE, &buf);
+            mpv_get_property(mpv, "width", MPV_FORMAT_INT64, &w);
+            mpv_get_property(mpv, "height", MPV_FORMAT_INT64, &h);
+            mpv_get_property(mpv, "container-fps", MPV_FORMAT_DOUBLE, &fps);
+            mpv_get_property(mpv, "frame-drop-count", MPV_FORMAT_INT64, &drop);
+            mpv_get_property(mpv, "decoder-frame-drop-count", MPV_FORMAT_INT64, &decDrop);
+            mpv_get_property(mpv, "hwdec-current", MPV_FORMAT_STRING, &hwdec);
+            mpv_get_property(mpv, "video-codec", MPV_FORMAT_STRING, &vcodec);
+        }
+        const char* hw = (hwdec && hwdec[0] && std::strcmp(hwdec, "no") != 0) ? hwdec : "software";
+
+        char m1[512];
+        std::snprintf(m1, sizeof(m1),
+                      "HTTP / DEBRID STREAM\n"
+                      "Protocol: Direct HTTP(S)\n"
+                      "Buffer ahead: %.1f s\n"
+                      "Source URL:\n%s",
+                      buf, streamSource.substr(0, 64).c_str());
+        infoLabel->setText(m1);
+
+        char m2[512];
+        std::snprintf(m2, sizeof(m2),
+                      "VIDEO & DECODE\n"
+                      "%lldx%lld @ %.3f fps\n"
+                      "Codec: %s\n"
+                      "Decode: %s\n"
+                      "Dropped: %lld (decoder %lld)",
+                      (long long)w, (long long)h, fps,
+                      vcodec ? vcodec : "-", hw,
+                      (long long)drop, (long long)decDrop);
+        if (infoLabel2) infoLabel2->setText(m2);
+        if (hwdec) mpv_free(hwdec);
+        if (vcodec) mpv_free(vcodec);
+        return;
+    }
 
     // Before torrentfs_open returns there is no engine to report on -- but that
     // is exactly the phase (a magnet's metadata fetch) that used to look hung,
@@ -2519,6 +2702,17 @@ void MpvView::updateInfoOverlay()
 
 void MpvView::logStats()
 {
+    if (isHttpStream)
+    {
+        if (ready && mpv)
+        {
+            if (obsPos > 0) lastPosSec = obsPos;
+            if (obsDur > 0) lastDurSec = obsDur;
+            maybePushWatchState(false);
+        }
+        return;
+    }
+
     if (!tfs)
         return;
 

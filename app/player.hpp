@@ -101,6 +101,10 @@ class MpvView : public brls::Box
     // this guards against the result landing after the view is gone.
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
     std::string pendingSource;
+    bool isHttpStream = false;
+    std::string streamSource;
+    bool engineFailed = false;
+    std::string engineError;
     void updateLoadingOverlay();
     void updateBufferIndicator();
     void updateInfoOverlay();
@@ -278,6 +282,8 @@ class MpvView : public brls::Box
     // lock, the whole download).
     double obsPos = 0.0, obsDur = 0.0, obsCacheSecs = 0.0;
     bool obsCacheIdle = false;
+    bool obsPausedForCache = false;
+    bool obsCoreIdle = false;
     std::chrono::steady_clock::time_point infoLastSample;
 
     // Periodic stats dump (see logStats).

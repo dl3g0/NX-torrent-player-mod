@@ -2,6 +2,7 @@
 
 #include <borealis.hpp>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -10,11 +11,17 @@
 
 // Stremio account integration.
 //
-// Talks to the official API at https://api.strem.io. Login exchanges an
-// email/password for an authKey; that key is persisted and authenticates every
-// later call (currently: fetching the user's library).
+// Talks to the official API at https://api.strem.io and device linking at
+// https://link.stremio.com.
 namespace stremio
 {
+
+struct DeviceLink
+{
+    std::string code;
+    std::string link;
+    std::string qrcode;
+};
 
 struct LoginResult
 {
@@ -74,13 +81,15 @@ void pushWatchStateAsync(const std::string& authKey, const std::string& itemId,
 // Calls back on the UI thread with the on-disk path, or "" on failure. A cached
 // file is returned immediately without touching the network.
 void fetchPosterAsync(const std::string& id, const std::string& url,
-                      std::function<void(std::string)> done);
+                      std::function<void(std::string)> done,
+                      std::shared_ptr<bool> alive = nullptr);
 
 // Full-size artwork for `id`, cached separately from the list thumbnail (which
 // is fetched at ~100px wide and looks it when blown up to the screen). Calls
 // back on the UI thread with the on-disk path, or "" on failure.
 void fetchHqArtAsync(const std::string& id, const std::string& url,
-                     std::function<void(std::string)> done);
+                     std::function<void(std::string)> done,
+                     std::shared_ptr<bool> alive = nullptr);
 
 // The on-disk poster for `id` if it has already been cached (by a prior
 // fetchPosterAsync), "" otherwise. Never touches the network -- for callers
@@ -94,16 +103,28 @@ struct LibraryResult
     std::string error;
 };
 
+// One catalog exposed by an addon manifest
+struct CatalogInfo
+{
+    std::string id;
+    std::string type;
+    std::string name;
+    std::string addonBase;
+};
+
 // An installed addon. `base` is transportUrl minus the trailing
 // "/manifest.json" -- every resource call hangs off it.
 struct Addon
 {
     std::string name;
     std::string base;
+    std::string transportUrl;
+    std::string rawJson;
     bool hasMeta      = false;  // serves /meta/...
     bool hasStream    = false;  // serves /stream/...
     bool hasSubtitles = false;  // serves /subtitles/...
     std::vector<std::string> types;  // "movie", "series", ...
+    std::vector<CatalogInfo> catalogs; // addon catalogs (Streaming Catalogs, etc.)
 
     bool supportsType(const std::string& t) const
     {
@@ -134,6 +155,7 @@ struct Stream
     std::string url;       // direct http(s) stream (unsupported for now)
     int fileIdx = -1;      // which file in the torrent to play (season packs);
                            // -1 = not given, fall back to the largest file
+    std::vector<std::string> sources; // specific tracker URLs from the addon
 };
 
 // One subtitle file an addon offers for a video.
@@ -184,12 +206,20 @@ struct StreamsResult
 // Both run on a background thread and deliver on the UI thread. They never
 // block the caller: these take seconds over a Switch's wifi and the UI has to
 // keep drawing.
+void createDeviceLinkAsync(
+    std::function<void(bool ok, DeviceLink link, std::string err)> done);
+void pollDeviceLinkAsync(
+    const std::string& code, std::shared_ptr<std::atomic<bool>> cancel,
+    std::function<void(bool ok, std::string authKey, std::string email,
+                       std::string err)> done);
 void loginAsync(const std::string& email, const std::string& password,
                 std::function<void(LoginResult)> done);
 void fetchLibraryAsync(const std::string& authKey,
                        std::function<void(LibraryResult)> done);
 void fetchAddonsAsync(const std::string& authKey,
                       std::function<void(AddonsResult)> done);
+void removeAddonAsync(const std::string& authKey, const std::string& transportUrl,
+                      std::function<void(bool ok, std::string err)> done);
 // Episode list for a series, from an addon that serves meta (Cinemeta usually).
 void fetchMetaAsync(const std::string& addonBase, const std::string& type,
                     const std::string& id, std::function<void(MetaResult)> done);
@@ -387,6 +417,7 @@ class StremioTab : public brls::Box
   private:
     void promptEmail();
     void promptPassword();
+    void startDeviceLinkLogin();
     // One row of the sign-in card: a caption over its value, the whole thing
     // focusable and opening the keyboard. Returns the value label to fill in.
     brls::Box* loginField(const char* caption, const char* placeholder,
@@ -395,21 +426,21 @@ class StremioTab : public brls::Box
     void onAuthenticated(const std::string& key, bool announce);
     void loadLibrary();
 
-    // The Stremio tab cycles through these with R. Continue Watching is the
-    // default landing view; Popular pulls Cinemeta's top catalog.
+    // The Stremio tab cycles through these with R. Home is the
+    // default landing view; it unifies Movies, Shows, and addon catalogs.
     enum class View
     {
-        ContinueWatching = 0,
-        PopularMovies,
-        PopularSeries,
+        Home = 0,
+        ContinueWatching,
         Library,
         Search,
         COUNT
     };
-    View view = View::ContinueWatching;
+    View view = View::Home;
     void cycleView(int dir);       // R/L: advance/back a view and render it
     void selectView(View v);       // jump straight to a view (header tab bar)
     void renderView();         // (re)build the list for the current view
+    void renderHome();         // renders unified Home with movies, shows, and addon strips
     void showItems(const std::vector<stremio::LibItem>& items,
                    const std::string& header, const char* emptyMsg);
     void loadCatalog(const char* type, std::vector<stremio::LibItem>& cache,
@@ -442,12 +473,15 @@ class StremioTab : public brls::Box
     // different genre. See openSection.
     brls::Box* buildSeeMoreCard(const std::string& title,
                                 std::vector<stremio::LibItem> all,
-                                std::string catType, std::string catId);
+                                std::string catType, std::string catId,
+                                std::string addonBase = "");
     brls::Box* buildSeeMoreRow(const std::string& title,
                                std::vector<stremio::LibItem> all,
-                               std::string catType, std::string catId);
+                               std::string catType, std::string catId,
+                               std::string addonBase = "");
     void openSection(std::string title, std::vector<stremio::LibItem> items,
-                     std::string catType, std::string catId);
+                     std::string catType, std::string catId,
+                     std::string addonBase = "");
     // "movie" or "series" for the view we are on -- the type half of every
     // catalog request the Popular views make.
     const char* catalogType() const;
@@ -459,6 +493,7 @@ class StremioTab : public brls::Box
     // is no second section (everything but Popular Movies / Shows).
     const std::vector<stremio::LibItem>* featuredCache();
     void loadFeatured(const char* type);  // one attempt per type per session
+    void loadAddonCatalogs(const char* type); // loads dynamic addon catalogs (Streaming Catalogs, etc.)
     // X on a Continue Watching tile takes it out of that row (by clearing its
     // watch state, which is what the row is derived from). No-op in every other
     // view -- the footer hint comes from the registered action, so registering
@@ -491,6 +526,22 @@ class StremioTab : public brls::Box
     std::vector<stremio::LibItem> featMovies, featSeries;
     bool featMoviesAsked = false, featSeriesAsked = false;
 
+    struct AddonCatalogSection
+    {
+        std::string addonName;
+        std::string catalogName;
+        std::string catalogId;
+        std::string catalogType;
+        std::string addonBase;
+        std::vector<stremio::LibItem> items;
+        bool loaded = false;
+    };
+    std::vector<AddonCatalogSection> addonMovieSections;
+    std::vector<AddonCatalogSection> addonSeriesSections;
+    bool addonMovieSectionsAsked = false;
+    bool addonSeriesSectionsAsked = false;
+    std::set<std::string> homeRenderedStrips;
+
     std::string email;
     std::string password;
     std::string authKey;
@@ -500,6 +551,7 @@ class StremioTab : public brls::Box
     brls::Label* emailLabel  = nullptr;
     brls::Label* passLabel   = nullptr;  // bullets, never the password
     brls::Label* statusLabel = nullptr;
+    brls::Button* codeLoginBtn = nullptr;
     brls::Button* loginBtn   = nullptr;
     brls::Label* libStatus   = nullptr;
     brls::Box* libList       = nullptr;

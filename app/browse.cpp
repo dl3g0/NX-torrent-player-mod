@@ -17,6 +17,7 @@
 #include "player.hpp"
 #include "theme.hpp"
 #include "i18n.hpp"
+#include "http.hpp"
 
 namespace
 {
@@ -29,57 +30,90 @@ bool isUnder(brls::View* v, brls::View* ancestor)
     return false;
 }
 
-// Trackers appended to the bare infoHash an addon gives us. These are the
-// long-running public UDP trackers most public torrents announce to anyway.
-constexpr const char* kPublicTrackers =
-    "&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce"
-    "&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce"
-    "&tr=udp%3A%2F%2Ftracker.openbittorrent.com%3A6969%2Fannounce"
-    "&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce"
-    "&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce"
-    "&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce"
-    "&tr=udp%3A%2F%2Ftracker.moeking.me%3A6969%2Fannounce"
-    "&tr=udp%3A%2F%2Fexplodie.org%3A6969%2Fannounce";
+const char* const kDefaultTrackers[] = {
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://tracker.openbittorrent.com:6969/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://tracker.publictracker.xyz:6969/announce",
+    "udp://open.demonii.com:1337/announce",
+    "udp://exodus.desync.com:6969/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.moeking.me:6969/announce",
+    "udp://explodie.org:6969/announce",
+};
 
-// The Switch's shared system font has no colour emoji, so the pictographs
-// addons use as field markers render as blanks/boxes. Swap the common ones for
-// short labels rather than dropping the numbers they introduce.
-std::string deEmoji(const std::string& s)
+static std::string extractTracker(const std::string& magnet, size_t pos) {
+    size_t end = magnet.find('&', pos);
+    if (end == std::string::npos)
+        end = magnet.size();
+    return magnet.substr(pos + 4, end - (pos + 4));
+}
+
+static bool hasTracker(const std::string& magnet, const std::string& tracker) {
+    size_t pos = 0;
+    while ((pos = magnet.find("&tr=", pos)) != std::string::npos) {
+        if (extractTracker(magnet, pos) == tracker)
+            return true;
+        pos += 4;
+    }
+    return false;
+}
+
+static std::string buildMagnetUri(const stremio::Stream& s)
 {
-    struct { const char* from; const char* to; } map[] = {
-        { "👤", "seeds:" }, { "💾", "taille:" }, { "⚙️", "src:" },
-        { "⚙", "src:" },    { "🌐", "lang:" },   { "🎬", "" },
-        { "📺", "" },        { "⭐", "" },        { "🔊", "audio:" },
-        { "🇬🇧", "EN" },     { "🇫🇷", "FR" },
-    };
-    std::string out = s;
-    for (const auto& m : map)
+    std::string out = s.url.rfind("magnet:?", 0) == 0 ? s.url : ("magnet:?xt=urn:btih:" + s.infoHash);
+    for (const auto& raw : s.sources)
     {
-        size_t p;
-        while ((p = out.find(m.from)) != std::string::npos)
-            out.replace(p, std::strlen(m.from), m.to);
+        std::string tr = raw;
+        if (tr.rfind("tracker:", 0) == 0) tr = tr.substr(8);
+        if (tr.rfind("udp://", 0) != 0 && tr.rfind("http://", 0) != 0 && tr.rfind("https://", 0) != 0) continue;
+        if (!hasTracker(out, tr)) {
+            out += "&tr=";
+            out += tr;
+        }
     }
-    // Anything still non-ASCII would draw as a blank box; strip it.
-    std::string clean;
-    for (size_t i = 0; i < out.size();)
+    for (size_t i = 0; i < sizeof(kDefaultTrackers) / sizeof(kDefaultTrackers[0]); i++) {
+        if (!hasTracker(out, kDefaultTrackers[i])) {
+            out += "&tr=";
+            out += kDefaultTrackers[i];
+        }
+    }
+    return out;
+}
+
+// Clean stream text while preserving all UTF-8 characters and emojis, matching DEMO 2 SWITCH.
+static std::string cleanStreamText(const std::string& text)
+{
+    std::string result;
+    result.reserve(text.size());
+    for (unsigned char c : text)
     {
-        unsigned char c = out[i];
-        if (c < 0x80) { clean += (char)c; i++; continue; }
-        int len = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : (c >= 0xC0) ? 2 : 1;
-        // Keep Latin-1 range accents, drop pictographs.
-        if (len == 2) { clean += out.substr(i, 2); }
-        i += len;
+        if (c == '\n')
+            result += '\n';
+        else if (c == '\t' || c == '\r')
+            result += ' ';
+        else if (c >= 0x20 && c != 0x7F)
+            result += (char)c;
     }
-    // Collapse the runs of spaces the removals leave behind.
-    std::string tight;
-    bool sp = false;
-    for (char c : clean)
+    // Collapse repeated spaces (but preserve newlines)
+    std::string cleaned;
+    bool prevSpace = false;
+    for (char c : result)
     {
-        if (c == ' ') { if (!sp) tight += c; sp = true; }
-        else { tight += c; sp = false; }
+        if (c == ' ')
+        {
+            if (!prevSpace)
+                cleaned += c;
+            prevSpace = true;
+        }
+        else
+        {
+            cleaned += c;
+            prevSpace = false;
+        }
     }
-    while (!tight.empty() && tight.back() == ' ') tight.pop_back();
-    return tight;
+    while (!cleaned.empty() && cleaned.back() == ' ') cleaned.pop_back();
+    return cleaned;
 }
 
 void dialog(const std::string& msg)
@@ -89,7 +123,7 @@ void dialog(const std::string& msg)
         if (c == '\n' || c == '\r') c = ' ';
     if (s.size() > 120) s = s.substr(0, 119) + "…";
     auto* d = new brls::Dialog(s);
-    d->addButton("OK", []() {});
+    d->addButton(tr("OK"), []() {});
     d->open();
 }
 
@@ -488,19 +522,18 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
                 auto titleLines = splitLines(s.title);
 
                 Row row;
-                row.label = deEmoji(joinSpace(nameLines));
-                if (row.label.empty() && !titleLines.empty()) row.label = titleLines[0];
+                row.label = cleanStreamText(joinSpace(nameLines));
+                if (row.label.empty() && !titleLines.empty()) row.label = cleanStreamText(titleLines[0]);
                 if (row.label.empty()) row.label = tr("Source");
 
                 // The whole title the addon gives (filename plus seeders, size,
                 // provider) rather than only the seeders/size line: that line
                 // alone dropped the filename, which is the actual "which release
                 // is this" information. Single-line, so it scrolls on focus.
-                row.sub = deEmoji(joinSpace(titleLines));
+                row.sub = cleanStreamText(joinSpace(titleLines));
 
-                // Only BitTorrent sources are playable by our engine; say so up
-                // front rather than failing after the tap.
-                if (s.infoHash.empty())
+                // A source is playable if it has an infoHash (BitTorrent) or a direct url (Debrid / HTTP).
+                if (s.infoHash.empty() && s.url.empty())
                     row.detail = "unsupported";
 
                 rows.push_back(row);
@@ -510,21 +543,22 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
                 label, tr("Pick a source"), rows,
                 [streams, art, label, watch](int i) {
                     const auto& s = (*streams)[i];
-                    if (s.infoHash.empty())
+                    if (s.infoHash.empty() && s.url.empty())
                     {
-                        dialog(tr("Unsupported source: only torrents (infoHash) "
-                               "can be played for now."));
+                        dialog(tr("Unsupported source: neither torrent nor stream URL available."));
                         return;
                     }
-                    // Addons hand back a bare infoHash. Our magnet loader
-                    // needs trackers -- it announces to them to find the peers
-                    // that serve the metadata, and rejects a trackerless magnet
-                    // outright (no DHT bootstrap for metadata yet). So attach
-                    // the usual public trackers, which is what a bare infoHash
-                    // relies on everywhere else too.
-                    std::string magnet = "magnet:?xt=urn:btih:" + s.infoHash +
-                                         kPublicTrackers;
-                    brls::Logger::info("[stremio] play {}", magnet);
+                    std::string playSource;
+                    if (!s.url.empty() && s.url.rfind("magnet:", 0) != 0)
+                    {
+                        playSource = s.url;
+                        brls::Logger::info("[stremio] play http/debrid {}", playSource);
+                    }
+                    else
+                    {
+                        playSource = buildMagnetUri(s);
+                        brls::Logger::info("[stremio] play torrent {}", playSource);
+                    }
                     // At EOF, pop the player + this source list + the addon list
                     // to land back on the library (film) or the episode list
                     // (series).
@@ -533,7 +567,7 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
                     // The addon's file index picks the right episode inside a
                     // season pack (or all-seasons torrent); -1 = largest file.
                     brls::Application::pushActivity(
-                        new PlayerActivity(magnet, art, label, s.fileIdx, w));
+                        new PlayerActivity(playSource, art, label, s.fileIdx, w));
                 },
                 art.posterPath));
         });
@@ -945,22 +979,22 @@ class AddonSourcePicker : public brls::Activity
     {
         auto nameLines  = splitLines(s.name);
         auto titleLines = splitLines(s.title);
-        std::string head = deEmoji(joinSpace(nameLines));
-        if (head.empty() && !titleLines.empty()) head = deEmoji(titleLines[0]);
+        std::string head = cleanStreamText(joinSpace(nameLines));
+        if (head.empty() && !titleLines.empty()) head = cleanStreamText(titleLines[0]);
         if (head.empty()) head = tr("Source");
 
         auto* card = new SourceCard();
         card->setFocusable(true);
         card->setAxis(brls::Axis::COLUMN);
-        card->setWidth(432.0f);
+        card->setWidth(500.0f);
         card->setHeight(200.0f);
         card->setCornerRadius(10.0f);
         card->setHighlightCornerRadius(10.0f);
         card->setBackgroundColor(theme::surface());
-        card->setPadding(24.0f, 26.0f, 24.0f, 28.0f);
-        if (marginLeft) card->setMarginLeft(28.0f);
+        card->setPadding(20.0f, 24.0f, 20.0f, 24.0f);
+        if (marginLeft) card->setMarginLeft(24.0f);
         // Text lines truncate to the card's inner width (card - L/R padding).
-        const float lineW = 432.0f - 26.0f - 24.0f;
+        const float lineW = 500.0f - 24.0f - 24.0f;
 
         stremio::Stream stream = s;
         PlayerArt cardArt      = art;
@@ -968,15 +1002,22 @@ class AddonSourcePicker : public brls::Activity
         std::string cardLabel  = label;
         card->registerClickAction(
             [stream, cardArt, cardW, cardLabel](brls::View*) {
-                if (stream.infoHash.empty())
+                if (stream.infoHash.empty() && stream.url.empty())
                 {
-                    dialog(tr("Unsupported source: only torrents (infoHash) can be "
-                           "played for now."));
+                    dialog(tr("Unsupported source: neither torrent nor stream URL available."));
                     return true;
                 }
-                std::string magnet =
-                    "magnet:?xt=urn:btih:" + stream.infoHash + kPublicTrackers;
-                brls::Logger::info("[stremio] play {}", magnet);
+                std::string playSource;
+                if (!stream.url.empty() && stream.url.rfind("magnet:", 0) != 0)
+                {
+                    playSource = stream.url;
+                    brls::Logger::info("[stremio] play http/debrid {}", playSource);
+                }
+                else
+                {
+                    playSource = buildMagnetUri(stream);
+                    brls::Logger::info("[stremio] play torrent {}", playSource);
+                }
                 WatchInfo w = cardW;
                 // Player sits directly on the detail screen: pop both at EOF to
                 // land back on the library (film) or the series screen (episode).
@@ -990,48 +1031,47 @@ class AddonSourcePicker : public brls::Activity
                     (w.videoId.empty() || lw.videoId == w.videoId))
                     w.resumeSec = resumeFrom(lw.offsetMs, lw.durationMs);
                 brls::Application::pushActivity(new PlayerActivity(
-                    magnet, cardArt, cardLabel, stream.fileIdx, w));
+                    playSource, cardArt, cardLabel, stream.fileIdx, w));
                 return true;
             });
         card->addGestureRecognizer(new brls::TapGestureRecognizer(card));
 
+        // Addon name & quality badge (e.g. "[1080p] Torrentio" or "Progreso Latino")
         auto* h = new brls::Label();
         h->setText(head);
-        h->setFontSize(24.0f);
+        h->setFontSize(22.0f);
+        h->setTextColor(theme::accent());
         h->setSingleLine(true);
         h->setWidth(lineW);
         card->addView(h);
         card->lines.push_back(h);
 
-        // One row per metadata element (each source line the addon sent), rather
-        // than collapsing them onto a single overflowing line. Each truncates to
-        // the card and marquees when the card is focused. The fixed-height card
-        // fits a few detail rows, so cap it.
+        // Display the actual video filename and source details (seeds, size, provider)
         int shown = 0;
         for (const auto& raw : titleLines)
         {
-            std::string t = deEmoji(raw);
+            std::string t = cleanStreamText(raw);
             if (t.empty()) continue;
             if (shown >= 3) break;
             auto* d = new brls::Label();
             d->setText(t);
-            d->setFontSize(17.0f);
-            d->setTextColor(theme::textDim());
+            d->setFontSize(shown == 0 ? 17.0f : 15.0f);
+            d->setTextColor(shown == 0 ? theme::text() : theme::textDim());
             d->setSingleLine(true);
             d->setWidth(lineW);
-            d->setMarginTop(shown == 0 ? 10.0f : 6.0f);
+            d->setMarginTop(shown == 0 ? 8.0f : 4.0f);
             card->addView(d);
             card->lines.push_back(d);
             shown++;
         }
 
-        if (s.infoHash.empty())
+        if (s.infoHash.empty() && s.url.empty())
         {
             auto* u = new brls::Label();
-            u->setText("unsupported");
-            u->setFontSize(15.0f);
+            u->setText(tr("Unsupported source: neither torrent nor stream URL available."));
+            u->setFontSize(14.0f);
             u->setTextColor(theme::textWarn());
-            u->setMarginTop(8.0f);
+            u->setMarginTop(6.0f);
             card->addView(u);
         }
         return card;

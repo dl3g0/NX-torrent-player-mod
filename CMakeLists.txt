@@ -18,11 +18,11 @@ include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 
 project(NX-torrent-player)
 set(VERSION_MAJOR "0")
-set(VERSION_MINOR "5")
-set(VERSION_ALTER "0")
-set(PROJECT_AUTHOR "shodowlo")
+set(VERSION_MINOR "0")
+set(VERSION_ALTER "1")
+set(PROJECT_AUTHOR "dl3g0")
 # On-device app name shown in the Homebrew Menu.
-set(APP_TITLE "NX Torrent Player")
+set(APP_TITLE "NX Torrent Player MOD")
 set(PROJECT_TITLEID "0x010000000000A123")
 
 # Where the in-app updater looks for a newer release. UPDATE_REPO is the GitHub
@@ -30,7 +30,7 @@ set(PROJECT_TITLEID "0x010000000000A123")
 # entirely -- a local HTTP server serving a fake release JSON is how the update
 # flow gets tested without publishing one:
 #   cmake . -DUPDATE_API_URL=http://192.168.1.20:8000/latest.json
-set(UPDATE_REPO "shodowlo/NX-torrent-player" CACHE STRING "GitHub owner/name for updates")
+set(UPDATE_REPO "dl3g0/NX-torrent-player-mod" CACHE STRING "GitHub owner/name for updates")
 set(UPDATE_API_URL "https://api.github.com/repos/${UPDATE_REPO}/releases/latest"
     CACHE STRING "Release API endpoint the updater polls")
 set(PROJECT_ICON ${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.jpg)
@@ -112,6 +112,8 @@ if (PLATFORM_SWITCH)
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/stremio-icon.png ${CMAKE_BINARY_DIR}/resources/stremio-icon.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/local-tab-icon.png ${CMAKE_BINARY_DIR}/resources/local-icon.png
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/SpaceGrotesk-Medium.ttf ${CMAKE_BINARY_DIR}/resources/SpaceGrotesk-Medium.ttf
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/resources/fonts
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/OpenMoji.ttf ${CMAKE_BINARY_DIR}/resources/fonts/OpenMoji.ttf
         # The CA store curl checks certificates against (Mozilla's roots, from
         # curl.se/ca). The console mounts none, so it has to ride in the romfs --
         # refresh it from there when roots rotate. See app/http.cpp.

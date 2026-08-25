@@ -23,6 +23,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <cstring>
 #include <ctime>
@@ -170,12 +171,15 @@ class SectionActivity : public brls::Activity
 // does the genre list on a section page.
 constexpr const char* kCinemeta   = "https://v3-cinemeta.strem.io";
 
-constexpr const char* kLoginUrl   = "https://api.strem.io/api/login";
-constexpr const char* kLibraryUrl = "https://api.strem.io/api/datastoreGet";
-constexpr const char* kKeyPath    = APPDATA_DIR "/stremio.authkey";
+constexpr const char* kLoginUrl      = "https://api.strem.io/api/login";
+constexpr const char* kLoginTokenUrl = "https://api.strem.io/api/loginWithToken";
+constexpr const char* kLinkCreateUrl = "https://link.stremio.com/api/create";
+constexpr const char* kLinkReadUrl   = "https://link.stremio.com/api/read?code=";
+constexpr const char* kLibraryUrl    = "https://api.strem.io/api/datastoreGet";
+constexpr const char* kKeyPath       = APPDATA_DIR "/stremio.authkey";
 // Kept next to the key purely so Options can say which account is signed in --
 // the API never needs it again once we hold an authKey.
-constexpr const char* kEmailPath  = APPDATA_DIR "/stremio.email";
+constexpr const char* kEmailPath     = APPDATA_DIR "/stremio.email";
 
 
 
@@ -237,7 +241,7 @@ void setSubtreeFocusable(brls::View* v, bool focusable)
 void dialog(const std::string& msg)
 {
     auto* d = new brls::Dialog(oneLine(msg));
-    d->addButton("OK", []() {});
+    d->addButton(tr("OK"), []() {});
     d->open();
 }
 
@@ -440,9 +444,8 @@ void selectActiveView(int index)
 const std::vector<std::string>& viewLabels()
 {
     static const std::vector<std::string> labels = {
+        std::string(" ") + tr("Home"),
         std::string(" ") + tr("Continue"),
-        std::string(" ") + tr("Movies"),
-        std::string(" ") + tr("Shows"),
         std::string(" ") + tr("Library"),
         std::string(" ") + tr("Search"),
     };
@@ -571,6 +574,82 @@ std::string blurredPosterPath(const std::string& posterPath)
     brls::Logger::info("[stremio] blur {} ({}x{}) -> {}x{}", posterPath, w, h,
                        bw, bh);
     return out;
+}
+
+void createDeviceLinkAsync(
+    std::function<void(bool ok, DeviceLink link, std::string err)> done)
+{
+    brls::async([done]() {
+        std::string resp, err;
+        DeviceLink link;
+        bool ok = false;
+        if (!http::get(kLinkCreateUrl, resp, err))
+        {
+            brls::Logger::warning("[stremio] createDeviceLink failed: {}", err);
+        }
+        else
+        {
+            link.code   = json::str(resp, "code");
+            link.link   = json::str(resp, "link");
+            link.qrcode = json::str(resp, "qrcode");
+            if (!link.code.empty())
+            {
+                ok = true;
+            }
+            else
+            {
+                err = tr("Invalid response from Stremio link service");
+            }
+        }
+        brls::sync([done, ok, link, err]() { done(ok, link, err); });
+    });
+}
+
+void pollDeviceLinkAsync(
+    const std::string& code, std::shared_ptr<std::atomic<bool>> cancel,
+    std::function<void(bool ok, std::string authKey, std::string email,
+                       std::string err)> done)
+{
+    brls::async([code, cancel, done]() {
+        int attempts = 0;
+        constexpr int kMaxAttempts = 100;
+        while (cancel && !cancel->load() && attempts < kMaxAttempts)
+        {
+            attempts++;
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            if (cancel && cancel->load())
+                return;
+
+            std::string resp, err;
+            if (http::get(std::string(kLinkReadUrl) + code, resp, err))
+            {
+                std::string authKey = json::str(resp, "authKey");
+                if (!authKey.empty())
+                {
+                    std::string email;
+                    std::string tokenBody = "{\"type\":\"LoginWithToken\",\"token\":\"" +
+                                            json::escape(authKey) + "\"}";
+                    std::string tokenResp, tokenErr;
+                    if (http::postJson(kLoginTokenUrl, tokenBody, tokenResp, tokenErr))
+                    {
+                        email = json::str(tokenResp, "email");
+                    }
+
+                    brls::sync([done, authKey, email]() {
+                        done(true, authKey, email, "");
+                    });
+                    return;
+                }
+            }
+        }
+
+        if (cancel && cancel->load())
+            return;
+
+        brls::sync([done]() {
+            done(false, "", "", tr("Device link timed out. Please try again."));
+        });
+    });
 }
 
 void loginAsync(const std::string& email, const std::string& password,
@@ -1146,75 +1225,158 @@ std::string cachedPosterPath(const std::string& id)
 // Downloads one image into `path` and calls back on the UI thread with it ("" on
 // failure). Shared by the list thumbnails and the full-size background: both
 // have to survive a host that answers WebP, or an HTML error page.
-static void downloadImageAsync(const std::string& id, const std::string& url,
-                        const std::string& path,
-                        std::function<void(std::string)> done)
+namespace
 {
-    brls::async([id, url, path, done]() {
-        std::string body, err;
-        // Ask for a format stb_image can actually decode.
-        static const char* kAcceptImg = "Accept: image/jpeg,image/png;q=0.9";
-        bool ok = http::get(url, body, err, kAcceptImg);
+struct ImageTask
+{
+    std::string id;
+    std::string url;
+    std::string path;
+    std::shared_ptr<bool> alive;
+    std::function<void(std::string)> done;
+};
 
-        // A poster host answering with an HTML error page would be cached as a
-        // corrupt file forever (a hit never revalidates), so check the magic
-        // bytes rather than trusting the response.
-        auto b = [&](size_t i) {
-            return i < body.size() ? (unsigned char)body[i] : 0u;
-        };
-        bool isJpeg = b(0) == 0xFF && b(1) == 0xD8;
-        bool isPng  = b(0) == 0x89 && b(1) == 'P' && b(2) == 'N' && b(3) == 'G';
-        bool isGif  = b(0) == 'G' && b(1) == 'I' && b(2) == 'F';
-        bool isBmp  = b(0) == 'B' && b(1) == 'M';
-        bool isWebp = b(0) == 'R' && b(1) == 'I' && b(2) == 'F' && b(3) == 'F' &&
-                      body.size() > 12 && body.compare(8, 4, "WEBP") == 0;
-
-        // Metahub serves WebP for some titles and ignores Accept, so asking for
-        // JPEG doesn't help and there is nowhere else to fall back to: decode it
-        // and store PNG instead.
-        if (ok && isWebp)
+class ImageQueue
+{
+public:
+    ImageQueue() : stop(false)
+    {
+        for (int i = 0; i < 2; i++)
         {
-            std::string png = webpToPng(body);
-            if (png.empty())
-            {
-                brls::Logger::warning("[stremio] poster {}: WebP decode failed", id);
-                ok = false;
-            }
-            else
-            {
-                brls::Logger::info("[stremio] poster {}: WebP {} B -> PNG {} B",
-                                   id, body.size(), png.size());
-                body  = std::move(png);
-                isPng = true;
-            }
+            workers.emplace_back([this]() { workerLoop(); });
         }
+    }
 
-        bool isImage = isJpeg || isPng || isGif || isBmp;
-
-        if (ok && !isImage)
-            brls::Logger::warning(
-                "[stremio] poster {}: {} B, magic {:02X} {:02X} {:02X} {:02X} "
-                "-- url {}",
-                id, body.size(), b(0), b(1), b(2), b(3), url);
-
-        if (ok && isImage)
+    ~ImageQueue()
+    {
         {
-            if (FILE* f = std::fopen(path.c_str(), "wb"))
+            std::unique_lock<std::mutex> lock(mtx);
+            stop = true;
+        }
+        cv.notify_all();
+        for (auto& t : workers)
+        {
+            if (t.joinable()) t.join();
+        }
+    }
+
+    void push(ImageTask task)
+    {
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            if (inFlight.count(task.path)) return; // already queued or downloading
+            inFlight.insert(task.path);
+            tasks.push_back(std::move(task));
+        }
+        cv.notify_one();
+    }
+
+private:
+    void workerLoop()
+    {
+        while (true)
+        {
+            ImageTask task;
             {
-                std::fwrite(body.data(), 1, body.size(), f);
+                std::unique_lock<std::mutex> lock(mtx);
+                cv.wait(lock, [this]() { return stop || !tasks.empty(); });
+                if (stop && tasks.empty()) return;
+                task = std::move(tasks.front());
+                tasks.pop_front();
+            }
+
+            if (task.alive && !*task.alive)
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                inFlight.erase(task.path);
+                continue;
+            }
+
+            // Check if file was already downloaded by another task or exists on disk
+            if (FILE* f = std::fopen(task.path.c_str(), "rb"))
+            {
                 std::fclose(f);
+                {
+                    std::unique_lock<std::mutex> lock(mtx);
+                    inFlight.erase(task.path);
+                }
+                std::string p = task.path;
+                auto done = task.done;
+                brls::sync([done, p]() { done(p); });
+                continue;
             }
-            else
-                ok = false;
-        }
-        else if (ok)
-        {
-            ok = false;  // already reported above, with the magic bytes
-        }
 
-        std::string result = ok ? path : std::string();
-        brls::sync([done, result]() { done(result); });
-    });
+            std::string body, err;
+            static const char* kAcceptImg = "Accept: image/jpeg,image/png;q=0.9";
+            bool ok = http::get(task.url, body, err, kAcceptImg);
+
+            auto b = [&](size_t i) {
+                return i < body.size() ? (unsigned char)body[i] : 0u;
+            };
+            bool isJpeg = b(0) == 0xFF && b(1) == 0xD8;
+            bool isPng  = b(0) == 0x89 && b(1) == 'P' && b(2) == 'N' && b(3) == 'G';
+            bool isGif  = b(0) == 'G' && b(1) == 'I' && b(2) == 'F';
+            bool isBmp  = b(0) == 'B' && b(1) == 'M';
+            bool isWebp = b(0) == 'R' && b(1) == 'I' && b(2) == 'F' && b(3) == 'F' &&
+                          body.size() > 12 && body.compare(8, 4, "WEBP") == 0;
+
+            if (ok && isWebp)
+            {
+                std::string png = webpToPng(body);
+                if (png.empty()) ok = false;
+                else
+                {
+                    body  = std::move(png);
+                    isPng = true;
+                }
+            }
+
+            bool isImage = isJpeg || isPng || isGif || isBmp;
+            if (ok && isImage)
+            {
+                if (FILE* f = std::fopen(task.path.c_str(), "wb"))
+                {
+                    std::fwrite(body.data(), 1, body.size(), f);
+                    std::fclose(f);
+                }
+                else ok = false;
+            }
+            else ok = false;
+
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                inFlight.erase(task.path);
+            }
+
+            if (task.alive && !*task.alive) continue;
+
+            std::string res = ok ? task.path : std::string();
+            auto done = task.done;
+            brls::sync([done, res]() { done(res); });
+        }
+    }
+
+    std::mutex mtx;
+    std::condition_variable cv;
+    std::deque<ImageTask> tasks;
+    std::set<std::string> inFlight;
+    std::vector<std::thread> workers;
+    bool stop;
+};
+
+static ImageQueue& imageQueue()
+{
+    static ImageQueue q;
+    return q;
+}
+}
+
+static void downloadImageAsync(const std::string& id, const std::string& url,
+                               const std::string& path,
+                               std::function<void(std::string)> done,
+                               std::shared_ptr<bool> alive = nullptr)
+{
+    imageQueue().push({ id, url, path, alive, done });
 }
 
 // The artwork URL for `id`, or "" if there is none to be had. Not every library
@@ -1271,7 +1433,8 @@ static std::string metahubSize(std::string u, const char* want)
 }
 
 void fetchPosterAsync(const std::string& id, const std::string& url,
-                      std::function<void(std::string)> done)
+                      std::function<void(std::string)> done,
+                      std::shared_ptr<bool> alive)
 {
     if (id.empty())
     {
@@ -1300,11 +1463,12 @@ void fetchPosterAsync(const std::string& id, const std::string& url,
     // downscale. Ask for the small variant -- that IS the compression, done
     // server-side.
     downloadImageAsync(id, metahubSize(src, "/small/"), posterCachePath(id),
-                       done);
+                       done, alive);
 }
 
 void fetchHqArtAsync(const std::string& id, const std::string& url,
-                     std::function<void(std::string)> done)
+                     std::function<void(std::string)> done,
+                     std::shared_ptr<bool> alive)
 {
     if (id.empty())
     {
@@ -1329,7 +1493,7 @@ void fetchHqArtAsync(const std::string& id, const std::string& url,
         return;
     }
 
-    downloadImageAsync(id, metahubSize(src, "/large/"), path, done);
+    downloadImageAsync(id, metahubSize(src, "/large/"), path, done, alive);
 }
 
 // The account's addon collection, fetched once. It only changes when the user
@@ -1365,9 +1529,13 @@ void fetchAddonsAsync(const std::string& authKey,
             for (const auto& o : json::objects(resp, "addons"))
             {
                 Addon a;
+                a.rawJson = o;
                 a.name = json::str(o, "name");
                 std::string url = json::str(o, "transportUrl");
+                if (url.empty() && o.find("\"manifest\"") != std::string::npos)
+                    url = json::str(o, "url");
                 if (url.empty()) continue;
+                a.transportUrl = url;
 
                 // Every resource hangs off the manifest's directory.
                 const std::string suffix = "/manifest.json";
@@ -1391,6 +1559,24 @@ void fetchAddonsAsync(const std::string& authKey,
                     if (x == "subtitles") a.hasSubtitles = true;
                 }
                 a.types = json::strings(o, "types");
+
+                std::string mObj = subObject(o, "manifest");
+                std::string mBody = mObj.empty() ? o : mObj;
+                std::string mName = json::str(mBody, "name");
+                if (!mName.empty()) a.name = mName;
+
+                for (const auto& c : json::objects(mBody, "catalogs"))
+                {
+                    CatalogInfo cat;
+                    cat.id = json::str(c, "id");
+                    cat.type = json::str(c, "type");
+                    cat.name = json::str(c, "name");
+                    cat.addonBase = a.base;
+                    if (cat.name.empty()) cat.name = a.name;
+                    if (!cat.id.empty() && !cat.type.empty())
+                        a.catalogs.push_back(cat);
+                }
+
                 r.addons.push_back(a);
             }
             brls::Logger::info("[stremio] {} addons ({} with stream)",
@@ -1406,6 +1592,79 @@ void fetchAddonsAsync(const std::string& authKey,
             // pin the app to it for the rest of the session.
             if (r.ok) addonCache = r;
             done(r);
+        });
+    });
+}
+
+void removeAddonAsync(const std::string& authKey, const std::string& transportUrl,
+                      std::function<void(bool ok, std::string err)> done)
+{
+    if (authKey.empty() || transportUrl.empty())
+    {
+        if (done) done(false, tr("Invalid account or addon"));
+        return;
+    }
+
+    brls::async([authKey, transportUrl, done]() {
+        std::string getBody =
+            "{\"authKey\":\"" + json::escape(authKey) + "\",\"update\":true}";
+        std::string getResp, getErr;
+        if (!http::postJson("https://api.strem.io/api/addonCollectionGet", getBody,
+                            getResp, getErr))
+        {
+            brls::sync([done, getErr]() {
+                if (done) done(false, getErr);
+            });
+            return;
+        }
+
+        auto objects = json::objects(getResp, "addons");
+        std::string addonsArr;
+        bool first = true;
+        for (const auto& o : objects)
+        {
+            std::string tUrl = json::str(o, "transportUrl");
+            if (tUrl.empty() && o.find("\"manifest\"") != std::string::npos)
+                tUrl = json::str(o, "url");
+
+            if (!transportUrl.empty() &&
+                (tUrl == transportUrl || tUrl.find(transportUrl) != std::string::npos ||
+                 transportUrl.find(tUrl) != std::string::npos))
+                continue;
+
+            if (!first) addonsArr += ",";
+            addonsArr += o;
+            first = false;
+        }
+
+        std::string setBody = "{\"type\":\"AddonCollectionSet\",\"authKey\":\"" +
+                              json::escape(authKey) + "\",\"addons\":[" + addonsArr + "]}";
+        std::string setResp, setErr;
+        bool ok = false;
+        std::string errMsg;
+
+        if (!http::postJson("https://api.strem.io/api/addonCollectionSet", setBody,
+                            setResp, setErr))
+        {
+            errMsg = setErr;
+        }
+        else
+        {
+            std::string errStr = json::str(setResp, "error");
+            if (errStr.empty()) errStr = json::str(setResp, "message");
+            if (errStr.empty())
+            {
+                ok = true;
+                clearAddonCache();
+            }
+            else
+            {
+                errMsg = errStr;
+            }
+        }
+
+        brls::sync([done, ok, errMsg]() {
+            if (done) done(ok, errMsg);
         });
     });
 }
@@ -1537,8 +1796,10 @@ void fetchStreamsAsync(const std::string& addonBase, const std::string& type,
                 Stream s;
                 s.name     = json::str(o, "name");
                 s.title    = json::str(o, "title");
+                if (s.title.empty()) s.title = json::str(o, "description");
                 s.infoHash = json::str(o, "infoHash");
                 s.url      = json::str(o, "url");
+                s.sources  = json::strings(o, "sources");
                 // Season packs bundle every episode in one torrent; the addon
                 // says which file this stream is. Absent -> -1 (largest file).
                 s.fileIdx  = (int)json::integer(o, "fileIdx", -1);
@@ -1905,10 +2166,29 @@ StremioTab::StremioTab()
     hint->setMargins(8.0f, 0.0f, 26.0f, 0.0f);
     loginBox->addView(hint);
 
+    codeLoginBtn = new brls::Button();
+    codeLoginBtn->setStyle(&brls::BUTTONSTYLE_PRIMARY);
+    codeLoginBtn->setText(tr("Sign in with code"));
+    codeLoginBtn->setWidth(kFormW);
+    codeLoginBtn->setMarginBottom(16.0f);
+    codeLoginBtn->registerClickAction([this](brls::View*) {
+        startDeviceLinkLogin();
+        return true;
+    });
+    loginBox->addView(codeLoginBtn);
+
+    auto* orLabel = new brls::Label();
+    orLabel->setText(tr("- or with email & password -"));
+    orLabel->setFontSize(15.0f);
+    orLabel->setTextColor(theme::textMuted());
+    orLabel->setHorizontalAlign(brls::HorizontalAlign::CENTER);
+    orLabel->setMarginBottom(16.0f);
+    loginBox->addView(orLabel);
+
     auto* card = new brls::Box();
     card->setAxis(brls::Axis::COLUMN);
     card->setWidth(kFormW);
-    card->setMarginBottom(22.0f);
+    card->setMarginBottom(14.0f);
 
     card->addView(loginField(tr("EMAIL"), tr("Not entered"),
                              [this]() { promptEmail(); }, &emailLabel));
@@ -1917,8 +2197,8 @@ StremioTab::StremioTab()
     loginBox->addView(card);
 
     loginBtn = new brls::Button();
-    loginBtn->setStyle(&brls::BUTTONSTYLE_PRIMARY);
-    loginBtn->setText(tr("Sign in"));
+    loginBtn->setStyle(&brls::BUTTONSTYLE_BORDERLESS);
+    loginBtn->setText(tr("Sign in with email"));
     loginBtn->setWidth(kFormW);
     loginBtn->registerClickAction([this](brls::View*) { doLogin(); return true; });
     loginBox->addView(loginBtn);
@@ -1931,7 +2211,7 @@ StremioTab::StremioTab()
     // Fixed height: without it the column re-centres every time this text
     // changes, so the whole form jumped around on a failed sign-in.
     statusLabel->setHeight(28.0f);
-    statusLabel->setMargins(16.0f, 0.0f, 0.0f, 0.0f);
+    statusLabel->setMargins(14.0f, 0.0f, 0.0f, 0.0f);
     loginBox->addView(statusLabel);
 
     this->addView(loginBox);
@@ -2205,6 +2485,59 @@ void StremioTab::promptPassword()
         tr("Stremio password"), "", 128, "");
 }
 
+void StremioTab::startDeviceLinkLogin()
+{
+    statusLabel->setText(tr("Creating activation code..."));
+    if (codeLoginBtn) codeLoginBtn->setState(brls::ButtonState::DISABLED);
+    if (loginBtn) loginBtn->setState(brls::ButtonState::DISABLED);
+
+    stremio::createDeviceLinkAsync([this, live = alive](bool ok, stremio::DeviceLink link, std::string err) {
+        if (!*live) return;
+        if (codeLoginBtn) codeLoginBtn->setState(brls::ButtonState::ENABLED);
+        if (loginBtn) loginBtn->setState(brls::ButtonState::ENABLED);
+        statusLabel->setText("");
+
+        if (!ok)
+        {
+            dialog(std::string(tr("Could not create activation code: ")) + err);
+            return;
+        }
+
+        std::string displayLink = link.link.empty() ? "https://link.stremio.com" : link.link;
+        std::string msg = std::string(tr("Activation code:")) + "\n\n" + link.code +
+                          "\n\n" + tr("Visit this link in your browser or phone to authorize:") +
+                          "\n" + displayLink +
+                          "\n\n" + tr("Waiting for authorization...");
+
+        auto* diag = new brls::Dialog(msg);
+        diag->setCancelable(false);
+        auto cancel = std::make_shared<std::atomic<bool>>(false);
+        diag->addButton(tr("Cancel"), [cancel]() {
+            *cancel = true;
+        });
+        diag->open();
+
+        stremio::pollDeviceLinkAsync(link.code, cancel,
+            [this, live, diag, cancel](bool pollOk, std::string authKey, std::string email, std::string pollErr) {
+                if (!*live) return;
+                if (cancel && cancel->load()) return;
+
+                diag->close();
+
+                if (pollOk && !authKey.empty())
+                {
+                    if (!email.empty())
+                        stremio::saveEmail(email);
+                    onAuthenticated(authKey, true);
+                }
+                else if (!pollErr.empty())
+                {
+                    dialog(pollErr);
+                }
+            });
+    });
+}
+
 void StremioTab::doLogin()
 {
     if (email.empty() || password.empty())
@@ -2451,8 +2784,19 @@ void StremioTab::renderView()
     // No scroll indicator in the poster style: a page of strips is meant to be
     // read across, and the bar pinned to the right edge sat over the artwork.
     if (libScroll) libScroll->setScrollingIndicatorVisible(!posterStyle());
+
+    parkFocusOffList();
+    *rowsAlive = false;
+    rowsAlive  = std::make_shared<bool>(true);
+    libList->clearViews();
+    homeRenderedStrips.clear();
+    loadingBox->setVisibility(brls::Visibility::GONE);
+
     switch (view)
     {
+        case View::Home:
+            renderHome();
+            break;
         case View::ContinueWatching:
         {
             // Library items with playback started but not finished, newest first
@@ -2502,24 +2846,6 @@ void StremioTab::renderView()
                       tr("Library is empty"));
             break;
         }
-        case View::PopularMovies:  //  movie
-            loadFeatured("movie");  // the second section, in every style
-            if (popMoviesLoaded)
-                showItems(popMovies, std::string("  ") + tr("Popular Movies"),
-                          tr("No popular movies"));
-            else
-                loadCatalog("movie", popMovies, popMoviesLoaded,
-                            std::string("  ") + tr("Popular Movies"));
-            break;
-        case View::PopularSeries:  //  tv (E02C renders as a TV here)
-            loadFeatured("series");
-            if (popSeriesLoaded)
-                showItems(popSeries, std::string("  ") + tr("Popular Shows"),
-                          tr("No popular shows"));
-            else
-                loadCatalog("series", popSeries, popSeriesLoaded,
-                            std::string("  ") + tr("Popular Shows"));
-            break;
         case View::Search:
             renderSearch();
             break;
@@ -2686,6 +3012,160 @@ void StremioTab::promptSearch()
 }
 
 // Fetches Cinemeta's "top" catalog for `type` into `cache`, then renders it if
+void StremioTab::renderHome()
+{
+    // Start background loads for Cinemeta top and year catalogs if not yet fetched
+    if (!popMoviesLoaded)
+    {
+        stremio::fetchCatalogAsync(
+            "https://v3-cinemeta.strem.io", "movie", "top",
+            [this, live = alive](stremio::LibraryResult r) {
+                if (!*live || !r.ok) return;
+                popMovies = r.items;
+                popMoviesLoaded = true;
+                if (view == View::Home) renderHome();
+            });
+    }
+    if (!popSeriesLoaded)
+    {
+        stremio::fetchCatalogAsync(
+            "https://v3-cinemeta.strem.io", "series", "top",
+            [this, live = alive](stremio::LibraryResult r) {
+                if (!*live || !r.ok) return;
+                popSeries = r.items;
+                popSeriesLoaded = true;
+                if (view == View::Home) renderHome();
+            });
+    }
+    loadFeatured("movie");
+    loadFeatured("series");
+    loadAddonCatalogs("movie");
+    loadAddonCatalogs("series");
+
+    if (libList->getChildren().empty())
+    {
+        parkFocusOffList();
+        *rowsAlive = false;
+        rowsAlive  = std::make_shared<bool>(true);
+        homeRenderedStrips.clear();
+
+        if (!popMoviesLoaded && !popSeriesLoaded && featMovies.empty() && featSeries.empty() &&
+            addonMovieSections.empty() && addonSeriesSections.empty())
+        {
+            showStatus(tr("Loading..."), true);
+            stremio::setLibraryCount(std::string("  ") + tr("Home"));
+            return;
+        }
+
+        loadingBox->setVisibility(brls::Visibility::GONE);
+        stremio::setLibraryCount(std::string("  ") + tr("Home"));
+    }
+
+    const size_t cap = 12; // 12 items per strip keeps memory low and scrolling at 60 FPS
+    auto head = [cap](const std::vector<stremio::LibItem>& v) {
+        return cap && v.size() > cap
+                   ? std::vector<stremio::LibItem>(v.begin(), v.begin() + cap)
+                   : v;
+    };
+    auto overflows = [cap](const std::vector<stremio::LibItem>& v) {
+        return cap && v.size() > cap;
+    };
+
+    columnsShown = false;
+    brls::View* last = nullptr;
+
+    if (posterStyle())
+    {
+        auto tryAddStrip = [&](const std::string& key, const std::string& title,
+                               const std::vector<stremio::LibItem>& items,
+                               const std::string& catType, const std::string& catId,
+                               const std::string& addonBase = "") {
+            if (items.empty()) return;
+            if (homeRenderedStrips.count(key)) return;
+            homeRenderedStrips.insert(key);
+
+            brls::View* strip = addStripSection(
+                title, head(items),
+                overflows(items) ? buildSeeMoreCard(title, items, catType, catId, addonBase)
+                                 : nullptr);
+            last = strip;
+        };
+
+        tryAddStrip("cinemeta_pop_movies", tr("Popular Movies"), popMovies, "movie", "top");
+        tryAddStrip("cinemeta_pop_series", tr("Popular Shows"), popSeries, "series", "top");
+        tryAddStrip("cinemeta_feat_movies", tr("Featured Movies"), featMovies, "movie", "year");
+        tryAddStrip("cinemeta_feat_series", tr("Featured Shows"), featSeries, "series", "year");
+
+        for (const auto& sec : addonMovieSections)
+        {
+            if (sec.loaded && !sec.items.empty())
+            {
+                std::string secTitle = sec.catalogName + " (" + tr("Movies") + ")";
+                tryAddStrip("addon_movie_" + sec.addonBase + "_" + sec.catalogId,
+                            secTitle, sec.items, sec.catalogType, sec.catalogId, sec.addonBase);
+            }
+        }
+
+        for (const auto& sec : addonSeriesSections)
+        {
+            if (sec.loaded && !sec.items.empty())
+            {
+                std::string secTitle = sec.catalogName + " (" + tr("Shows") + ")";
+                tryAddStrip("addon_series_" + sec.addonBase + "_" + sec.catalogId,
+                            secTitle, sec.items, sec.catalogType, sec.catalogId, sec.addonBase);
+            }
+        }
+
+        if (last) finishList(last);
+        return;
+    }
+
+    // Row styles
+    const float ins = headingInset();
+    auto makeSection = [&](const std::string& key, const std::string& title,
+                           const std::vector<stremio::LibItem>& items,
+                           const std::string& catType, const std::string& catId,
+                           const std::string& addonBase = "") {
+        if (items.empty() || homeRenderedStrips.count(key)) return;
+        homeRenderedStrips.insert(key);
+        auto* box = new brls::Box();
+        box->setAxis(brls::Axis::COLUMN);
+        auto* h = new brls::Label();
+        h->setText(title);
+        h->setFontSize(22.0f);
+        h->setTextColor(theme::textMuted());
+        h->setMargins(14.0f, 0.0f, 10.0f, ins);
+        box->addView(h);
+        for (const auto& it : head(items)) box->addView(buildItemRow(it, false));
+        if (overflows(items)) box->addView(buildSeeMoreRow(title, items, catType, catId, addonBase));
+        libList->addView(box);
+        last = box;
+    };
+
+    makeSection("cinemeta_pop_movies", tr("Popular Movies"), popMovies, "movie", "top");
+    makeSection("cinemeta_pop_series", tr("Popular Shows"), popSeries, "series", "top");
+    makeSection("cinemeta_feat_movies", tr("Featured Movies"), featMovies, "movie", "year");
+    makeSection("cinemeta_feat_series", tr("Featured Shows"), featSeries, "series", "year");
+
+    for (const auto& sec : addonMovieSections)
+    {
+        if (sec.loaded && !sec.items.empty())
+            makeSection("addon_movie_" + sec.addonBase + "_" + sec.catalogId,
+                        sec.catalogName + " (" + tr("Movies") + ")", sec.items,
+                        sec.catalogType, sec.catalogId, sec.addonBase);
+    }
+    for (const auto& sec : addonSeriesSections)
+    {
+        if (sec.loaded && !sec.items.empty())
+            makeSection("addon_series_" + sec.addonBase + "_" + sec.catalogId,
+                        sec.catalogName + " (" + tr("Shows") + ")", sec.items,
+                        sec.catalogType, sec.catalogId, sec.addonBase);
+    }
+
+    if (last) finishList(last);
+}
+
+// Fetches Cinemeta's "top" catalog for `type` into `cache`, then renders it if
 // the view has not moved on since. Header shows a loading line meanwhile.
 void StremioTab::loadCatalog(const char* type,
                              std::vector<stremio::LibItem>& cache, bool& loaded,
@@ -2725,9 +3205,8 @@ const char* StremioTab::sectionTitle() const
 {
     switch (view)
     {
+        case View::Home:             return tr("Home");
         case View::ContinueWatching: return tr("Continue watching");
-        case View::PopularMovies:
-        case View::PopularSeries:    return tr("Popular");
         case View::Library:          return tr("Library");
         default:                     return "";
     }
@@ -2735,8 +3214,6 @@ const char* StremioTab::sectionTitle() const
 
 const std::vector<stremio::LibItem>* StremioTab::featuredCache()
 {
-    if (view == View::PopularMovies) return &featMovies;
-    if (view == View::PopularSeries) return &featSeries;
     return nullptr;
 }
 
@@ -2757,10 +3234,63 @@ void StremioTab::loadFeatured(const char* type)
         [this, live = alive, want, &cache](stremio::LibraryResult r) {
             if (!*live || !r.ok || r.items.empty()) return;
             cache = r.items;
-            // Only if the user is still on the view that asked for it: the
-            // render folds the new section in.
-            if (view == want) renderView();
+            if (view == View::Home) renderHome();
+            else if (view == want) renderView();
         });
+}
+
+void StremioTab::loadAddonCatalogs(const char* type)
+{
+    bool series = std::string(type) == "series";
+    bool& asked = series ? addonSeriesSectionsAsked : addonMovieSectionsAsked;
+    if (asked) return;
+    asked = true;
+
+    if (authKey.empty()) return;
+
+    std::string catType = type;
+    stremio::fetchAddonsAsync(authKey, [this, live = alive, catType, series](stremio::AddonsResult r) {
+        if (!*live || !r.ok) return;
+
+        auto& sections = series ? addonSeriesSections : addonMovieSections;
+        sections.clear();
+
+        for (const auto& a : r.addons)
+        {
+            if (a.base.find("cinemeta") != std::string::npos) continue;
+            for (const auto& cat : a.catalogs)
+            {
+                if (cat.type != catType) continue;
+                AddonCatalogSection sec;
+                sec.addonName = a.name;
+                sec.catalogName = cat.name;
+                sec.catalogId = cat.id;
+                sec.catalogType = cat.type;
+                sec.addonBase = a.base;
+                sec.loaded = false;
+                sections.push_back(sec);
+            }
+        }
+
+        View want = View::Home;
+        for (size_t i = 0; i < sections.size(); i++)
+        {
+            const auto& sec = sections[i];
+            stremio::fetchCatalogAsync(
+                sec.addonBase, sec.catalogType, sec.catalogId,
+                [this, live, want, series, i](stremio::LibraryResult res) {
+                    if (!*live || !res.ok || res.items.empty()) return;
+                    auto& secs = series ? addonSeriesSections : addonMovieSections;
+                    if (i < secs.size())
+                    {
+                        secs[i].items = res.items;
+                        secs[i].loaded = true;
+                        if (view == View::Home) renderHome();
+                        else if (view == want) renderView();
+                    }
+                });
+        }
+    });
 }
 
 // A heading and the strip under it, both into libList. Returns the strip: the
@@ -2786,22 +3316,21 @@ brls::View* StremioTab::addStripSection(const std::string& title,
 // Whether the current view's items are a catalog we cap (see kSectionMax).
 bool StremioTab::capped() const
 {
-    return view == View::PopularMovies || view == View::PopularSeries;
+    return view == View::Home;
 }
 
 // The tile that ends a capped section, shaped like the items it follows so the
 // row/strip keeps its rhythm: a poster-sized card in the poster style, a row in
 // the others. Both open the whole section full-screen.
-// The two Popular views are the only ones with a See More (see capped()), and
-// each shows one type.
 const char* StremioTab::catalogType() const
 {
-    return view == View::PopularSeries ? "series" : "movie";
+    return "movie";
 }
 
 brls::Box* StremioTab::buildSeeMoreCard(const std::string& title,
                                         std::vector<stremio::LibItem> all,
-                                        std::string catType, std::string catId)
+                                        std::string catType, std::string catId,
+                                        std::string addonBase)
 {
     auto* card = new brls::Box();
     card->setAxis(brls::Axis::COLUMN);
@@ -2816,14 +3345,14 @@ brls::Box* StremioTab::buildSeeMoreCard(const std::string& title,
     card->setHighlightCornerRadius(
         kCardRadius +
         brls::Application::getStyle()["brls/highlight/stroke_width"] / 2);
-    card->registerClickAction([this, title, all, catType, catId](brls::View*) {
-        openSection(title, all, catType, catId);
+    card->registerClickAction([this, title, all, catType, catId, addonBase](brls::View*) {
+        openSection(title, all, catType, catId, addonBase);
         return true;
     });
     card->addGestureRecognizer(new brls::TapGestureRecognizer(card));
 
     auto* icon = new brls::Label();
-    icon->setText("");  // Material "chevron_right" (borealis fallback font)
+    icon->setText("");  // Material "chevron_right" (borealis fallback font)
     icon->setFontSize(52.0f);
     icon->setTextColor(theme::textDim());
     card->addView(icon);
@@ -2839,7 +3368,8 @@ brls::Box* StremioTab::buildSeeMoreCard(const std::string& title,
 
 brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
                                        std::vector<stremio::LibItem> all,
-                                       std::string catType, std::string catId)
+                                       std::string catType, std::string catId,
+                                       std::string addonBase)
 {
     auto* row = new brls::Box();
     row->setAxis(brls::Axis::ROW);
@@ -2854,8 +3384,8 @@ brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
     row->setHighlightCornerRadius(
         kCardRadius +
         brls::Application::getStyle()["brls/highlight/stroke_width"] / 2);
-    row->registerClickAction([this, title, all, catType, catId](brls::View*) {
-        openSection(title, all, catType, catId);
+    row->registerClickAction([this, title, all, catType, catId, addonBase](brls::View*) {
+        openSection(title, all, catType, catId, addonBase);
         return true;
     });
     row->addGestureRecognizer(new brls::TapGestureRecognizer(row));
@@ -2867,7 +3397,7 @@ brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
     row->addView(label);
 
     auto* icon = new brls::Label();
-    icon->setText("");  // Material "chevron_right"
+    icon->setText("");  // Material "chevron_right"
     icon->setFontSize(30.0f);
     icon->setTextColor(theme::textDim());
     icon->setMarginLeft(6.0f);
@@ -2875,18 +3405,10 @@ brls::Box* StremioTab::buildSeeMoreRow(const std::string& title,
     return row;
 }
 
-// The whole of a section, full screen: title, a genre filter, then the items in
-// the style the list is in -- a grid of cards under the poster style, the same
-// rows under the others. Only the footer sits around it; the header would just
-// repeat the title. Built here rather than by the activity because the card and
-// row builders (and the account key they need) live on the tab.
-//
-// Unlike the strip it came from, this page is not a fixed set of items: it pages
-// the catalog as you scroll (Stremio's "skip" extra) and re-queries it when the
-// genre changes ("genre"). `items` is the first page, already in hand.
 void StremioTab::openSection(std::string title,
                              std::vector<stremio::LibItem> items,
-                             std::string catType, std::string catId)
+                             std::string catType, std::string catId,
+                             std::string addonBase)
 {
     // Everything the page mutates. On the heap and shared, because it outlives
     // this function and belongs to the pushed page rather than to the tab --
@@ -3082,11 +3604,12 @@ void StremioTab::openSection(std::string title,
     };
 
     auto live = this->alive;
+    std::string base = addonBase.empty() ? kCinemeta : addonBase;
 
     // Pulls the next page. Called from the draw loop while the scroll sits near
     // the bottom, so the two flags are what stop it firing sixty times a second
     // -- and what stops it asking forever once the catalog runs out.
-    auto loadMore = [live, pageAlive, st, appendFrom, busy]() {
+    auto loadMore = [live, pageAlive, st, appendFrom, busy, base]() {
         if (st->loading || st->exhausted) return;
         st->loading = true;
         if (st->items.empty())
@@ -3100,7 +3623,7 @@ void StremioTab::openSection(std::string title,
         q.skip   = st->nextSkip;
         int gen  = st->gen;
         stremio::fetchCatalogAsync(
-            kCinemeta, st->type, st->id, q,
+            base, st->type, st->id, q,
             [live, pageAlive, st, appendFrom, busy, gen](stremio::LibraryResult r) {
                 if (!*live || !*pageAlive) return;
                 // Answer to a question the page no longer asks.
@@ -3185,7 +3708,7 @@ void StremioTab::openSection(std::string title,
                     onGenre);
 
     stremio::fetchCatalogGenresAsync(
-        kCinemeta, catType, catId,
+        base, catType, catId,
         [live, pageAlive, st, genreCell](std::vector<std::string> g) {
             if (!*live || !*pageAlive) return;
             if (g.empty()) return;  // no genres: the row stays at All
@@ -3269,87 +3792,24 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
         return cap && v.size() > cap;
     };
 
-    columnsShown = false;  // the strips are one row of cards, not two columns
+    columnsShown = false;
     if (posterStyle())
     {
-        // Straight into the list, top-aligned like the rows: a wrapper sized to
-        // the viewport to centre the strip crashed on a UI-size change (setting
-        // a height from inside onLayout re-enters the layout) and left the list
-        // one pixel too tall, which put a scrollbar on a page that does not
-        // scroll.
         brls::View* last = addStripSection(
             sectionTitle(), head(items),
             overflows(items) ? buildSeeMoreCard(sectionTitle(), items,
                                               catalogType(), "top")
                              : nullptr);
-        // Popular Movies / Shows carry a second strip under the first. It is
-        // absent until Cinemeta's second catalog lands (loadFeatured re-renders
-        // when it does), and stays absent if that request fails.
-        const std::vector<stremio::LibItem>* feat = featuredCache();
-        if (feat && !feat->empty())
-            last = addStripSection(
-                tr("Featured"), head(*feat),
-                overflows(*feat) ? buildSeeMoreCard(tr("Featured"), *feat,
-                                                   catalogType(), "year")
-                                 : nullptr);
         finishList(last);
         return;
     }
 
     const float ins = headingInset();
-    const std::vector<stremio::LibItem>* feat = featuredCache();
-    columnsShown = feat && !feat->empty();
-
-    // Two sections in the row styles sit SIDE BY SIDE -- Popular left, Featured
-    // right -- the way Search lays its two types out. Stacked, the second one
-    // was a scroll away and easy to miss.
-    if (feat && !feat->empty())
-    {
-        auto* split = new brls::Box();
-        split->setAxis(brls::Axis::ROW);
-        split->setAlignItems(brls::AlignItems::FLEX_START);
-
-        auto makeCol = [&](const std::string& title) {
-            auto* col = new brls::Box();
-            col->setAxis(brls::Axis::COLUMN);
-            col->setWidthPercentage(50.0f);  // hard 50/50, not content-sized
-            auto* h = new brls::Label();
-            h->setText(title);
-            h->setFontSize(20.0f);
-            h->setTextColor(theme::textMuted());
-            h->setMargins(0.0f, 0.0f, 10.0f, ins);
-            col->addView(h);
-            return col;
-        };
-        auto* popCol  = makeCol(sectionTitle());
-        auto* featCol = makeCol(tr("Featured"));
-        // No type tag on these rows: both columns are the one type this view is
-        // about, and half a row is narrow enough already.
-        for (const auto& it : head(items)) popCol->addView(buildItemRow(it, false));
-        for (const auto& it : head(*feat)) featCol->addView(buildItemRow(it, false));
-        if (overflows(items))
-            popCol->addView(
-                buildSeeMoreRow(sectionTitle(), items, catalogType(), "top"));
-        if (overflows(*feat))
-            featCol->addView(
-                buildSeeMoreRow(tr("Featured"), *feat, catalogType(), "year"));
-
-        split->addView(popCol);
-        split->addView(featCol);
-        libList->addView(split);
-        finishList(split);
-        return;
-    }
-
-    // One section: still titled, so Continue Watching and Library say what they
-    // are here as well as in the poster style.
     addHeading(sectionTitle(), 0.0f, 10.0f, ins);
     brls::View* last = nullptr;
-    for (const auto& it : head(items)) last = addItemRow(it);
-    if (overflows(items))
+    for (const auto& it : items)
     {
-        last = buildSeeMoreRow(sectionTitle(), items, catalogType(), "top");
-        libList->addView(last);
+        last = addItemRow(it);
     }
     finishList(last);
 }
@@ -3545,7 +4005,7 @@ void StremioTab::attachPoster(brls::Image* art, const stremio::LibItem& it)
     stremio::fetchPosterAsync(it.id, it.poster, [art, alive](std::string path) {
         if (!*alive || path.empty()) return;
         art->setImageFromFile(path);
-    });
+    }, alive);
 }
 
 // The tab's background colour at a screen point. The field is one linear

@@ -242,9 +242,37 @@ void load()
     while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, n);
     std::fclose(f);
 
-    cfg.startupTab = readStr(body, "startupTab", "local") == "stremio"
-                         ? Tab::STREMIO
-                         : Tab::LOCAL;
+    int version = readInt(body, "configVersion", 1);
+    if (version < 2)
+    {
+        // Migrating from old default: switch startup tab to Stremio
+        cfg.startupTab = Tab::STREMIO;
+    }
+    else
+    {
+        cfg.startupTab = readStr(body, "startupTab", "stremio") == "local"
+                             ? Tab::LOCAL
+                             : Tab::STREMIO;
+    }
+    if (version < 3)
+    {
+        // Migrating: default language to Spanish (Latino)
+        cfg.language = readStr(body, "language", "es");
+    }
+    else
+    {
+        cfg.language = readStr(body, "language", cfg.language);
+    }
+    if (version < 4)
+    {
+        // Migrating: default subtitles to off
+        cfg.subtitles = false;
+    }
+    else
+    {
+        cfg.subtitles = readBool(body, "subtitles", cfg.subtitles);
+    }
+    cfg.configVersion = 4;
     cfg.logging = readBool(body, "logging", cfg.logging);
     cfg.hide4k  = readBool(body, "hide4k", cfg.hide4k);
     cfg.rateGovernor = readBool(body, "rateGovernor", cfg.rateGovernor);
@@ -252,11 +280,9 @@ void load()
     cfg.checkUpdates = readBool(body, "checkUpdates", cfg.checkUpdates);
     cfg.audioLang    = readStr(body, "audioLang", cfg.audioLang);
     cfg.subLang      = readStr(body, "subLang", cfg.subLang);
-    cfg.subtitles    = readBool(body, "subtitles", cfg.subtitles);
     cfg.hwDecode     = readBool(body, "hwDecode", cfg.hwDecode);
     cfg.audioBoost   = readBool(body, "audioBoost", cfg.audioBoost);
 
-    cfg.language     = readStr(body, "language", cfg.language);
     cfg.accent       = readStr(body, "accent", cfg.accent);
     cfg.themeVariant = readStr(body, "themeVariant", cfg.themeVariant);
     cfg.listStyle    = readStr(body, "listStyle", cfg.listStyle);
@@ -268,7 +294,8 @@ void load()
                    cfg.handheldUiWidth);
 
     brls::Logger::info(
-        "[config] startupTab={} logging={} hide4k={} checkUpdates={}",
+        "[config] version={} startupTab={} logging={} hide4k={} checkUpdates={}",
+        cfg.configVersion,
         cfg.startupTab == Tab::STREMIO ? "stremio" : "local", cfg.logging,
         cfg.hide4k, cfg.checkUpdates);
 }
@@ -283,6 +310,7 @@ bool save()
     }
     std::fprintf(f,
                  "{\n"
+                 "  \"configVersion\": %d,\n"
                  "  \"startupTab\": \"%s\",\n"
                  "  \"logging\": %s,\n"
                  "  \"hide4k\": %s,\n"
@@ -301,6 +329,7 @@ bool save()
                  "  \"themeVariant\": \"%s\",\n"
                  "  \"listStyle\": \"%s\"\n"
                  "}\n",
+                 cfg.configVersion,
                  cfg.startupTab == Tab::STREMIO ? "stremio" : "local",
                  cfg.logging ? "true" : "false", cfg.hide4k ? "true" : "false",
                  cfg.rateGovernor ? "true" : "false",

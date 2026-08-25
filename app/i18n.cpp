@@ -10,17 +10,380 @@ namespace
 struct Entry
 {
     const char* en;
-    const char* fr;
+    const char* val;
 };
 
-// Keyed on the English string as it is written at the call site. A string with
-// no row here shows in English, which is why brand names (Stremio, Magnet), the
-// ZR diagnostic panel and anything already identical in French are absent
-// rather than repeated.
-//
-// Trailing spaces are part of the key: several of these are concatenated with a
-// value after them, and dropping the space in the French would run the two
-// together.
+// Keyed on the English string as it is written at the call site.
+const Entry kEs[] = {
+    // ---- browse: addons, sources, episodes --------------------------------
+    { "Addons unavailable: ", "Addons no disponibles: " },
+    { "Addons unavailable", "Addons no disponibles" },
+    { "No addon provides a source for this title.",
+      "Ningún addon ofrece fuentes para este título." },
+    { "No addon provides a source for this title",
+      "Ningún addon ofrece fuentes para este título" },
+    { "Pick an addon", "Elige un addon" },
+    { "Sources unavailable: ", "Fuentes no disponibles: " },
+    { "Sources unavailable", "Fuentes no disponibles" },
+    { "This addon has no source for this title.",
+      "Este addon no tiene fuentes para este título." },
+    { "This addon only offers 4K sources, which are hidden in Options.",
+      "Este addon solo ofrece fuentes 4K, las cuales están ocultas en Opciones." },
+    { "No source from this addon", "Sin fuentes en este addon" },
+    { "Pick a source", "Elige una fuente" },
+    { "Loading sources...", "Cargando fuentes..." },
+    { "Unsupported source: only torrents (infoHash) can be played for now.",
+      "Fuente no compatible: por ahora solo se pueden reproducir torrents (infoHash)." },
+    { "Unsupported source: neither torrent nor stream URL available.",
+      "Fuente no compatible: no hay torrent ni enlace de transmisión disponible." },
+    { "Connecting to stream...", "Conectando a la transmisión..." },
+    { "Streaming via Debrid / HTTP", "Transmitiendo vía Debrid / HTTP" },
+    { "Stream", "Transmisión" },
+    { "Failed to load stream (network or link error).",
+      "Error al cargar la transmisión (error de red o enlace)." },
+    { "Episode ", "Episodio " },
+    { "Episode", "Episodio" },
+    { " - Season ", " - Temporada " },
+    { "Season ", "Temporada " },
+    { "Pick an episode", "Elige un episodio" },
+    { "Previous episode", "Episodio anterior" },
+    { "Next episode", "Siguiente episodio" },
+    { "Next episode...", "Siguiente episodio..." },
+    { "Could not open that episode.", "No se pudo abrir ese episodio." },
+    { "No episodes found", "No se encontraron episodios" },
+    { "Episodes unavailable", "Episodios no disponibles" },
+    { "No episodes", "Sin episodios" },
+    { "Specials", "Especiales" },
+    { "Remove from library", "Eliminar de la biblioteca" },
+    { "Add to library", "Agregar a la biblioteca" },
+    { "Could not add it to your library.",
+      "No se pudo agregar a tu biblioteca." },
+    { "Could not remove it from your library.",
+      "No se pudo eliminar de tu biblioteca." },
+    { "Loading...", "Cargando..." },
+    { "Show", "Serie" },
+
+    // ---- the Local tab ----------------------------------------------------
+    { "This torrent has no video file to stream.",
+      "Este torrent no contiene ningún archivo de video para reproducir." },
+    { "Pick a file", "Elige un archivo" },
+    { "Still fetching this magnet's files -- please wait.",
+      "Obteniendo archivos del magnet -- por favor espera." },
+    { "  (waiting)", "  (esperando)" },
+    { "Magnet link or info hash", "Enlace magnet o info hash" },
+    { "magnet:?xt=... or a 40-character hash",
+      "magnet:?xt=... o un hash de 40 caracteres" },
+    { "That does not look like a magnet link or an info hash.",
+      "No parece ser un enlace magnet ni un info hash válido." },
+    { "No torrents found", "No se encontraron torrents" },
+    { "Drop .torrent files in this folder on your SD card, or add magnet "
+      "links to magnet.txt inside it (one per line):",
+      "Coloca archivos .torrent en esta carpeta de tu tarjeta SD, o "
+      "agrega enlaces magnet en magnet.txt (uno por línea):" },
+    { "Delete", "Eliminar" },
+    { "Remove this magnet from the list?", "¿Eliminar este magnet de la lista?" },
+    { "Delete this .torrent file from the SD card?",
+      "¿Eliminar este archivo .torrent de la tarjeta SD?" },
+    { "Cancel", "Cancelar" },
+    { "+  Add magnet", "+  Agregar magnet" },
+    { "Back", "Atrás" },
+    { "View", "Vista" },
+
+    // ---- the player -------------------------------------------------------
+    { "Fetching metadata...", "Obteniendo metadatos..." },
+    { "Opening torrent...", "Abriendo torrent..." },
+    { "Failed: ", "Error: " },
+    { "Player initialisation failed", "Error al inicializar el reproductor" },
+    { "Connecting to peers...", "Conectando con peers..." },
+    { "Downloading header...", "Descargando encabezado..." },
+    { "Buffering...", "Cargando búfer..." },
+    { "Press B to go back", "Presiona B para volver" },
+    { "Lock", "Bloquear" },
+    { "Seek -", "Retroceder" },
+    { "Seek +", "Adelantar" },
+    { "Slower", "Más lento" },
+    { "Faster", "Más rápido" },
+    { "Info", "Información" },
+    { "Up next", "A continuación" },
+    { "Close", "Cerrar" },
+    { "Playback", "Reproducción" },
+    { "Track ", "Pista " },
+    { "Track", "Pista" },
+    { "Speed", "Velocidad" },
+    { "Speed  ", "Velocidad  " },
+    { "Off", "Desactivado" },
+    { "None", "Ninguno" },
+    { "Unknown", "Desconocido" },
+    { "SUBTITLES", "SUBTÍTULOS" },
+    { "Subtitles", "Subtítulos" },
+    { "Subtitles  ", "Subtítulos  " },
+    { "Subtitle", "Subtítulo" },
+    { "Subtitle size", "Tamaño de subtítulos" },
+    { "Subtitle delay", "Sincronización de subtítulos" },
+    { "Subtitles earlier", "Subtítulos antes" },
+    { "Subtitles later", "Subtítulos después" },
+    { "L / R shift the subtitles by 0.1 s. Later is positive. The video keeps "
+      "playing behind this.",
+      "L / R ajustan los subtítulos 0.1 s. Positivo es después. El video "
+      "continúa reproduciéndose de fondo." },
+    { "Searching addons...", "Buscando en addons..." },
+    { "Downloading ", "Descargando " },
+    { " loaded", " cargado" },
+    { "Subtitle download failed", "Error al descargar subtítulos" },
+    { "Subtitle could not be loaded", "No se pudo cargar el subtítulo" },
+
+    // ---- Options ----------------------------------------------------------
+    { " (default)", " (predeterminado)" },
+    { "General", "General" },
+    { "About", "Acerca de" },
+    { "Category on startup", "Pestaña al iniciar" },
+    { "Language", "Idioma" },
+    { "The language applies when you restart the app.",
+      "El idioma se aplicará al reiniciar la aplicación." },
+    { "Theme", "Tema" },
+    { "Dark (default)", "Oscuro (predeterminado)" },
+    { "Light", "Claro" },
+    { "Follow the console", "Igual que la consola" },
+    { "The theme applies when you restart the app.",
+      "El tema se aplicará al reiniciar la aplicación." },
+    { "Accent colour", "Color de énfasis" },
+    { "List style", "Estilo de lista" },
+    { "Posters (default)", "Pósteres (predeterminado)" },
+    { "Cards", "Tarjetas" },
+    { "Classic", "Clásico" },
+    { "UI size", "Tamaño de interfaz" },
+    { "Docked", "En Dock" },
+    { "Handheld", "Portátil" },
+    { "Audio language", "Idioma de audio" },
+    { "Subtitle language", "Idioma de subtítulos" },
+    { "Boost quiet audio in handheld", "Aumentar volumen en portátil" },
+    { "On by default. Lifts a 5.1 mix folded down to stereo, which plays much "
+      "quieter.",
+      "Activado por defecto. Mejora el volumen de audios 5.1 convertidos a estéreo." },
+    { "Hardware decoding", "Decodificación por hardware" },
+    { "On by default. Off decodes in software: slower, may stutter on 1080p.",
+      "Activado por defecto. Desactivado decodifica por software: más lento y "
+      "puede trabarse en 1080p." },
+    { "Stream to RAM (no SD cache)", "Transmitir a RAM (sin caché SD)" },
+    { "Off (Not recommended)", "Desactivado (No recomendado)" },
+    { "On (Recommended)", "Activado (Recomendado)" },
+    { "Keep pieces in memory instead of writing them to the SD card. Removes "
+      "the stutter on each finished piece, at the cost of no resume and a "
+      "limited seek-back range.",
+      "Guarda fragmentos en memoria en lugar de escribirlos en la SD. "
+      "Elimina tirones al completar piezas, pero sin reanudación posterior y con "
+      "retroceso limitado." },
+    { "Limit download rate", "Limitar velocidad de descarga" },
+    { "Off (default)", "Desactivado (predeterminado)" },
+    { "On", "Activado" },
+    { "Once the buffer is comfortably ahead, cap the download speed instead "
+      "of bursting \xE2\x80\x94 the bursts can stutter the system. Off by default.",
+      "Cuando el búfer tiene suficiente avance, limita la descarga en vez de "
+      "picos que saturan el sistema. Desactivado por defecto." },
+    { "Hide 4K sources", "Ocultar fuentes 4K" },
+    { "Poster cache", "Caché de pósteres" },
+    { "Reading...", "Leyendo..." },
+    { " on the SD card", " en la tarjeta SD" },
+    { "Clear poster cache", "Borrar caché de pósteres" },
+    { "Clearing...", "Borrando..." },
+    { "Poster cache cleared. The library reloads when you go back to it.",
+      "Caché de pósteres borrada. La biblioteca se recargará al volver." },
+    { "Diagnostics", "Diagnóstico" },
+    { "Log file", "Archivo de registro (log)" },
+    { "The log is written to the SD card continuously. Turn it on to diagnose "
+      "a problem, then restart the app.",
+      "El registro se escribe continuamente en la SD. Actívalo para "
+      "diagnosticar problemas y reinicia la app." },
+
+    // ---- the account screen -----------------------------------------------
+    { "Account", "Cuenta" },
+    { "Not signed in", "No has iniciado sesión" },
+    { "The sign-in form is on the Stremio tab.",
+      "El formulario de inicio de sesión está en la pestaña Stremio." },
+    { "this console", "esta consola" },
+    { "Signed in to Stremio", "Sesión iniciada en Stremio" },
+    { "In library", "En biblioteca" },
+    { "Installed addons", "Addons instalados" },
+    { "Reading the account's addons...", "Leyendo addons de la cuenta..." },
+    { "Could not read them: ", "No se pudieron leer: " },
+    { "Metadata", "Metadatos" },
+    { "Streams (disabled)", "Fuentes (desactivadas)" },
+    { "Streams", "Fuentes" },
+    { "Nothing this app uses", "Nada utilizado por esta app" },
+    { "None. Install them from Stremio on another device.",
+      "Ninguno. Instálalos desde Stremio en otro dispositivo." },
+    { "Uninstall", "Desinstalar" },
+    { "Uninstall addon from your account?",
+      "¿Desinstalar addon de tu cuenta de Stremio?" },
+    { "Addon uninstalled: ", "Addon desinstalado: " },
+    { "Failed to uninstall addon: ", "Error al desinstalar el addon: " },
+    { "Invalid account or addon", "Cuenta o addon no válido" },
+    { "Sign out of Stremio", "Cerrar sesión de Stremio" },
+    { "Signed out. Restart the app to get back to the sign-in screen.",
+      "Sesión cerrada. Reinicia la app para volver a la pantalla de inicio de "
+      "sesión." },
+
+    // ---- the Stremio tab --------------------------------------------------
+    { "Home", "Inicio" },
+    { "Continue", "Continuar" },
+    { "Continue Watching", "Continuar viendo" },
+    { "Continue watching", "Continuar viendo" },
+    { "Movies", "Películas" },
+    { "Movie", "Película" },
+    { "Shows", "Series" },
+    { "Library", "Biblioteca" },
+    { "Search", "Buscar" },
+    { "Popular", "Populares" },
+    { "Popular Movies", "Películas populares" },
+    { "Popular Shows", "Series populares" },
+    { "Featured Movies", "Películas destacadas" },
+    { "Featured Shows", "Series destacadas" },
+    { "No popular movies", "No hay películas populares" },
+    { "No popular shows", "No hay series populares" },
+    { "Nothing in progress", "Nada en progreso" },
+    { " items", " elementos" },
+    { "Library is empty", "La biblioteca está vacía" },
+    { "Loading library...", "Cargando biblioteca..." },
+    { "Library unavailable: ", "Biblioteca no disponible: " },
+    { "This catalogue is unavailable: ", "Este catálogo no está disponible: " },
+    { "Catalog unavailable", "Catálogo no disponible" },
+    { "Nothing here", "Nada por aquí" },
+    { "Error", "Error" },
+    { "Search movies & shows...", "Buscar películas y series..." },
+    { "Searching...", "Buscando..." },
+    { "No results for \"", "Sin resultados para \"" },
+    { "Search Stremio", "Buscar en Stremio" },
+    { "See More", "Ver más" },
+    { "Featured", "Destacados" },
+    { "Year", "Año" },
+    { "All", "Todo" },
+    { " – present", " – presente" },
+    { "Remove", "Eliminar" },
+    { "Could not remove it", "No se pudo eliminar" },
+    { "Reload", "Recargar" },
+
+    // ---- signing in -------------------------------------------------------
+    { "Sign in to Stremio", "Iniciar sesión en Stremio" },
+    { "Your library, your addons and their sources.",
+      "Tu biblioteca, tus addons y sus fuentes." },
+    { "Sign in with code", "Iniciar sesión con código" },
+    { "- or with email & password -", "- o con correo y contraseña -" },
+    { "Sign in with email", "Iniciar sesión con correo" },
+    { "Creating activation code...", "Generando código de activación..." },
+    { "Activation code:", "Código de activación:" },
+    { "Visit this link in your browser or phone to authorize:",
+      "Abre este enlace en tu navegador o celular para autorizar:" },
+    { "Waiting for authorization...", "Esperando autorización..." },
+    { "Device link timed out. Please try again.",
+      "Tiempo de vinculación agotado. Intenta de nuevo." },
+    { "Could not create activation code: ",
+      "No se pudo generar el código de activación: " },
+    { "Invalid response from Stremio link service",
+      "Respuesta no válida del servicio de vinculación" },
+    { "EMAIL", "CORREO ELECTRÓNICO" },
+    { "PASSWORD", "CONTRASEÑA" },
+    { "Not entered", "No ingresado" },
+    { "Sign in", "Iniciar sesión" },
+    { "Signing in...", "Iniciando sesión..." },
+    { "Signed in", "Conectado" },
+    { "Sign-in failed: ", "Error al iniciar sesión: " },
+    { "Stremio email", "Correo de Stremio" },
+    { "Stremio password", "Contraseña de Stremio" },
+    { "Enter an email and a password.",
+      "Ingresa un correo y una contraseña." },
+    { "Wrong email or password", "Correo o contraseña incorrectos" },
+    { "Unexpected answer from the addon", "Respuesta inesperada del addon" },
+    { "Not a Stremio playback", "No es una reproducción de Stremio" },
+
+    // ---- updates ----------------------------------------------------------
+    { "Check for updates on startup",
+      "Buscar actualizaciones al iniciar" },
+    { "View changelog", "Ver cambios recientes" },
+    { "Check now", "Buscar ahora" },
+    { "Checking...", "Buscando..." },
+    { "Could not check for updates: ",
+      "No se pudo buscar actualizaciones: " },
+    { "You are on the latest version (",
+      "Ya tienes la última versión (" },
+    { " is out, but that release has no .nro to install. Get it from GitHub.",
+      " está disponible, pero no incluye archivo .nro. Descárgalo de GitHub." },
+    { " \xE2\x80\x94 an update is installed, restart to use it",
+      " \xE2\x80\x94 actualización instalada, reinicia para usarla" },
+    { " is available.", " está disponible." },
+    { "Later", "Más tarde" },
+    { "Update", "Actualizar" },
+    { "Downloading...", "Descargando..." },
+    { "Downloading... ", "Descargando... " },
+    { "Downloading... 0%", "Descargando... 0%" },
+    { "Update failed: ", "Error al actualizar: " },
+    { "Update installed. The app will restart to use it.",
+      "Actualización instalada. La app se reiniciará para aplicarla." },
+    { "Restart", "Reiniciar" },
+    { "Close and reopen the app to use the new version.",
+      "Cierra y vuelve a abrir la app para usar la nueva versión." },
+    { "Changelog \xE2\x80\x94 ", "Cambios \xE2\x80\x94 " },
+    { "Loading changelog...", "Cargando lista de cambios..." },
+    { "Could not load the changelog: ",
+      "No se pudo cargar la lista de cambios: " },
+    { "unknown install path", "ruta de instalación desconocida" },
+    { "no release found", "no se encontró ninguna versión" },
+    { "no changelog for this version",
+      "sin lista de cambios para esta versión" },
+    { "nothing to download", "nada para descargar" },
+
+    // ---- the language table in config.cpp ---------------------------------
+    { "Console language", "Idioma de la consola" },
+    { "English", "Inglés" },
+    { "French", "Francés" },
+    { "Spanish", "Español" },
+    { "German", "Alemán" },
+    { "Italian", "Italiano" },
+    { "Portuguese", "Portugués" },
+    { "Dutch", "Holandés" },
+    { "Russian", "Ruso" },
+    { "Japanese", "Japonés" },
+    { "Korean", "Coreano" },
+    { "Chinese", "Chino" },
+
+    // ---- the accent names in theme.cpp ------------------------------------
+    { "Purple", "Morado" },
+    { "Blue", "Azul" },
+    { "Teal", "Turquesa" },
+    { "Green", "Verde" },
+    { "Red", "Rojo" },
+    { "Pink", "Rosa" },
+
+    // ---- common UI, player buttons and dialogs ----------------------------
+    { "OK", "Aceptar" },
+    { "Pause", "Pausar" },
+    { "Play", "Reproducir" },
+    { "Resume", "Reanudar" },
+    { "Options", "Opciones" },
+    { "Settings", "Ajustes" },
+    { "Streaming", "Transmisión" },
+    { "Unlock", "Desbloquear" },
+    { "Controls locked", "Controles bloqueados" },
+    { "Controls unlocked", "Controles desbloqueados" },
+    { "Audio", "Audio" },
+    { "Audio track", "Pista de audio" },
+    { "Subtitle track", "Pista de subtítulos" },
+    { "Select", "Seleccionar" },
+    { "Open", "Abrir" },
+    { "Save", "Guardar" },
+    { "Exit", "Salir" },
+    { "Default", "Predeterminado" },
+    { "Enabled", "Activado" },
+    { "Disabled", "Desactivado" },
+    { "Version ", "Versión " },
+    { "Version", "Versión" },
+    { "Add", "Agregar" },
+    { "Edit", "Editar" },
+    { "Season", "Temporada" },
+    { "Episodes", "Episodios" },
+    { "Stremio", "Stremio" },
+    { "Local", "Local" },
+};
+
 const Entry kFr[] = {
     // ---- browse: addons, sources, episodes --------------------------------
     { "Addons unavailable: ", "Addons indisponibles : " },
@@ -42,6 +405,13 @@ const Entry kFr[] = {
     { "Unsupported source: only torrents (infoHash) can be played for now.",
       "Source non prise en charge : seuls les torrents (infoHash) sont "
       "lisibles pour l'instant." },
+    { "Unsupported source: neither torrent nor stream URL available.",
+      "Source non prise en charge : aucun torrent ni flux disponible." },
+    { "Connecting to stream...", "Connexion au flux..." },
+    { "Streaming via Debrid / HTTP", "Streaming via Debrid / HTTP" },
+    { "Stream", "Flux" },
+    { "Failed to load stream (network or link error).",
+      "Échec du chargement du flux (erreur réseau ou lien)." },
     { "Episode ", "Épisode " },
     { "Episode", "Épisode" },
     { " - Season ", " - Saison " },
@@ -215,6 +585,12 @@ const Entry kFr[] = {
     { "Nothing this app uses", "Rien que cette application utilise" },
     { "None. Install them from Stremio on another device.",
       "Aucun. Installez-les depuis Stremio sur un autre appareil." },
+    { "Uninstall", "Désinstaller" },
+    { "Uninstall addon from your account?",
+      "Désinstaller l'addon de votre compte ?" },
+    { "Addon uninstalled: ", "Addon désinstallé : " },
+    { "Failed to uninstall addon: ", "Échec de la désinstallation de l'addon : " },
+    { "Invalid account or addon", "Compte ou addon invalide" },
     { "Sign out of Stremio", "Se déconnecter de Stremio" },
     { "Signed out. Restart the app to get back to the sign-in screen.",
       "Déconnecté. Redémarrez l'application pour revenir à l'écran de "
@@ -260,6 +636,20 @@ const Entry kFr[] = {
     { "Sign in to Stremio", "Se connecter à Stremio" },
     { "Your library, your addons and their sources.",
       "Votre bibliothèque, vos addons et leurs sources." },
+    { "Sign in with code", "Se connecter avec un code" },
+    { "- or with email & password -", "- ou avec e-mail et mot de passe -" },
+    { "Sign in with email", "Se connecter par e-mail" },
+    { "Creating activation code...", "Génération du code d'activation..." },
+    { "Activation code:", "Code d'activation :" },
+    { "Visit this link in your browser or phone to authorize:",
+      "Ouvrez ce lien sur votre navigateur ou téléphone pour autoriser :" },
+    { "Waiting for authorization...", "En attente d'autorisation..." },
+    { "Device link timed out. Please try again.",
+      "Délai d'association dépassé. Veuillez réessayer." },
+    { "Could not create activation code: ",
+      "Impossible de créer le code d'activation : " },
+    { "Invalid response from Stremio link service",
+      "Réponse invalide du service d'association Stremio" },
     { "EMAIL", "E-MAIL" },
     { "PASSWORD", "MOT DE PASSE" },
     { "Not entered", "Non renseigné" },
@@ -335,10 +725,8 @@ const Entry kFr[] = {
     { "Pink", "Rose" },
 };
 
-std::string g_lang = "en";
+std::string g_lang = "es";
 
-// Only built when the UI is not in English: in English every lookup would find
-// the string it was handed, so there is nothing to look up.
 std::unordered_map<std::string, const char*>* g_table = nullptr;
 
 } // namespace
@@ -349,13 +737,22 @@ namespace i18n
 void load()
 {
     g_lang = config::get().language;
-    if (g_lang != "fr")
+    if (g_lang == "en")
         return;
 
     g_table = new std::unordered_map<std::string, const char*>();
-    g_table->reserve(sizeof(kFr) / sizeof(kFr[0]) * 2);
-    for (const auto& e : kFr)
-        (*g_table)[e.en] = e.fr;
+    if (g_lang == "fr")
+    {
+        g_table->reserve(sizeof(kFr) / sizeof(kFr[0]) * 2);
+        for (const auto& e : kFr)
+            (*g_table)[e.en] = e.val;
+    }
+    else // "es" (default)
+    {
+        g_table->reserve(sizeof(kEs) / sizeof(kEs[0]) * 2);
+        for (const auto& e : kEs)
+            (*g_table)[e.en] = e.val;
+    }
 }
 
 const std::string& lang()
@@ -365,15 +762,14 @@ const std::string& lang()
 
 const std::vector<std::string>& langIds()
 {
-    static const std::vector<std::string> v = { "en", "fr" };
+    static const std::vector<std::string> v = { "es", "en", "fr" };
     return v;
 }
 
 const std::vector<std::string>& langLabels()
 {
-    // Endonyms, and never translated: a language picker has to be readable to
-    // someone who cannot read the language the UI is currently in.
-    static const std::vector<std::string> v = { "English (default)",
+    static const std::vector<std::string> v = { "Español (Latino)",
+                                                "English",
                                                 "Français" };
     return v;
 }
@@ -387,3 +783,4 @@ const char* tr(const char* en)
 }
 
 } // namespace i18n
+

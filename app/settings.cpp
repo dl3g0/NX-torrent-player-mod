@@ -30,7 +30,7 @@ namespace
 void note(const std::string& msg)
 {
     auto* d = new brls::Dialog(msg);
-    d->addButton("OK", []() {});
+    d->addButton(tr("OK"), []() {});
     d->open();
 }
 
@@ -443,8 +443,20 @@ brls::View* aboutPane()
             : tr("Version ") + std::string(APP_VERSION));
     version->setFontSize(20.0f);
     version->setTextColor(theme::text());
-    version->setMargins(4.0f, 20.0f, 16.0f, 20.0f);
+    version->setMargins(4.0f, 20.0f, 6.0f, 20.0f);
     list->addView(version);
+
+    auto* modCredits = new brls::Label();
+    modCredits->setText(
+        "NX Torrent Player (MOD)\n"
+        "Modificaciones y optimizaciones por dl3g0.\n"
+        "Créditos al proyecto original por shodowlo.\n"
+        "GitHub: https://github.com/dl3g0/NX-torrent-player-mod");
+    modCredits->setFontSize(15.0f);
+    modCredits->setTextColor(theme::textMuted());
+    modCredits->setLineHeight(1.35f);
+    modCredits->setMargins(0.0f, 20.0f, 16.0f, 20.0f);
+    list->addView(modCredits);
 
     auto* checkUpd = new brls::BooleanCell();
     checkUpd->init(tr("Check for updates on startup"), cfg.checkUpdates, [](bool on) {
@@ -731,7 +743,7 @@ brls::View* AccountActivity::createContentView()
 
     // Free after the first call of the session, so this is normally instant.
     auto live = addonList->alive;
-    stremio::fetchAddonsAsync(key, [addonList, live, addonCount,
+    stremio::fetchAddonsAsync(key, [key, addonList, live, addonCount,
                                     pending](stremio::AddonsResult r) {
         if (!*live) return;
         pending->setVisibility(brls::Visibility::GONE);
@@ -798,6 +810,62 @@ brls::View* AccountActivity::createContentView()
             kind->setSingleLine(true);
             kind->setShrink(0.0f);
             row->addView(kind);
+
+            auto promptUninstall = [key, a, row, addonList, addonCount]() {
+                auto* diag = new brls::Dialog(
+                    std::string(tr("Uninstall addon from your account?")) + "\n\n" + a.name);
+                diag->addButton(tr("Cancel"), []() {});
+                diag->addButton(tr("Uninstall"), [key, a, row, addonList, addonCount]() {
+                    stremio::removeAddonAsync(key, a.transportUrl,
+                        [row, addonList, addonCount, a](bool ok, std::string err) {
+                            if (ok)
+                            {
+                                auto& kids = addonList->getChildren();
+                                int idx = -1;
+                                for (size_t i = 0; i < kids.size(); i++)
+                                    if (kids[i] == row) { idx = (int)i; break; }
+                                brls::View* neighbour = nullptr;
+                                if (idx >= 0)
+                                {
+                                    if (idx + 1 < (int)kids.size()) neighbour = kids[idx + 1];
+                                    else if (idx - 1 >= 0) neighbour = kids[idx - 1];
+                                }
+                                if (neighbour) brls::Application::giveFocus(neighbour);
+
+                                addonList->removeView(row);
+                                int curCount = std::atoi(addonCount->getFullText().c_str());
+                                if (curCount > 0)
+                                    addonCount->setText(std::to_string(curCount - 1));
+
+                                brls::Dialog* d = new brls::Dialog(
+                                    std::string(tr("Addon uninstalled: ")) + a.name);
+                                d->addButton(tr("OK"), []() {});
+                                d->open();
+                            }
+                            else
+                            {
+                                brls::Dialog* d = new brls::Dialog(
+                                    std::string(tr("Failed to uninstall addon: ")) + err);
+                                d->addButton(tr("OK"), []() {});
+                                d->open();
+                            }
+                        });
+                });
+                diag->open();
+            };
+
+            row->registerClickAction([promptUninstall](brls::View*) {
+                promptUninstall();
+                return true;
+            });
+
+            row->registerAction(
+                tr("Uninstall"), brls::BUTTON_Y,
+                [promptUninstall](brls::View*) {
+                    promptUninstall();
+                    return true;
+                },
+                false, false, brls::SOUND_NONE);
 
             addonList->addView(row);
         }

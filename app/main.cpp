@@ -671,7 +671,7 @@ void pickAndPlay(const std::string& source, const std::string& title,
     if (vids.empty())
     {
         auto* d = new brls::Dialog(tr("This torrent has no video file to stream."));
-        d->addButton("OK", []() {});
+        d->addButton(tr("OK"), []() {});
         d->open();
         return;
     }
@@ -710,7 +710,7 @@ void playEntry(const TorrentEntry& e)
         {
             auto* d = new brls::Dialog(
                 tr("Still fetching this magnet's files -- please wait."));
-            d->addButton("OK", []() {});
+            d->addButton(tr("OK"), []() {});
             d->open();
             return;
         }
@@ -862,7 +862,7 @@ std::string promptMagnetInput()
     {
         auto* d = new brls::Dialog(
             tr("That does not look like a magnet link or an info hash."));
-        d->addButton("OK", []() {});
+        d->addButton(tr("OK"), []() {});
         d->open();
         return "";
     }
@@ -1767,6 +1767,10 @@ int main(int argc, char* argv[])
     // did this, but that front-end is no longer compiled, so curl was being used
     // (Stremio login) without ever being initialised.
     curl_global_init(CURL_GLOBAL_DEFAULT);
+
+#ifdef __SWITCH__
+    brls::FontLoader::USER_EMOJI_PATH = "romfs:/fonts/OpenMoji.ttf";
+#endif
 
     if (!brls::Application::init())
     {
