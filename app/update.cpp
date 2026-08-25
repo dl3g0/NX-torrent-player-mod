@@ -189,10 +189,15 @@ void fetchNotesAsync(
             std::string resp, err;
             if (!http::get(url, resp, err))
             {
-                if (firstErr.empty()) firstErr = err;
-                brls::Logger::info("[update] changelog {} fetch failed: {}", tag,
-                                   err);
-                continue;
+                // Fallback: try tag without 'v' prefix (e.g. "0.0.1" instead of "v0.0.1")
+                std::string urlNoV = std::string(UPDATE_TAG_URL) + tag.substr(1);
+                if (!http::get(urlNoV, resp, err))
+                {
+                    if (firstErr.empty()) firstErr = err;
+                    brls::Logger::info("[update] changelog {} fetch failed: {}", tag,
+                                       err);
+                    continue;
+                }
             }
             std::string body = json::str(resp, "body");
             if (body.empty())
@@ -218,6 +223,25 @@ void fetchNotesAsync(
 
         if (!any)
         {
+            FILE* f = std::fopen("romfs:/changelog.txt", "rb");
+            if (f)
+            {
+                std::fseek(f, 0, SEEK_END);
+                long sz = std::ftell(f);
+                std::fseek(f, 0, SEEK_SET);
+                if (sz > 0)
+                {
+                    std::string localDoc(sz, '\0');
+                    std::fread(&localDoc[0], 1, sz, f);
+                    std::fclose(f);
+                    brls::sync([done, localDoc]() {
+                        done(true, "NX Torrent Player MOD v0.0.1", localDoc, "");
+                    });
+                    return;
+                }
+                std::fclose(f);
+            }
+
             std::string m =
                 firstErr.empty() ? tr("no changelog for this version") : firstErr;
             brls::sync([done, m]() { done(false, "", "", m); });
