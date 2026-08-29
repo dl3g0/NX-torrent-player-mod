@@ -54,10 +54,10 @@ void userAppInit()
         // so the footprint matches unpatched borealis exactly; only the initial
         // per-socket buffers are cut (a peer sends 16 KB blocks and we send
         // 17-byte requests, so 32 KB rx / 16 KB tx is ample).
-        cfg.tcp_tx_buf_size     = 0x4000; // 16 KB initial (was 32 KB)
-        cfg.tcp_rx_buf_size     = 0x8000; // 32 KB initial (was 64 KB)
-        cfg.tcp_tx_buf_max_size = 0x40000; // 256 KB -- stock, sizes the pool
-        cfg.tcp_rx_buf_max_size = 0x40000; // 256 KB -- stock
+        cfg.tcp_tx_buf_size     = 0x8000; // 32 KB initial
+        cfg.tcp_rx_buf_size     = 0x20000; // 128 KB initial (was 32 KB)
+        cfg.tcp_tx_buf_max_size = 0x80000; // 512 KB max
+        cfg.tcp_rx_buf_max_size = 0x80000; // 512 KB max
 
         if (R_FAILED(socketInitialize(&cfg)))
             socketInitializeDefault(); // fall back if the config is rejected

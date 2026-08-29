@@ -248,18 +248,15 @@ std::string resolveRedirect(const std::string& url)
     CURL* curl = curl_easy_init();
     if (!curl) return url;
 
-    char errbuf[CURL_ERROR_SIZE] = { 0 };
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    verifyTls(curl);
-    curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 6L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT,
-                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                     "Chrome/120.0.0.0 Safari/537.36");
+                     "Mozilla/5.0 (Nintendo Switch; ShareApplet) AppleWebKit/537.36");
 
     CURLcode rc = curl_easy_perform(curl);
     std::string finalUrl = url;
@@ -268,18 +265,6 @@ std::string resolveRedirect(const std::string& url)
         char* eff = nullptr;
         if (curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff) == CURLE_OK && eff && eff[0])
             finalUrl = eff;
-    }
-    else
-    {
-        curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
-        curl_easy_setopt(curl, CURLOPT_RANGE, "0-0");
-        rc = curl_easy_perform(curl);
-        if (rc == CURLE_OK)
-        {
-            char* eff = nullptr;
-            if (curl_easy_getinfo(curl, CURLINFO_EFFECTIVE_URL, &eff) == CURLE_OK && eff && eff[0])
-                finalUrl = eff;
-        }
     }
 
     curl_easy_cleanup(curl);

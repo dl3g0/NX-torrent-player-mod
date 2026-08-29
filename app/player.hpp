@@ -102,6 +102,7 @@ class MpvView : public brls::Box
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
     std::string pendingSource;
     bool isHttpStream = false;
+    bool isLocalFile = false;
     std::string streamSource;
     bool engineFailed = false;
     std::string engineError;
@@ -223,6 +224,11 @@ class MpvView : public brls::Box
     brls::Box* pauseTitleBox = nullptr;  // title, top-left, shown while paused
     std::string pauseTitle;              // what it says
     brls::Box* optionsHint   = nullptr;  // "X Options" hint, top-right while paused
+    brls::Box* speedPill     = nullptr;  // Live download speed indicator
+    brls::Label* speedLabel  = nullptr;  // "📥 2.4 MB/s"
+    void updateSpeedIndicator();
+    std::chrono::steady_clock::time_point speedLastSample;
+    int64_t speedLastBytes = 0;
     brls::Box* lockHint      = nullptr;  // Y-lock hint / indicator, far top-right
     brls::Label* lockLabel   = nullptr;  // padlock glyph: open (unlocked) / closed (locked)
     brls::Box* seekOverlay   = nullptr;

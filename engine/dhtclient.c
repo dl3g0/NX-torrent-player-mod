@@ -117,14 +117,24 @@ static void on_dht_event(void *closure, int event,
     }
 }
 
+static Mutex s_dht_mutex;
+static bool s_dht_mutex_inited = false;
+
 int dht_find_peers(const uint8_t info_hash[20], int target_peers, int budget_ms,
                    dht_peer_cb cb, void *ctx, const volatile bool *cancel,
                    char *err, size_t errlen) {
+    if (!s_dht_mutex_inited) {
+        mutexInit(&s_dht_mutex);
+        s_dht_mutex_inited = true;
+    }
+    mutexLock(&s_dht_mutex);
+
     dlog("DHT demarre (jech)");
 
     int s = socket(AF_INET, SOCK_DGRAM, 0);
     if (s < 0) {
         if (err) snprintf(err, errlen, "DHT socket failed");
+        mutexUnlock(&s_dht_mutex);
         return -1;
     }
     struct sockaddr_in me = {0};
@@ -144,6 +154,7 @@ int dht_find_peers(const uint8_t info_hash[20], int target_peers, int budget_ms,
     if (dht_init(s, -1, node_id, NULL) < 0) {
         if (err) snprintf(err, errlen, "dht_init failed");
         close(s);
+        mutexUnlock(&s_dht_mutex);
         return -1;
     }
 
@@ -164,6 +175,7 @@ int dht_find_peers(const uint8_t info_hash[20], int target_peers, int budget_ms,
         if (err) snprintf(err, errlen, "bootstrap DHT injoignable");
         dht_uninit();
         close(s);
+        mutexUnlock(&s_dht_mutex);
         return -1;
     }
 
@@ -214,5 +226,6 @@ int dht_find_peers(const uint8_t info_hash[20], int target_peers, int budget_ms,
     dlog("DHT fin: %d peers", dc.delivered);
     dht_uninit();
     close(s);
+    mutexUnlock(&s_dht_mutex);
     return dc.delivered;
 }

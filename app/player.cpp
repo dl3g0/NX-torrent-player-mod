@@ -26,6 +26,7 @@
 #include "http.hpp"
 #include "stremio.hpp"  // cached artwork -> blurred background
 #include "theme.hpp"    // muted text for the in-menu hints
+#include "sys.hpp"
 
 extern "C" {
 #include "torrentfs.h"
@@ -220,6 +221,8 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
 
     streamSource = source;
     isHttpStream = (source.rfind("http://", 0) == 0 || source.rfind("https://", 0) == 0);
+    isLocalFile  = !isHttpStream && (source.rfind("magnet:", 0) != 0) &&
+                   (source.size() < 8 || source.compare(source.size() - 8, 8, ".torrent") != 0);
 
     // Build the UI BEFORE touching the engine. torrentfs_open used to run right
     // here and return early on failure, leaving a view with no children at all
@@ -266,22 +269,32 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
 // it inline froze the whole app on a black screen until it finished or failed.
 void MpvView::startEngine(const std::string& source, int fileIndex)
 {
+    sys::setCpuBoost(true);
+
+    if (isLocalFile)
+    {
+        if (statusLabel)
+            statusLabel->setText(tr("Opening file..."));
+
+        auto liveFlag = this->alive;
+        brls::sync([this, liveFlag]() {
+            if (!*liveFlag) return;
+            if (!startMpv() && statusLabel)
+                statusLabel->setText(tr("Player initialisation failed"));
+        });
+        return;
+    }
+
     if (isHttpStream)
     {
         if (statusLabel)
             statusLabel->setText(tr("Connecting to stream..."));
 
         auto liveFlag = this->alive;
-        std::string rawUrl = streamSource;
-        brls::async([this, liveFlag, rawUrl]() {
-            std::string directUrl = http::resolveRedirect(rawUrl);
-            brls::sync([this, liveFlag, directUrl]() {
-                if (!*liveFlag)
-                    return;
-                this->streamSource = directUrl;
-                if (!startMpv() && statusLabel)
-                    statusLabel->setText(tr("Player initialisation failed"));
-            });
+        brls::sync([this, liveFlag]() {
+            if (!*liveFlag) return;
+            if (!startMpv() && statusLabel)
+                statusLabel->setText(tr("Player initialisation failed"));
         });
         return;
     }
@@ -388,6 +401,10 @@ bool MpvView::startMpv()
     // avoid clipping, which was one reason 5.1 tracks played quiet. "no" keeps the
     // standard downmix levels so the centre (dialogue) folds in at full strength.
     mpv_set_option_string(mpv, "audio-normalize-downmix", "no");
+    mpv_set_option_string(mpv, "audio-stream-silence", "yes");
+    mpv_set_option_string(mpv, "audio-wait-open", "0");
+    mpv_set_option_string(mpv, "audio-pitch-correction", "yes");
+    mpv_set_option_string(mpv, "audio-fallback-to-null", "yes");
     // Even so a 5.1 master downmixed to stereo sits well below a native stereo
     // track on the Switch's own speakers, which is what the boost is for (see
     // audioBoostWanted -- handheld only, and switchable in Options). Kept in
@@ -440,28 +457,26 @@ bool MpvView::startMpv()
         mpv_set_option_string(mpv, "user-agent",
                               "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/120.0.0.0 Safari/537.36");
+                              "Chrome/122.0.0.0 Safari/537.36");
         mpv_set_option_string(mpv, "http-header-fields", "Accept: */*");
         mpv_set_option_string(mpv, "stream-lavf-o",
-                              "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5,multiple_requests=1");
-        mpv_set_option_string(mpv, "demuxer-lavf-analyzeduration", "0.5");
-        mpv_set_option_string(mpv, "demuxer-lavf-probescore", "25");
+                              "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5");
         mpv_set_option_string(mpv, "demuxer-seekable-cache", "yes");
         mpv_set_option_string(mpv, "force-seekable", "yes");
         mpv_set_option_string(mpv, "hr-seek", "yes");
         mpv_set_option_string(mpv, "hr-seek-framedrop", "yes");
         mpv_set_option_string(mpv, "framedrop", "vo");
-        mpv_set_option_string(mpv, "network-timeout", "60");
-        mpv_set_option_string(mpv, "cache-pause", "yes");
-        mpv_set_option_string(mpv, "cache-pause-initial", "yes");
-        mpv_set_option_string(mpv, "cache-pause-wait", "5.0");
+        mpv_set_option_string(mpv, "network-timeout", "20");
+        mpv_set_option_string(mpv, "cache-pause", "no");
+        mpv_set_option_string(mpv, "cache-pause-initial", "no");
+        mpv_set_option_string(mpv, "ytdl", "no");
     }
 
     // On Switch the hardware decoder's GPU work is async; without a glFinish
     // after mpv's render, glfwSwapBuffers can present before the video is drawn
     // (black frame). This is what the other Switch mpv players set too.
     mpv_set_option_string(mpv, "opengl-glfinish", "yes");
-    mpv_set_option_string(mpv, "vd-lavc-dr", "yes");
+    mpv_set_option_string(mpv, "vd-lavc-dr", "no");
 
     if (mpv_initialize(mpv) < 0)
     {
@@ -509,11 +524,11 @@ bool MpvView::startMpv()
     mpv_observe_property(mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
 
-    if (isHttpStream)
+    if (isHttpStream || isLocalFile)
     {
         const char* cmd[] = { "loadfile", streamSource.c_str(), nullptr };
         mpv_command(mpv, cmd);
-        brls::Logger::info("loadfile http/debrid stream issued: {}", streamSource);
+        brls::Logger::info("loadfile {} issued: {}", isLocalFile ? "local file" : "http/debrid stream", streamSource);
     }
     else
     {
@@ -652,6 +667,7 @@ void MpvView::setControlsVisible(bool show)
     if (pauseOverlay) pauseOverlay->setVisibility(v);
     if (pauseTitleBox) pauseTitleBox->setVisibility(v);
     if (optionsHint) optionsHint->setVisibility(v);
+    if (speedPill) speedPill->setVisibility(v);
     if (seekOverlay) seekOverlay->setVisibility(v);
     // The centre button draws play vs pause from the live flag itself, so nothing
     // to update here.
@@ -1255,7 +1271,8 @@ void MpvView::openTrackMenu()
         a->init(tr("Track"), aLabels, aCur, [this, aIds](int sel) {
             char v[24];
             std::snprintf(v, sizeof(v), "%lld", (long long)aIds[sel]);
-            mpv_set_property_string(mpv, "aid", v);
+            const char* cmd[] = { "set", "aid", v, nullptr };
+            mpv_command_async(mpv, 0, cmd);
         });
         content->addView(a);
     }
@@ -1446,6 +1463,7 @@ void MpvView::openTrackMenu()
 MpvView::~MpvView()
 {
     brls::Logger::info("[teardown] ~MpvView enter");
+    sys::setCpuBoost(false);
 
     // Playback is ending: let the OS dim/sleep on idle again.
     appletSetMediaPlaybackState(false);
@@ -1524,13 +1542,13 @@ void MpvView::pumpEvents()
         {
             case MPV_EVENT_FILE_LOADED:
                 fileLoaded = true;
-                if (isHttpStream)
+                if (isHttpStream || isLocalFile)
                     ready = true;
                 brls::Logger::info("[mpv event] file loaded");
                 fetchOnlineSubs();
                 break;
             case MPV_EVENT_PLAYBACK_RESTART:
-                if (isHttpStream)
+                if (isHttpStream || isLocalFile)
                 {
                     fileLoaded = true;
                     ready = true;
@@ -1861,6 +1879,26 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     topRight->setAxis(brls::Axis::ROW);
     topRight->setAlignItems(brls::AlignItems::CENTER);
     this->addView(topRight);
+
+    // Live download speed pill (e.g. "📥 2.4 MB/s")
+    speedPill = new brls::Box();
+    speedPill->setHeight(56.0f);
+    speedPill->setPadding(4.0f, 18.0f, 0.0f, 18.0f);
+    speedPill->setMarginRight(16.0f);
+    speedPill->setCornerRadius(8.0f);
+    speedPill->setBackgroundColor(nvgRGBA(0, 0, 0, 140));
+    speedPill->setAxis(brls::Axis::ROW);
+    speedPill->setAlignItems(brls::AlignItems::CENTER);
+    speedPill->setVisibility(brls::Visibility::GONE);
+    {
+        speedLabel = new brls::Label();
+        speedLabel->setText("📥 0 KB/s");
+        speedLabel->setFontSize(18.0f);
+        speedLabel->setTextColor(nvgRGB(255, 255, 255));
+        speedLabel->setMargins(2.0f, 0.0f, 0.0f, 0.0f);
+        speedPill->addView(speedLabel);
+    }
+    topRight->addView(speedPill);
 
     // The X button glyph + a gear: X opens the audio/subtitle options. Same
     // show/hide as the pause overlays. Nudged left of the Y-lock pill.
@@ -2325,14 +2363,21 @@ void MpvView::updateBufferIndicator()
     }
 
     bool stalling = false;
-    if (isHttpStream)
+    if (isLocalFile)
+    {
+        stalling = false;
+    }
+    else if (isHttpStream)
     {
         stalling = obsPausedForCache && obsCoreIdle;
     }
     else
     {
         double secs = obsCacheSecs;  // async-observed; no sync mpv call per frame
-        stalling = buffering ? (secs < 1.0) : (secs < 0.25);
+        if (obsCoreIdle)
+            stalling = buffering ? (secs < 1.0) : (secs < 0.25);
+        else
+            stalling = false;
     }
 
     if (stalling != buffering)
@@ -2726,10 +2771,10 @@ void MpvView::logStats()
         return;
     }
     double dt = std::chrono::duration<double>(now - statsLastSample).count();
-    if (dt < 2.0)
+    if (dt < 1.0)
         return;
 
-    // Piggyback on this 2 s cadence: keep the last known playback position for
+    // Piggyback on this cadence: keep the last known playback position for
     // the Stremio watch-state sync, and push it out every couple of minutes.
     if (ready && mpv)
     {
@@ -2742,7 +2787,8 @@ void MpvView::logStats()
 
     int64_t bytes  = torrentfs_bytes_recv(tfs);
     int64_t stored = torrentfs_stored_bytes(tfs);
-    double kbps    = (double)(bytes - statsLastBytes) / dt / 1024.0;
+    double speedBps = dt > 0 ? (double)(bytes - statsLastBytes) / dt : 0.0;
+    double kbps    = speedBps / 1024.0;
     statsLastBytes = bytes;
     statsLastSample = now;
     int elapsed = (int)std::chrono::duration<double>(now - statsStart).count();
@@ -3010,6 +3056,66 @@ void MpvView::updateSeekBar()
     }
 }
 
+void MpvView::updateSpeedIndicator()
+{
+    if (!speedLabel || !controlsShown) return;
+
+    auto now = std::chrono::steady_clock::now();
+    if (speedLastSample.time_since_epoch().count() == 0)
+    {
+        speedLastSample = now;
+        if (isHttpStream && mpv)
+            mpv_get_property(mpv, "demuxer-bytes-read", MPV_FORMAT_INT64, &speedLastBytes);
+        else if (tfs)
+            speedLastBytes = torrentfs_bytes_recv(tfs);
+        return;
+    }
+
+    double dt = std::chrono::duration<double>(now - speedLastSample).count();
+    if (dt < 0.5) return;
+
+    int64_t currentBytes = 0;
+    if (isHttpStream)
+    {
+        if (mpv)
+        {
+            int64_t rate = 0;
+            if (mpv_get_property(mpv, "demuxer-raw-input-rate", MPV_FORMAT_INT64, &rate) == 0 && rate > 0)
+            {
+                speedLabel->setText("📥 " + sys::formatSpeed((double)rate));
+                speedLastSample = now;
+                return;
+            }
+            mpv_get_property(mpv, "demuxer-bytes-read", MPV_FORMAT_INT64, &currentBytes);
+        }
+    }
+    else if (tfs)
+    {
+        currentBytes = torrentfs_bytes_recv(tfs);
+    }
+
+    if (dt > 0.0)
+    {
+        int64_t diff = currentBytes - speedLastBytes;
+        if (diff < 0) diff = 0;
+        double bps = (double)diff / dt;
+        if (bps > 1024.0)
+        {
+            speedLabel->setText("📥 " + sys::formatSpeed(bps));
+        }
+        else if (isHttpStream && obsCacheSecs > 1.0)
+        {
+            speedLabel->setText(fmt::format("📥 Búfer: {:.0f}s", obsCacheSecs));
+        }
+        else
+        {
+            speedLabel->setText("📥 0 KB/s");
+        }
+    }
+    speedLastBytes = currentBytes;
+    speedLastSample = now;
+}
+
 void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
                    brls::Style style, brls::FrameContext* ctx)
 {
@@ -3040,6 +3146,8 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
         brls::Box::draw(vg, x, y, width, height, style, ctx);
         return;
     }
+
+    updateSpeedIndicator();
 
     // nanovg is a *batched* renderer: every nvg* call in this frame (including
     // this view's opaque black background drawn by View::frame just before us,
@@ -3117,6 +3225,7 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
             mpv_set_property_string(mpv, "pause", "no");
         loadingOverlay->setVisibility(brls::Visibility::GONE);
         overlayHidden = true;
+        sys::setCpuBoost(false);
     }
     if (overlayHidden)
         updateBufferIndicator();

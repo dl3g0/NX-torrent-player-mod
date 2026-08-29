@@ -21,3 +21,5 @@
 // in the player. Kept so re-picking the same one costs nothing; they are a few
 // tens of KB each.
 #define APPDATA_SUBS     APPDATA_DIR "/subtitles"
+// Folder where offline downloads are stored for playback without internet.
+#define APPDATA_DOWNLOADS APPDATA_DIR "/downloads"

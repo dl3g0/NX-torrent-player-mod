@@ -16,7 +16,7 @@
 #include "i18n.hpp"
 
 #ifndef APP_VERSION
-#define APP_VERSION "0.0.1"
+#define APP_VERSION "0.0.2"
 #endif
 #ifndef UPDATE_API_URL
 #define UPDATE_API_URL "https://api.github.com/repos/dl3g0/NX-torrent-player-mod/releases/latest"

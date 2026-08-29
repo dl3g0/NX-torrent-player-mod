@@ -37,6 +37,9 @@
 #include "theme.hpp"
 #include "update.hpp"
 #include "stremio.hpp"
+#include "download.hpp"
+#include "local_player.hpp"
+#include "sys.hpp"
 
 extern "C" {
 #include "torrent.h"
@@ -717,6 +720,15 @@ void playEntry(const TorrentEntry& e)
         pickAndPlay(e.path, e.name, magnetCachedFiles(h));
         return;
     }
+    std::string lower = e.path;
+    for (char& c : lower) c = std::tolower(c);
+    if (lower.rfind(".mkv") != std::string::npos || lower.rfind(".mp4") != std::string::npos ||
+        lower.rfind(".avi") != std::string::npos || lower.rfind(".ts") != std::string::npos ||
+        lower.rfind(".webm") != std::string::npos)
+    {
+        brls::Application::pushActivity(new LocalPlayerActivity(e.path, e.name));
+        return;
+    }
     pickAndPlay(e.path, e.name, torrentVideoFiles(e.path));
 }
 
@@ -1072,12 +1084,250 @@ void registerRowDelete(brls::Box* list, brls::Box* row, TorrentEntry e,
         false, false, brls::SOUND_NONE);
 }
 
-// The local list -- .torrent files AND magnet.txt entries, in one section.
-// Magnets still resolving their name are shown first, with a spinner, and update
-// in place once the name comes in (no relaunch needed).
+std::vector<TorrentEntry> scanDownloadedVideos(const std::string& dir)
+{
+    std::vector<TorrentEntry> out;
+    DIR* d = opendir(dir.c_str());
+    if (!d) return out;
+    std::string baseDir = dir;
+    if (!baseDir.empty() && baseDir.back() != '/') baseDir += '/';
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr)
+    {
+        std::string name = e->d_name;
+        if (name == "." || name == ".." || name.find(".part") != std::string::npos)
+            continue;
+        std::string full = baseDir + name;
+        std::string lower = name;
+        for (char& c : lower) c = std::tolower(c);
+        if (lower.rfind(".mkv") != std::string::npos || lower.rfind(".mp4") != std::string::npos ||
+            lower.rfind(".avi") != std::string::npos || lower.rfind(".ts") != std::string::npos ||
+            lower.rfind(".webm") != std::string::npos)
+        {
+            struct stat st;
+            std::string sz;
+            if (stat(full.c_str(), &st) == 0)
+                sz = humanSize(st.st_size);
+            out.push_back({ name, full, sz, false, false });
+        }
+    }
+    closedir(d);
+    return out;
+}
+
+class DownloadsView : public brls::Box
+{
+  public:
+    DownloadsView()
+    {
+        this->setAxis(brls::Axis::COLUMN);
+        this->setGrow(1.0f);
+
+        scroll = new brls::ScrollingFrame();
+        scroll->setGrow(1.0f);
+        scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
+
+        list = new brls::Box();
+        list->setAxis(brls::Axis::COLUMN);
+        list->setPadding(24.0f, 60.0f, 47.0f, 60.0f);
+        scroll->setContentView(list);
+
+        this->addView(scroll);
+        rebuildList();
+    }
+
+    void draw(NVGcontext* vg, float x, float y, float width, float height,
+              brls::Style style, brls::FrameContext* ctx) override
+    {
+        auto now = std::chrono::steady_clock::now();
+        double dt = std::chrono::duration<double>(now - lastUpdate).count();
+        if (dt >= 0.5)
+        {
+            lastUpdate = now;
+            updateRows();
+        }
+        brls::Box::draw(vg, x, y, width, height, style, ctx);
+    }
+
+    void rebuildList()
+    {
+        list->clearViews();
+        rowWidgets.clear();
+
+        auto tasks = download::getTasks();
+        if (tasks.empty())
+        {
+            auto* empty = new brls::Label();
+            empty->setText(tr("No active or completed downloads."));
+            empty->setFontSize(18.0f);
+            empty->setTextColor(theme::textDim());
+            empty->setMarginTop(30.0f);
+            empty->setFocusable(true);
+            empty->setHideHighlight(true);
+            list->addView(empty);
+            brls::Application::giveFocus(empty);
+            return;
+        }
+
+        for (const auto& t : tasks)
+        {
+            auto* card = new brls::Box();
+            card->setAxis(brls::Axis::ROW);
+            card->setAlignItems(brls::AlignItems::CENTER);
+            card->setPadding(16.0f, 20.0f, 16.0f, 20.0f);
+            card->setMarginBottom(12.0f);
+            card->setCornerRadius(8.0f);
+            card->setBackgroundColor(theme::surface());
+            card->setFocusable(true);
+
+            auto* col = new brls::Box();
+            col->setAxis(brls::Axis::COLUMN);
+            col->setGrow(1.0f);
+
+            auto* titleLbl = new brls::Label();
+            titleLbl->setText(t.title);
+            titleLbl->setFontSize(20.0f);
+            titleLbl->setTextColor(theme::text());
+            titleLbl->setSingleLine(true);
+            col->addView(titleLbl);
+
+            auto* subLbl = new brls::Label();
+            subLbl->setFontSize(16.0f);
+            subLbl->setMarginTop(4.0f);
+            col->addView(subLbl);
+            card->addView(col);
+
+            std::string taskId = t.id;
+            std::string taskPath = t.savePath;
+            std::string taskTitle = t.title;
+
+            card->registerClickAction([this, taskId, taskPath, taskTitle](brls::View*) {
+                download::Task cur;
+                if (!download::getTask(taskId, cur)) return true;
+
+                auto* dialog = new brls::Dialog(taskTitle);
+                if (cur.state == download::State::COMPLETED)
+                {
+                    dialog->addButton(tr("Play"), [taskPath, taskTitle]() {
+                        brls::Application::pushActivity(new LocalPlayerActivity(taskPath, taskTitle));
+                    });
+                }
+                else if (cur.state == download::State::DOWNLOADING)
+                {
+                    dialog->addButton(tr("Pause"), [this, taskId]() {
+                        download::pauseTask(taskId);
+                        brls::sync([this]() { this->rebuildList(); });
+                    });
+                }
+                else if (cur.state == download::State::PAUSED)
+                {
+                    dialog->addButton(tr("Resume"), [this, taskId]() {
+                        download::resumeTask(taskId);
+                        brls::sync([this]() { this->rebuildList(); });
+                    });
+                }
+                dialog->addButton(tr("Delete"), [this, taskId]() {
+                    download::removeTask(taskId, true);
+                    brls::sync([this]() { this->rebuildList(); });
+                });
+                dialog->addButton(tr("Cancel"), []() {});
+                dialog->open();
+                return true;
+            });
+
+            rowWidgets.push_back({ taskId, subLbl });
+            list->addView(card);
+        }
+        updateRows();
+    }
+
+    void updateRows()
+    {
+        auto tasks = download::getTasks();
+        if (tasks.size() != rowWidgets.size())
+        {
+            brls::sync([this]() { this->rebuildList(); });
+            return;
+        }
+
+        for (size_t i = 0; i < tasks.size() && i < rowWidgets.size(); i++)
+        {
+            const auto& t = tasks[i];
+            auto* subLbl = rowWidgets[i].subLbl;
+            if (!subLbl) continue;
+
+            std::string statusText;
+            if (t.state == download::State::DOWNLOADING)
+            {
+                if (download::currentActiveId() == t.id)
+                {
+                    double pct = t.totalBytes > 0 ? (double)t.downloadedBytes / t.totalBytes * 100.0 : 0.0;
+                    statusText = fmt::format(tr("Downloading: {:.1f}% ({}) - {}"),
+                                             pct, sys::formatSize(t.downloadedBytes), sys::formatSpeed(t.speed));
+                    subLbl->setTextColor(theme::accent());
+                }
+                else
+                {
+                    statusText = tr("In queue (Waiting)");
+                    subLbl->setTextColor(theme::textDim());
+                }
+            }
+            else if (t.state == download::State::COMPLETED)
+            {
+                statusText = fmt::format(tr("Completed ({})"), sys::formatSize(t.downloadedBytes));
+                subLbl->setTextColor(theme::accent());
+            }
+            else if (t.state == download::State::PAUSED)
+            {
+                statusText = fmt::format(tr("Paused ({})"), sys::formatSize(t.downloadedBytes));
+                subLbl->setTextColor(theme::textDim());
+            }
+            else if (t.state == download::State::FAILED)
+            {
+                statusText = tr("Failed: ") + t.error;
+                subLbl->setTextColor(theme::textWarn());
+            }
+            else
+            {
+                statusText = tr("Queued");
+                subLbl->setTextColor(theme::textDim());
+            }
+            subLbl->setText(statusText);
+        }
+    }
+
+  private:
+    struct RowWidget
+    {
+        std::string id;
+        brls::Label* subLbl = nullptr;
+    };
+    brls::ScrollingFrame* scroll = nullptr;
+    brls::Box* list = nullptr;
+    std::vector<RowWidget> rowWidgets;
+    std::chrono::steady_clock::time_point lastUpdate;
+};
+
+class DownloadsActivity : public brls::Activity
+{
+  public:
+    DownloadsActivity() = default;
+
+    brls::View* createContentView() override
+    {
+        auto* frame = new brls::AppletFrame();
+        frame->pushContentView(new DownloadsView());
+        frame->setTitle(tr("Downloads"));
+        return frame;
+    }
+};
+
+// The local list -- .torrent files, downloaded videos AND magnet.txt entries.
 brls::View* buildLocalTab()
 {
     auto items   = scanTorrents(APPDATA_TORRENTS "/");
+    auto dwn     = scanDownloadedVideos(APPDATA_DOWNLOADS "/");
+    items.insert(items.end(), dwn.begin(), dwn.end());
     auto magnets = scanMagnets(APPDATA_MAGNETS);
     items.insert(items.end(), magnets.begin(), magnets.end());
     std::sort(items.begin(), items.end(),
@@ -1095,7 +1345,6 @@ brls::View* buildLocalTab()
     scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
     auto* list = new brls::Box();
     list->setAxis(brls::Axis::COLUMN);
-    // setContentView forces the width and drops margins, so the inset is padding.
     list->setPadding(24.0f, 60.0f, 47.0f, 60.0f);
     scroll->setContentView(list);
     root->addView(scroll);
@@ -1103,8 +1352,6 @@ brls::View* buildLocalTab()
     auto widgets = std::make_shared<MagnetWidgets>();
     auto alive   = root->alive;
 
-    // Fills a loading row in as its name and size resolve (shared by the initial
-    // list and the "Add magnet" button). Its spinner goes away either way.
     MagnetResolvedFn onEach = [widgets](const std::string& magnet,
                                         const std::string& name, int64_t total) {
         auto it = widgets->find(magnetHash(magnet));
@@ -1113,13 +1360,10 @@ brls::View* buildLocalTab()
             it->second.spinner->setVisibility(brls::Visibility::GONE);
         if (it->second.name && !name.empty())
             it->second.name->setText(name);
-        // Blank on failure: the row keeps an empty size slot rather than claiming
-        // a wrong one, and the next launch will try again.
         if (it->second.size)
             it->second.size->setText(humanSize(total));
     };
 
-    // A magnet's turn begins: drop its "(waiting)" suffix and show its spinner.
     std::function<void(const std::string&)> onStart =
         [widgets](const std::string& magnet) {
             auto it = widgets->find(magnetHash(magnet));
@@ -1130,11 +1374,14 @@ brls::View* buildLocalTab()
                 it->second.spinner->setVisibility(brls::Visibility::VISIBLE);
         };
 
-    // "Add magnet" at the top: adds it to the list (and magnet.txt) via the
-    // on-screen keyboard, and resolves its name in the background. Does not play.
+    auto* btnRow = new brls::Box();
+    btnRow->setAxis(brls::Axis::ROW);
+    btnRow->setMarginBottom(14.0f);
+
     auto* addBtn = new brls::Button();
     addBtn->setText(tr("+  Add magnet"));
-    addBtn->setMarginBottom(14.0f);
+    addBtn->setGrow(1.0f);
+    addBtn->setMarginRight(12.0f);
     addBtn->registerClickAction([list, widgets, alive, onStart, onEach](brls::View*) {
         std::string magnet = promptMagnetInput();
         if (magnet.empty()) return true;
@@ -1143,10 +1390,10 @@ brls::View* buildLocalTab()
         e.path      = magnet;
         e.name        = magnetName(magnet);
         e.sizeText    = "magnet";
-        e.needsResolve = true;  // freshly added -> its files are not cached yet
+        e.needsResolve = true;
         LocalRow w  = makeLocalRow(e);
         registerRowDelete(list, w.view, e, widgets);
-        list->addView(w.view, 1);  // just under the Add button
+        list->addView(w.view, 1);
         brls::Application::giveFocus(w.view);
         if (e.needsResolve)
         {
@@ -1157,7 +1404,22 @@ brls::View* buildLocalTab()
         }
         return true;
     });
-    list->addView(addBtn);
+    btnRow->addView(addBtn);
+
+    auto* dwnBtn = new brls::Button();
+    int activeDwn = download::activeCount();
+    if (activeDwn > 0)
+        dwnBtn->setText(fmt::format(tr("📥  Downloads ({} active)"), activeDwn));
+    else
+        dwnBtn->setText(tr("📥  Downloads"));
+    dwnBtn->setGrow(1.0f);
+    dwnBtn->registerClickAction([](brls::View*) {
+        brls::Application::pushActivity(new DownloadsActivity());
+        return true;
+    });
+    btnRow->addView(dwnBtn);
+
+    list->addView(btnRow);
 
     if (items.empty())
     {
@@ -1800,6 +2062,8 @@ int main(int argc, char* argv[])
     // 1080p, and the two modes have their own UI size; follow it.
     brls::Application::getWindowSizeChangedEvent()->subscribe(applyUiScale);
 
+    download::init();
+
     brls::Application::pushActivity(new brls::Activity(buildBrowser()));
 
     // A quiet check: it only ever surfaces when there IS a newer release, so a
@@ -1810,7 +2074,11 @@ int main(int argc, char* argv[])
         });
 
     while (brls::Application::mainLoop())
-        ;
+    {
+        stremio::processPendingImageUploads(2);
+    }
+
+    download::shutdown();
 
     // Only now: hbloader keeps the running .nro open and libnx reads our romfs
     // out of it, so the file cannot be replaced until the app is done with it.

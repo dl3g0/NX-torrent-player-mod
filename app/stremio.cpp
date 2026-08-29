@@ -1236,12 +1236,22 @@ struct ImageTask
     std::function<void(std::string)> done;
 };
 
+struct PacedImageCallback
+{
+    std::function<void(std::string)> done;
+    std::string path;
+    std::shared_ptr<bool> alive;
+};
+
+static std::mutex g_pacedMtx;
+static std::deque<PacedImageCallback> g_pacedCallbacks;
+
 class ImageQueue
 {
 public:
     ImageQueue() : stop(false)
     {
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < 3; i++)
         {
             workers.emplace_back([this]() { workerLoop(); });
         }
@@ -1302,7 +1312,11 @@ private:
                 }
                 std::string p = task.path;
                 auto done = task.done;
-                brls::sync([done, p]() { done(p); });
+                auto alive = task.alive;
+                {
+                    std::lock_guard<std::mutex> lock(g_pacedMtx);
+                    g_pacedCallbacks.push_back({ done, p, alive });
+                }
                 continue;
             }
 
@@ -1352,7 +1366,16 @@ private:
 
             std::string res = ok ? task.path : std::string();
             auto done = task.done;
-            brls::sync([done, res]() { done(res); });
+            auto alive = task.alive;
+            if (!res.empty())
+            {
+                std::lock_guard<std::mutex> lock(g_pacedMtx);
+                g_pacedCallbacks.push_back({ done, res, alive });
+            }
+            else
+            {
+                brls::sync([done]() { done(""); });
+            }
         }
     }
 
@@ -1369,6 +1392,25 @@ static ImageQueue& imageQueue()
     static ImageQueue q;
     return q;
 }
+}
+
+void processPendingImageUploads(int maxPerFrame)
+{
+    std::vector<PacedImageCallback> batch;
+    {
+        std::lock_guard<std::mutex> lock(g_pacedMtx);
+        while (!g_pacedCallbacks.empty() && (int)batch.size() < maxPerFrame)
+        {
+            batch.push_back(std::move(g_pacedCallbacks.front()));
+            g_pacedCallbacks.pop_front();
+        }
+    }
+    for (auto& item : batch)
+    {
+        if (item.alive && !*item.alive) continue;
+        if (item.done)
+            item.done(item.path);
+    }
 }
 
 static void downloadImageAsync(const std::string& id, const std::string& url,

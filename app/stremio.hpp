@@ -96,6 +96,10 @@ void fetchHqArtAsync(const std::string& id, const std::string& url,
 // that need a path right now and can do without artwork if there is none.
 std::string cachedPosterPath(const std::string& id);
 
+// Processes paced texture loading on the UI thread (up to maxPerFrame per frame)
+// to prevent frame drops / freezing when many posters land at once.
+void processPendingImageUploads(int maxPerFrame = 2);
+
 struct LibraryResult
 {
     bool ok = false;

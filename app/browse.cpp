@@ -18,6 +18,7 @@
 #include "theme.hpp"
 #include "i18n.hpp"
 #include "http.hpp"
+#include "download.hpp"
 
 namespace
 {
@@ -1032,6 +1033,38 @@ class AddonSourcePicker : public brls::Activity
                     w.resumeSec = resumeFrom(lw.offsetMs, lw.durationMs);
                 brls::Application::pushActivity(new PlayerActivity(
                     playSource, cardArt, cardLabel, stream.fileIdx, w));
+                return true;
+            });
+        card->registerAction(
+            tr("Download"), brls::ControllerButton::BUTTON_Y,
+            [stream, cardLabel, cardArt](brls::View*) {
+                if (stream.infoHash.empty() && stream.url.empty())
+                {
+                    dialog(tr("Unsupported source: neither torrent nor stream URL available."));
+                    return true;
+                }
+                std::string downloadSource;
+                if (!stream.url.empty() && stream.url.rfind("magnet:", 0) != 0)
+                    downloadSource = stream.url;
+                else
+                    downloadSource = buildMagnetUri(stream);
+
+                if (downloadSource.empty())
+                {
+                    dialog(tr("Unable to create magnet link for this stream."));
+                    return true;
+                }
+
+                auto* diag = new brls::Dialog(
+                    std::string(tr("Download to SD card?")) + "\n\n" + cardLabel);
+                diag->addButton(tr("Download"), [downloadSource, cardLabel, cardArt, stream]() {
+                    download::addTask(cardLabel, downloadSource, stream.fileIdx, cardArt.bgId, cardArt.bgUrl);
+                    auto* d = new brls::Dialog(tr("Download added to queue!\nYou can check progress in the Local tab -> Downloads."));
+                    d->addButton(tr("OK"), []() {});
+                    d->open();
+                });
+                diag->addButton(tr("Cancel"), []() {});
+                diag->open();
                 return true;
             });
         card->addGestureRecognizer(new brls::TapGestureRecognizer(card));

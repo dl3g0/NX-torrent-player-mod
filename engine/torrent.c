@@ -210,7 +210,7 @@ const char *torrent_meta_state_str(int state) {
 // (NX_SESSION_MGR_MAX_SESSIONS), and a worker sits inside connect()/recv() the
 // whole time it holds a peer. 8 leaves room for the app's own HTTP (a poster
 // fetch may still be in flight) without ever approaching the cap.
-#define META_WORKERS 8
+#define META_WORKERS 12
 
 typedef struct {
     peer_addr *peers;
@@ -305,11 +305,12 @@ static uint8_t *fetch_http_torrent_cache(const uint8_t info_hash[20], size_t *ou
     const char *mirrors[] = {
         "https://itorrents.org/torrent/%s.torrent",
         "https://btcache.me/torrent/%s",
-        "https://torrage.info/torrent.php?h=%s"
+        "https://torrage.info/torrent.php?h=%s",
+        "https://torcache.net/torrent/%s.torrent"
     };
 
     for (size_t m = 0; m < sizeof(mirrors) / sizeof(mirrors[0]); m++) {
-        const char *h = (m == 0) ? hex_upper : hex_lower;
+        const char *h = (m == 0 || m == 3) ? hex_upper : hex_lower;
         char url[256];
         snprintf(url, sizeof(url), mirrors[m], h);
 
@@ -319,11 +320,12 @@ static uint8_t *fetch_http_torrent_cache(const uint8_t info_hash[20], size_t *ou
         curl_easy_setopt(curl, CURLOPT_URL, url);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_cb);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 4L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 2L);
+        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 2L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
         CURLcode rc = curl_easy_perform(curl);
         long status = 0;
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -400,64 +402,68 @@ int torrent_load_magnet_peers(torrent_meta *t, const char *magnet_uri,
     stub.tracker_count = m.tracker_count;
     stub.total_len = 0;
 
+    // 1. Fast path: check fast HTTP torrent metadata cache first (~0.5s)
+    uint8_t *metadata = NULL;
+    size_t meta_len = 0;
+    metadata = fetch_http_torrent_cache(m.info_hash, &meta_len);
+
     torrent_meta_state = META_ANNOUNCE;
     peer_addr peers[80];
     int n = torrent_announce(&stub, peers, 80, err, errlen);
-    // stub trackers are borrowed from the magnet; do not unload it.
-    if (n <= 0) {
+
+    if (n <= 0 && !metadata) {
         magnet_free(&m);
         torrent_meta_state = META_FAIL;
         set_err(err, errlen, "no peer to fetch metadata from");
         return -1;
     }
-    torrent_meta_state = META_FETCH;
 
-    uint8_t peer_id[20];
-    memcpy(peer_id, "-SW0001-", 8);
-    srand((unsigned)time(NULL));
-    for (int i = 8; i < 20; i++) peer_id[i] = (uint8_t)(rand() % 256);
-
-    // Ask several peers at once for the metadata (BEP 9); the first to answer
-    // wins and the rest stop. Progress is published for the UI to poll.
-    torrent_meta_peers_total = n;
-    torrent_meta_peers_tried = 0;
-
-    meta_fetch fetch;
-    memset(&fetch, 0, sizeof(fetch));
-    mutexInit(&fetch.lock);
-    fetch.peers     = peers;
-    fetch.n         = n;
-    fetch.info_hash = m.info_hash;
-    fetch.peer_id   = peer_id;
-
-    int nw = n < META_WORKERS ? n : META_WORKERS;
-    Thread workers[META_WORKERS];
-    int started = 0;
-    for (int i = 0; i < nw; i++) {
-        if (threadCreate(&workers[started], meta_worker, &fetch, NULL, 0x10000,
-                         0x2C, -2) != 0)
-            break;
-        if (threadStart(&workers[started]) != 0) {
-            threadClose(&workers[started]);
-            break;
-        }
-        started++;
-    }
-    // No worker could start: still fetch it, just on this thread. Slow beats
-    // "no peer provided the metadata" when the swarm was fine.
-    if (started == 0)
-        meta_worker(&fetch);
-
-    for (int i = 0; i < started; i++) {
-        threadWaitForExit(&workers[i]);
-        threadClose(&workers[i]);
-    }
-
-    uint8_t *metadata = fetch.metadata;
-    size_t meta_len   = fetch.meta_len;
     if (!metadata) {
-        metadata = fetch_http_torrent_cache(m.info_hash, &meta_len);
+        torrent_meta_state = META_FETCH;
+
+        uint8_t peer_id[20];
+        memcpy(peer_id, "-SW0001-", 8);
+        srand((unsigned)time(NULL));
+        for (int i = 8; i < 20; i++) peer_id[i] = (uint8_t)(rand() % 256);
+
+        // Ask several peers at once for the metadata (BEP 9); the first to answer
+        // wins and the rest stop. Progress is published for the UI to poll.
+        torrent_meta_peers_total = n;
+        torrent_meta_peers_tried = 0;
+
+        meta_fetch fetch;
+        memset(&fetch, 0, sizeof(fetch));
+        mutexInit(&fetch.lock);
+        fetch.peers     = peers;
+        fetch.n         = n;
+        fetch.info_hash = m.info_hash;
+        fetch.peer_id   = peer_id;
+
+        int nw = n < META_WORKERS ? n : META_WORKERS;
+        Thread workers[META_WORKERS];
+        int started = 0;
+        for (int i = 0; i < nw; i++) {
+            if (threadCreate(&workers[started], meta_worker, &fetch, NULL, 0x10000,
+                             0x2C, -2) != 0)
+                break;
+            if (threadStart(&workers[started]) != 0) {
+                threadClose(&workers[started]);
+                break;
+            }
+            started++;
+        }
+        if (started == 0)
+            meta_worker(&fetch);
+
+        for (int i = 0; i < started; i++) {
+            threadWaitForExit(&workers[i]);
+            threadClose(&workers[i]);
+        }
+
+        metadata = fetch.metadata;
+        meta_len = fetch.meta_len;
     }
+
     if (!metadata) {
         magnet_free(&m);
         torrent_meta_state = META_FAIL;
@@ -790,35 +796,42 @@ int torrent_announce_cb(const torrent_meta *t, torrent_peer_cb cb, void *ctx,
     ajob *jobs = calloc(t->tracker_count, sizeof(*jobs));
     if (!jobs) { set_err(err, errlen, "out of memory (announce)"); return -1; }
 
-    for (int i = 0; i < t->tracker_count; i++) {
-        ajob *j = &jobs[i];
-        j->tracker = t->trackers[i];
-        j->info_hash = t->info_hash;
-        memcpy(j->peer_id, peer_id, 20);
-        memcpy(j->hash_enc, hash_enc, sizeof(hash_enc));
-        memcpy(j->peer_id_enc, peer_id_enc, sizeof(peer_id_enc));
-        j->left = t->total_len;
-        j->cb = cb;
-        j->cb_ctx = ctx;
-        j->cancel = cancel;
-
-        if (threadCreate(&j->thread, announce_thread, j, NULL, 0x8000, 0x2C, -2) == 0) {
-            j->has_thread = true;
-            threadStart(&j->thread);
-        } else {
-            announce_thread(j);  // fall back to inline if the thread won't start
-        }
-    }
-
     int answered = 0;
-    for (int i = 0; i < t->tracker_count; i++) {
-        ajob *j = &jobs[i];
-        if (j->has_thread) {
-            threadWaitForExit(&j->thread);
-            threadClose(&j->thread);
+    int batch_size = 6;
+    for (int b = 0; b < t->tracker_count; b += batch_size) {
+        int end = b + batch_size;
+        if (end > t->tracker_count) end = t->tracker_count;
+
+        for (int i = b; i < end; i++) {
+            ajob *j = &jobs[i];
+            j->tracker = t->trackers[i];
+            j->info_hash = t->info_hash;
+            memcpy(j->peer_id, peer_id, 20);
+            memcpy(j->hash_enc, hash_enc, sizeof(hash_enc));
+            memcpy(j->peer_id_enc, peer_id_enc, sizeof(peer_id_enc));
+            j->left = t->total_len;
+            j->cb = cb;
+            j->cb_ctx = ctx;
+            j->cancel = cancel;
+
+            if (threadCreate(&j->thread, announce_thread, j, NULL, 0x8000, 0x2C, -2) == 0) {
+                j->has_thread = true;
+                threadStart(&j->thread);
+            } else {
+                announce_thread(j);
+            }
         }
-        if (j->count > 0) answered++;
-        tlog("tracker %.1fs (%d) %.60s", j->secs, j->count, j->tracker);
+
+        for (int i = b; i < end; i++) {
+            ajob *j = &jobs[i];
+            if (j->has_thread) {
+                threadWaitForExit(&j->thread);
+                threadClose(&j->thread);
+            }
+            if (j->count > 0) answered++;
+            tlog("tracker %.1fs (%d) %.60s", j->secs, j->count, j->tracker);
+        }
+        if (cancel && *cancel) break;
     }
 
     free(jobs);
