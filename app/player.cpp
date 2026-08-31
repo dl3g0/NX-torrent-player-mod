@@ -253,7 +253,8 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
                 title.compare(title.size() - 8, 8, ".torrent") == 0)
                 title = title.substr(0, title.size() - 8);
         }
-        lastSample = std::chrono::steady_clock::now();
+        streamStartTime = std::chrono::steady_clock::now();
+        lastSample = streamStartTime;
         // What the pause overlay shows: the caller's episode/film title when it
         // gave one, otherwise the name derived above.
         pauseTitle = watch.displayTitle.empty() ? title : watch.displayTitle;
@@ -460,13 +461,13 @@ bool MpvView::startMpv()
                               "Chrome/122.0.0.0 Safari/537.36");
         mpv_set_option_string(mpv, "http-header-fields", "Accept: */*");
         mpv_set_option_string(mpv, "stream-lavf-o",
-                              "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5");
+                              "reconnect=1,reconnect_streamed=1,reconnect_delay_max=3");
         mpv_set_option_string(mpv, "demuxer-seekable-cache", "yes");
         mpv_set_option_string(mpv, "force-seekable", "yes");
         mpv_set_option_string(mpv, "hr-seek", "yes");
         mpv_set_option_string(mpv, "hr-seek-framedrop", "yes");
         mpv_set_option_string(mpv, "framedrop", "vo");
-        mpv_set_option_string(mpv, "network-timeout", "20");
+        mpv_set_option_string(mpv, "network-timeout", "15");
         mpv_set_option_string(mpv, "cache-pause", "no");
         mpv_set_option_string(mpv, "cache-pause-initial", "no");
         mpv_set_option_string(mpv, "ytdl", "no");
@@ -2231,6 +2232,12 @@ void MpvView::updateLoadingOverlay()
 
     if (isHttpStream)
     {
+        if (engineFailed)
+        {
+            if (statusLabel) statusLabel->setText(tr("Failed: ") + engineError);
+            return;
+        }
+
         if (fileLoaded && mpv)
         {
             ready = true;
@@ -2243,6 +2250,16 @@ void MpvView::updateLoadingOverlay()
         else
         {
             auto now  = std::chrono::steady_clock::now();
+            double elapsed = std::chrono::duration<double>(now - streamStartTime).count();
+            if (elapsed > 18.0)
+            {
+                engineFailed = true;
+                engineError  = tr("Connection timeout. Press B to select another source.");
+                if (statusLabel) statusLabel->setText(tr("Failed: ") + engineError);
+                if (statsLabel) statsLabel->setText(tr("Press B to return"));
+                return;
+            }
+
             double dt = std::chrono::duration<double>(now - lastSample).count();
             if (dt >= 0.5)
             {

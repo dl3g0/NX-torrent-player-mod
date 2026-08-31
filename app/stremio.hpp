@@ -98,7 +98,7 @@ std::string cachedPosterPath(const std::string& id);
 
 // Processes paced texture loading on the UI thread (up to maxPerFrame per frame)
 // to prevent frame drops / freezing when many posters land at once.
-void processPendingImageUploads(int maxPerFrame = 2);
+void processPendingImageUploads(int maxPerFrame = 4);
 
 struct LibraryResult
 {
@@ -358,6 +358,7 @@ const std::vector<std::string>& viewLabels();
 void setViewTabSink(std::function<void(int)> sink);
 void setViewSelector(std::function<void(int)> selector);
 void selectActiveView(int index);
+void reportView(int index);
 
 // A blurred, screen-sized-friendly copy of a cached poster, made once and
 // cached next to it. "" if the poster cannot be read.
@@ -445,11 +446,14 @@ class StremioTab : public brls::Box
     void selectView(View v);       // jump straight to a view (header tab bar)
     void renderView();         // (re)build the list for the current view
     void renderHome();         // renders unified Home with movies, shows, and addon strips
+    void renderContinueWatching();
+    void renderLibrary();
     void showItems(const std::vector<stremio::LibItem>& items,
                    const std::string& header, const char* emptyMsg);
     void loadCatalog(const char* type, std::vector<stremio::LibItem>& cache,
                      bool& loaded, const std::string& header);
     brls::Box* addItemRow(const stremio::LibItem& it);  // one poster row into libList
+    brls::Box* addItemRowTo(brls::Box* parent, const stremio::LibItem& it);
     // Builds a poster row without parenting it (Search's split columns place it
     // themselves). showType appends the "Movie"/"Show" tag; a one-type column hides it.
     // Dispatches on config::listStyle to one of the two builders below.
@@ -490,6 +494,7 @@ class StremioTab : public brls::Box
     // catalog request the Popular views make.
     const char* catalogType() const;
     void addHeading(const std::string& title, float top, float bottom, float left);
+    void addHeadingTo(brls::Box* parent, const std::string& title, float top, float bottom, float left);
     float headingInset() const;  // where a heading starts, per style
     // What the heading over the current view's strip says.
     const char* sectionTitle() const;
@@ -498,6 +503,8 @@ class StremioTab : public brls::Box
     const std::vector<stremio::LibItem>* featuredCache();
     void loadFeatured(const char* type);  // one attempt per type per session
     void loadAddonCatalogs(const char* type); // loads dynamic addon catalogs (Streaming Catalogs, etc.)
+    void scheduleRenderHome(); // coalesces multiple background catalog loads
+    bool homeRenderScheduled = false;
     // X on a Continue Watching tile takes it out of that row (by clearing its
     // watch state, which is what the row is derived from). No-op in every other
     // view -- the footer hint comes from the registered action, so registering
@@ -559,6 +566,10 @@ class StremioTab : public brls::Box
     brls::Button* loginBtn   = nullptr;
     brls::Label* libStatus   = nullptr;
     brls::Box* libList       = nullptr;
+    brls::Box* homeBox       = nullptr;
+    brls::Box* continueBox   = nullptr;
+    brls::Box* libraryBoxView = nullptr;
+    brls::Box* searchBox     = nullptr;
     brls::ScrollingFrame* libScroll = nullptr;  // to reset the scroll on a view change
 
     // Centered status/loading overlay: the message label (libStatus) plus an

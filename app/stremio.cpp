@@ -30,6 +30,7 @@
 #include <deque>
 #include <map>
 #include <set>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -424,14 +425,21 @@ void setViewCycler(std::function<void(int)> cycler)
 // view. Mirrors the viewCycler wiring above.
 static std::function<void(int)> viewTabSink;
 static std::function<void(int)> viewSelector;
+static int lastReportedView = 0;
 
-void setViewTabSink(std::function<void(int)> sink) { viewTabSink = std::move(sink); }
+void setViewTabSink(std::function<void(int)> sink)
+{
+    viewTabSink = std::move(sink);
+    if (viewTabSink && lastReportedView >= 0)
+        viewTabSink(lastReportedView);
+}
 void setViewSelector(std::function<void(int)> sel) { viewSelector = std::move(sel); }
 
 // Called by the tab whenever its view (or sign-in state) changes; -1 hides the
 // bar. A no-op if the header never registered a sink (e.g. the PC test build).
-static void reportView(int index)
+void reportView(int index)
 {
+    lastReportedView = index;
     if (viewTabSink) viewTabSink(index);
 }
 
@@ -1210,13 +1218,46 @@ std::string posterCachePath(const std::string& id)
     return std::string(APPDATA_POSTERS) + "/" + safe + ".jpg";
 }
 
+namespace
+{
+static std::mutex g_posterCacheMtx;
+static std::unordered_set<std::string> g_knownCachedPosters;
+static bool g_posterCacheScanned = false;
+
+static void ensurePosterCacheScanned()
+{
+    if (g_posterCacheScanned) return;
+    g_posterCacheScanned = true;
+    DIR* d = opendir(APPDATA_POSTERS);
+    if (!d) return;
+    struct dirent* de;
+    while ((de = readdir(d)) != nullptr)
+    {
+        if (de->d_name[0] == '.') continue;
+        std::string fullPath = std::string(APPDATA_POSTERS) + "/" + de->d_name;
+        g_knownCachedPosters.insert(fullPath);
+    }
+    closedir(d);
+}
+} // namespace
+
 std::string cachedPosterPath(const std::string& id)
 {
     if (id.empty()) return "";
     std::string path = posterCachePath(id);
+
+    {
+        std::lock_guard<std::mutex> lock(g_posterCacheMtx);
+        ensurePosterCacheScanned();
+        if (g_knownCachedPosters.count(path))
+            return path;
+    }
+
     if (FILE* f = std::fopen(path.c_str(), "rb"))
     {
         std::fclose(f);
+        std::lock_guard<std::mutex> lock(g_posterCacheMtx);
+        g_knownCachedPosters.insert(path);
         return path;
     }
     return "";
@@ -1262,8 +1303,8 @@ public:
         {
             std::unique_lock<std::mutex> lock(mtx);
             stop = true;
+            cv.notify_all();
         }
-        cv.notify_all();
         for (auto& t : workers)
         {
             if (t.joinable()) t.join();
@@ -1352,6 +1393,10 @@ private:
                 {
                     std::fwrite(body.data(), 1, body.size(), f);
                     std::fclose(f);
+                    {
+                        std::lock_guard<std::mutex> lock(g_posterCacheMtx);
+                        g_knownCachedPosters.insert(task.path);
+                    }
                 }
                 else ok = false;
             }
@@ -1572,7 +1617,12 @@ void fetchAddonsAsync(const std::string& authKey,
             {
                 Addon a;
                 a.rawJson = o;
-                a.name = json::str(o, "name");
+                std::string mObj = subObject(o, "manifest");
+                std::string mBody = mObj.empty() ? o : mObj;
+
+                a.name = json::str(mBody, "name");
+                if (a.name.empty()) a.name = json::str(o, "name");
+
                 std::string url = json::str(o, "transportUrl");
                 if (url.empty() && o.find("\"manifest\"") != std::string::npos)
                     url = json::str(o, "url");
@@ -1590,22 +1640,30 @@ void fetchAddonsAsync(const std::string& authKey,
 
                 // "resources" is either ["stream",...] or a list of objects with
                 // a "name" -- both shapes are legal in the addon spec.
-                auto res = json::strings(o, "resources");
+                auto res = json::strings(mBody, "resources");
                 if (res.empty())
-                    for (const auto& ro : json::objects(o, "resources"))
-                        res.push_back(json::str(ro, "name"));
+                    res = json::strings(o, "resources");
+
+                for (const auto& ro : json::objects(mBody, "resources"))
+                {
+                    std::string resName = json::str(ro, "name");
+                    if (!resName.empty()) res.push_back(resName);
+                    for (const auto& rt : json::strings(ro, "types"))
+                        a.types.push_back(rt);
+                }
+
                 for (const auto& x : res)
                 {
                     if (x == "meta") a.hasMeta = true;
                     if (x == "stream") a.hasStream = true;
                     if (x == "subtitles") a.hasSubtitles = true;
                 }
-                a.types = json::strings(o, "types");
 
-                std::string mObj = subObject(o, "manifest");
-                std::string mBody = mObj.empty() ? o : mObj;
-                std::string mName = json::str(mBody, "name");
-                if (!mName.empty()) a.name = mName;
+                for (const auto& tt : json::strings(mBody, "types"))
+                    a.types.push_back(tt);
+                if (a.types.empty())
+                    for (const auto& tt : json::strings(o, "types"))
+                        a.types.push_back(tt);
 
                 for (const auto& c : json::objects(mBody, "catalogs"))
                 {
@@ -1660,53 +1718,94 @@ void removeAddonAsync(const std::string& authKey, const std::string& transportUr
             return;
         }
 
-        auto objects = json::objects(getResp, "addons");
-        std::string addonsArr;
+        auto addons = json::objects(getResp, "addons");
+        std::string kept = "[";
         bool first = true;
-        for (const auto& o : objects)
+        for (const auto& o : addons)
         {
-            std::string tUrl = json::str(o, "transportUrl");
-            if (tUrl.empty() && o.find("\"manifest\"") != std::string::npos)
-                tUrl = json::str(o, "url");
-
-            if (!transportUrl.empty() &&
-                (tUrl == transportUrl || tUrl.find(transportUrl) != std::string::npos ||
-                 transportUrl.find(tUrl) != std::string::npos))
-                continue;
-
-            if (!first) addonsArr += ",";
-            addonsArr += o;
+            std::string u = json::str(o, "transportUrl");
+            if (u == transportUrl) continue;
+            if (!first) kept += ",";
+            kept += o;
             first = false;
         }
+        kept += "]";
 
-        std::string setBody = "{\"type\":\"AddonCollectionSet\",\"authKey\":\"" +
-                              json::escape(authKey) + "\",\"addons\":[" + addonsArr + "]}";
+        std::string setBody =
+            "{\"authKey\":\"" + json::escape(authKey) + "\",\"addons\":" + kept + "}";
         std::string setResp, setErr;
-        bool ok = false;
-        std::string errMsg;
+        bool ok = http::postJson("https://api.strem.io/api/addonCollectionSet",
+                                 setBody, setResp, setErr);
+        if (ok) clearAddonCache();
+        brls::sync([done, ok, setErr]() {
+            if (done) done(ok, ok ? "" : setErr);
+        });
+    });
+}
 
-        if (!http::postJson("https://api.strem.io/api/addonCollectionSet", setBody,
-                            setResp, setErr))
+void installAddonAsync(const std::string& authKey, const std::string& manifestUrl,
+                       std::function<void(bool ok, std::string err)> done)
+{
+    if (authKey.empty() || manifestUrl.empty())
+    {
+        if (done) done(false, tr("Invalid account or URL"));
+        return;
+    }
+
+    brls::async([authKey, manifestUrl, done]() {
+        std::string mResp, mErr;
+        if (!http::get(manifestUrl, mResp, mErr))
         {
-            errMsg = setErr;
+            brls::sync([done, mErr]() {
+                if (done) done(false, mErr.empty() ? tr("Could not fetch manifest") : mErr);
+            });
+            return;
         }
-        else
+        std::string mId = json::str(mResp, "id");
+        if (mId.empty())
         {
-            std::string errStr = json::str(setResp, "error");
-            if (errStr.empty()) errStr = json::str(setResp, "message");
-            if (errStr.empty())
-            {
-                ok = true;
-                clearAddonCache();
-            }
-            else
-            {
-                errMsg = errStr;
-            }
+            brls::sync([done]() {
+                if (done) done(false, tr("Invalid addon manifest (missing id)"));
+            });
+            return;
         }
 
-        brls::sync([done, ok, errMsg]() {
-            if (done) done(ok, errMsg);
+        std::string getBody =
+            "{\"authKey\":\"" + json::escape(authKey) + "\",\"update\":true}";
+        std::string getResp, getErr;
+        if (!http::postJson("https://api.strem.io/api/addonCollectionGet", getBody,
+                            getResp, getErr))
+        {
+            brls::sync([done, getErr]() {
+                if (done) done(false, getErr);
+            });
+            return;
+        }
+
+        auto addons = json::objects(getResp, "addons");
+        std::string updated = "[";
+        bool first = true;
+        for (const auto& o : addons)
+        {
+            std::string u = json::str(o, "transportUrl");
+            if (u == manifestUrl) continue;
+            if (!first) updated += ",";
+            updated += o;
+            first = false;
+        }
+        if (!first) updated += ",";
+        std::string entry = "{\"transportUrl\":\"" + json::escape(manifestUrl) +
+                            "\",\"manifest\":" + mResp + ",\"flags\":{\"official\":false,\"protected\":false}}";
+        updated += entry + "]";
+
+        std::string setBody =
+            "{\"authKey\":\"" + json::escape(authKey) + "\",\"addons\":" + updated + "}";
+        std::string setResp, setErr;
+        bool ok = http::postJson("https://api.strem.io/api/addonCollectionSet",
+                                 setBody, setResp, setErr);
+        if (ok) clearAddonCache();
+        brls::sync([done, ok, setErr]() {
+            if (done) done(ok, ok ? "" : setErr);
         });
     });
 }
@@ -1826,7 +1925,21 @@ void fetchStreamsAsync(const std::string& addonBase, const std::string& type,
         std::string url = addonBase + "/stream/" + http::urlEncode(type) + "/" +
                           http::urlEncode(id) + ".json";
         std::string resp, err;
-        if (!http::get(url, resp, err))
+        bool ok = http::get(url, resp, err);
+        if ((!ok || resp.find("\"streams\"") == std::string::npos || json::objects(resp, "streams").empty()) &&
+            url.find("%3A") != std::string::npos)
+        {
+            std::string rawUrl = addonBase + "/stream/" + type + "/" + id + ".json";
+            std::string rResp, rErr;
+            if (http::get(rawUrl, rResp, rErr) && rResp.find("\"streams\"") != std::string::npos && !json::objects(rResp, "streams").empty())
+            {
+                resp = rResp;
+                err.clear();
+                ok = true;
+            }
+        }
+
+        if (!ok)
         {
             r.error = err;
         }
@@ -1841,6 +1954,11 @@ void fetchStreamsAsync(const std::string& addonBase, const std::string& type,
                 if (s.title.empty()) s.title = json::str(o, "description");
                 s.infoHash = json::str(o, "infoHash");
                 s.url      = json::str(o, "url");
+                if (s.url.empty()) s.url = json::str(o, "externalUrl");
+                if (s.url.empty()) s.url = json::str(o, "androidUrl");
+                std::string ytId = json::str(o, "ytId");
+                if (!ytId.empty() && s.url.empty())
+                    s.url = "https://www.youtube.com/watch?v=" + ytId;
                 s.sources  = json::strings(o, "sources");
                 // Season packs bundle every episode in one torrent; the addon
                 // says which file this stream is. Absent -> -1 (largest file).
@@ -2285,9 +2403,23 @@ StremioTab::StremioTab()
     libScroll = scroll;
     libList = new brls::Box();
     libList->setAxis(brls::Axis::COLUMN);
-    // No margin here: ScrollingFrame::setContentView() detaches the content view
-    // and forces setWidth(frameWidth), so anything set on this box is ignored.
-    // The inset has to live on the rows themselves (see showItems).
+
+    homeBox = new brls::Box();
+    homeBox->setAxis(brls::Axis::COLUMN);
+    homeBox->setGrow(1.0f);
+
+    continueBox = new brls::Box();
+    continueBox->setAxis(brls::Axis::COLUMN);
+    continueBox->setGrow(1.0f);
+
+    libraryBoxView = new brls::Box();
+    libraryBoxView->setAxis(brls::Axis::COLUMN);
+    libraryBoxView->setGrow(1.0f);
+
+    searchBox = new brls::Box();
+    searchBox->setAxis(brls::Axis::COLUMN);
+    searchBox->setGrow(1.0f);
+
     scroll->setContentView(libList);
     libraryBox->addView(scroll);
 
@@ -2383,7 +2515,7 @@ StremioTab::StremioTab()
                 if (cur && cur->getNextFocus(brls::FocusDirection::LEFT, cur))
                     return false;
             }
-            if (!authKey.empty() && libLoaded) cycleView(-1);
+            if (!authKey.empty()) cycleView(-1);
             return true;
         },
         true, false, brls::SOUND_NONE);
@@ -2392,13 +2524,12 @@ StremioTab::StremioTab()
     // Registered on the frame (main.cpp) via this cycler, not on the tab, so R/L
     // also work while focus is on the header tab bar (outside this view tree).
     stremio::setViewCycler([this](int dir) {
-        if (!authKey.empty() && libLoaded) cycleView(dir);
+        if (!authKey.empty()) cycleView(dir);
     });
 
-    // A header view-bar button jumps straight to that view. Same guard as the
-    // cycler: no-op until the library is up.
+    // A header view-bar button jumps straight to that view.
     stremio::setViewSelector([this](int idx) {
-        if (!authKey.empty() && libLoaded)
+        if (!authKey.empty())
             selectView(static_cast<View>(idx));
     });
     // Hidden until we render a view: a fresh tab shows the sign-in form, and the
@@ -2424,6 +2555,16 @@ StremioTab::~StremioTab()
     stremio::reportView(-1);           // fold the header bar away with the tab
     if (focusSubbed)
         brls::Application::getGlobalFocusChangeEvent()->unsubscribe(focusSub);
+
+    auto safeFree = [](brls::Box* b) {
+        if (!b) return;
+        if (!b->getParent())
+            delete b;
+    };
+    safeFree(homeBox);
+    safeFree(continueBox);
+    safeFree(libraryBoxView);
+    safeFree(searchBox);
 }
 
 void StremioTab::onGlobalFocus(brls::View* focused)
@@ -2637,6 +2778,7 @@ void StremioTab::onAuthenticated(const std::string& key, bool announce)
         dialog(tr("Signed in"));
 
     loadLibrary();
+    renderView();
 }
 
 void StremioTab::parkFocusOffList()
@@ -2647,7 +2789,13 @@ void StremioTab::parkFocusOffList()
     // crash. libraryBox is alive throughout; the caller rebuilds and hands focus
     // back to a row afterwards.
     brls::View* cur = brls::Application::getCurrentFocus();
-    if (cur && libList && isUnder(cur, libList))
+    if (cur && (
+        (libList && isUnder(cur, libList)) ||
+        (searchBox && isUnder(cur, searchBox)) ||
+        (homeBox && isUnder(cur, homeBox)) ||
+        (continueBox && isUnder(cur, continueBox)) ||
+        (libraryBoxView && isUnder(cur, libraryBoxView))
+    ))
     {
         libraryBox->setFocusable(true);
         libraryBox->setHideHighlight(true);
@@ -2760,31 +2908,25 @@ void StremioTab::draw(NVGcontext* vg, float x, float y, float width, float heigh
 
 void StremioTab::loadLibrary()
 {
-    showStatus(tr("Loading library..."), true);
-    stremio::setLibraryCount("");  // header back to a plain title while loading
-    parkFocusOffList();
-
-    *rowsAlive = false;                       // drop any in-flight poster fetch
-    rowsAlive  = std::make_shared<bool>(true);
-    libList->clearViews();
-
-    // Warm the addon cache now, in parallel with the library: by the time a
-    // title is picked it is already there, instead of costing a round-trip
-    // before the addon list can be shown. The result is dropped -- the point is
-    // the cache it fills (see fetchAddonsAsync).
     stremio::fetchAddonsAsync(authKey, [](stremio::AddonsResult) {});
 
     stremio::fetchLibraryAsync(authKey, [this, live = alive](stremio::LibraryResult r) {
         if (!*live) return;
         if (!r.ok)
         {
-            showStatus(tr("Error"), false);
-            dialog(tr("Library unavailable: ") + r.error);
+            if (view == View::ContinueWatching || view == View::Library)
+            {
+                showStatus(tr("Error"), false);
+                dialog(tr("Library unavailable: ") + r.error);
+            }
             return;
         }
         libItems  = r.items;   // cached for Continue Watching + Library views
         libLoaded = true;
-        renderView();          // lands on the default view (Continue Watching)
+        renderContinueWatching();
+        renderLibrary();
+        if (view == View::ContinueWatching || view == View::Library)
+            renderView();
     });
 }
 
@@ -2811,27 +2953,27 @@ void StremioTab::selectView(View v)
     renderView();
 }
 
-// Builds the list for the current view. Continue Watching and Library come from
-// the cached library; the two Popular views pull Cinemeta's top catalog once and
-// cache it, showing a loading line in between.
+// Builds or toggles the list for the current view.
 void StremioTab::renderView()
 {
     stremio::reportView(static_cast<int>(view));  // light up the header tab bar
-    // The list's left inset belongs to the rows in every style but the poster
-    // strip, which runs to the screen edge instead: with the inset, a card being
-    // scrolled out was cut short of the edge with a band of background beside
-    // it, which reads as clipped rather than as sliding away. The strip carries
-    // that inset on its first card, and Search on its bar and its headings.
     libraryBox->setPaddingLeft(posterStyle() ? 0.0f : kPosterInset);
-    // No scroll indicator in the poster style: a page of strips is meant to be
-    // read across, and the bar pinned to the right edge sat over the artwork.
     if (libScroll) libScroll->setScrollingIndicatorVisible(!posterStyle());
 
     parkFocusOffList();
-    *rowsAlive = false;
-    rowsAlive  = std::make_shared<bool>(true);
-    libList->clearViews();
-    homeRenderedStrips.clear();
+    libList->clearViews(false);
+
+    brls::Box* activeBox = nullptr;
+    switch (view)
+    {
+        case View::Home: activeBox = homeBox; break;
+        case View::ContinueWatching: activeBox = continueBox; break;
+        case View::Library: activeBox = libraryBoxView; break;
+        case View::Search: activeBox = searchBox; break;
+        default: break;
+    }
+    if (activeBox) libList->addView(activeBox);
+
     loadingBox->setVisibility(brls::Visibility::GONE);
 
     switch (view)
@@ -2840,79 +2982,136 @@ void StremioTab::renderView()
             renderHome();
             break;
         case View::ContinueWatching:
-        {
-            // Library items with playback started but not finished, newest first
-            // (the library is already sorted by mtime desc). Not every one is in
-            // the library proper -- Stremio auto-adds watched titles as temp
-            // entries, which is exactly Continue Watching.
-            // The just-played position updates locally the instant playback ends,
-            // before the server round-trip. Overlay it so a finished episode shows
-            // as advanced to the next one here and now, rather than waiting for --
-            // or racing -- the library refetch. The server catches up on reload.
-            stremio::LocalWatch lw = stremio::lastWatch();
-            std::vector<stremio::LibItem> cw;
-            for (auto it : libItems)  // by value: overlaid below
-            {
-                if (lw.itemId == it.id && !lw.videoId.empty())
-                {
-                    it.videoId      = lw.videoId;
-                    it.timeOffsetMs = lw.offsetMs;
-                    it.durationMs   = lw.durationMs;
-                }
-                double p           = it.progress();
-                bool   inProgress  = p > 0.005 && p < 0.95;
-                // A watched series stays in Continue Watching even once the current
-                // episode is finished (>=95%) or already advanced to the next at
-                // offset 0 (p < 0): Stremio shows it on the next episode. We keep
-                // any series with a watched episode -- opening it lands on the right
-                // episode (buildEpisodeCards advances past a finished one). Movies
-                // still drop when finished.
-                bool watchedSeries = it.type == "series" && !it.videoId.empty();
-                if (inProgress || watchedSeries) cw.push_back(it);
-            }
-            //  history -- Material glyph in the header title.
-            showItems(cw, std::string("  ") + tr("Continue Watching"),
-                      tr("Nothing in progress"));
+            renderContinueWatching();
             break;
-        }
         case View::Library:
-        {
-            // The grid is the explicit library only -- drop the removed entries we
-            // now keep for Continue Watching.
-            std::vector<stremio::LibItem> lib;
-            for (const auto& it : libItems)
-                if (!it.removed) lib.push_back(it);
-            showItems(lib,
-                      std::string("  ") + tr("Library") + " \xC2\xB7 " +
-                          std::to_string(lib.size()) + tr(" items"),
-                      tr("Library is empty"));
+            renderLibrary();
             break;
-        }
         case View::Search:
-            renderSearch();
+            if (searchBox && searchBox->getChildren().empty())
+                renderSearch();
+            else if (searchBox)
+                finishList(searchBox->getChildren().empty() ? nullptr : searchBox->getChildren().back());
             break;
         default:
             break;
     }
 }
 
+void StremioTab::renderContinueWatching()
+{
+    if (!continueBox) return;
+    parkFocusOffList();
+    *rowsAlive = false;
+    rowsAlive  = std::make_shared<bool>(true);
+    continueBox->clearViews();
+
+    stremio::LocalWatch lw = stremio::lastWatch();
+    std::vector<stremio::LibItem> cw;
+    for (auto it : libItems)
+    {
+        if (lw.itemId == it.id && !lw.videoId.empty())
+        {
+            it.videoId      = lw.videoId;
+            it.timeOffsetMs = lw.offsetMs;
+            it.durationMs   = lw.durationMs;
+        }
+        double p           = it.progress();
+        bool   inProgress  = p > 0.005 && p < 0.95;
+        bool watchedSeries = it.type == "series" && !it.videoId.empty();
+        if (inProgress || watchedSeries) cw.push_back(it);
+    }
+
+    std::string header = std::string("  ") + tr("Continue Watching");
+    stremio::setLibraryCount(header);
+
+    if (cw.empty())
+    {
+        auto* emptyLbl = new brls::Label();
+        emptyLbl->setText(tr("Nothing in progress"));
+        emptyLbl->setFontSize(22.0f);
+        emptyLbl->setTextColor(theme::textMuted());
+        emptyLbl->setMargins(40.0f, 0.0f, 0.0f, headingInset());
+        continueBox->addView(emptyLbl);
+        finishList(emptyLbl);
+        return;
+    }
+
+    if (posterStyle())
+    {
+        brls::View* strip = buildPosterStrip(cw, true, nullptr);
+        continueBox->addView(strip);
+        finishList(strip);
+        return;
+    }
+
+    const float ins = headingInset();
+    addHeadingTo(continueBox, tr("Continue watching"), 0.0f, 10.0f, ins);
+    brls::View* last = nullptr;
+    for (const auto& it : cw)
+        last = addItemRowTo(continueBox, it);
+    finishList(last);
+}
+
+void StremioTab::renderLibrary()
+{
+    if (!libraryBoxView) return;
+    parkFocusOffList();
+    *rowsAlive = false;
+    rowsAlive  = std::make_shared<bool>(true);
+    libraryBoxView->clearViews();
+
+    std::vector<stremio::LibItem> lib;
+    for (const auto& it : libItems)
+        if (!it.removed) lib.push_back(it);
+
+    std::string header = std::string("  ") + tr("Library") + " \xC2\xB7 " +
+                         std::to_string(lib.size()) + " " + tr("items");
+    stremio::setLibraryCount(header);
+
+    if (lib.empty())
+    {
+        auto* emptyLbl = new brls::Label();
+        emptyLbl->setText(tr("Library is empty"));
+        emptyLbl->setFontSize(22.0f);
+        emptyLbl->setTextColor(theme::textMuted());
+        emptyLbl->setMargins(40.0f, 0.0f, 0.0f, headingInset());
+        libraryBoxView->addView(emptyLbl);
+        finishList(emptyLbl);
+        return;
+    }
+
+    if (posterStyle())
+    {
+        brls::View* strip = buildPosterStrip(lib, true, nullptr);
+        libraryBoxView->addView(strip);
+        finishList(strip);
+        return;
+    }
+
+    const float ins = headingInset();
+    addHeadingTo(libraryBoxView, tr("Library"), 0.0f, 10.0f, ins);
+    brls::View* last = nullptr;
+    for (const auto& it : lib)
+        last = addItemRowTo(libraryBoxView, it);
+    finishList(last);
+}
+
 // The Search view: a focusable search bar at the top (A opens the keyboard),
 // then the results below it. The bar stays so you can search again.
 void StremioTab::renderSearch()
 {
+    if (!searchBox) return;
     parkFocusOffList();
     *rowsAlive = false;
     rowsAlive  = std::make_shared<bool>(true);
-    libList->clearViews();
+    searchBox->clearViews();
     loadingBox->setVisibility(brls::Visibility::GONE);
     stremio::setLibraryCount(std::string("  ") + tr("Search") +
                              (searchQuery.empty()
                                   ? ""
                                   : " \xC2\xB7 " + searchQuery));
 
-    // In the poster style the list gives up its screen inset so the strips can
-    // run to the edge (see renderView), so everything else on this page carries
-    // it instead.
     const float inset = posterStyle() ? kPosterInset : 0.0f;
 
     // The search bar cell.
@@ -2932,8 +3131,6 @@ void StremioTab::renderSearch()
     auto* icon = new brls::Label();
     icon->setText("");  // Material "search" glyph (borealis fallback font)
     icon->setFontSize(34.0f);
-    // The Material glyph sits high in its box; nudge it down to sit level with
-    // the placeholder text.
     icon->setMargins(10.0f, 16.0f, 0.0f, 0.0f);
     bar->addView(icon);
     auto* barText = new brls::Label();
@@ -2944,10 +3141,8 @@ void StremioTab::renderSearch()
                                               : theme::text());
     barText->setSingleLine(true);
     bar->addView(barText);
-    // Gap before the first result (finishList overrides this to the bottom inset
-    // when the bar is the last row, i.e. before any search).
     bar->setMarginBottom(18.0f);
-    libList->addView(bar);
+    searchBox->addView(bar);
 
     brls::View* lastRow = bar;
     columnsShown        = false;  // set below, only by the two-column layout
@@ -2962,25 +3157,29 @@ void StremioTab::renderSearch()
             l->setFontSize(20.0f);
             l->setTextColor(theme::textMuted());
             l->setMargins(24.0f, 0.0f, 8.0f, 20.0f + inset);
-            libList->addView(l);
+            searchBox->addView(l);
             lastRow = l;
         }
         else if (posterStyle())
         {
-            // One strip per type, stacked: films first, then shows, and a type
-            // with no hits gets no section at all rather than an empty strip.
             auto section = [&](const char* title, bool series) {
                 std::vector<stremio::LibItem> sel;
                 for (const auto& it : searchResults)
                     if ((it.type == "series") == series) sel.push_back(it);
-                if (!sel.empty()) lastRow = addStripSection(title, sel, nullptr);
+                if (!sel.empty())
+                {
+                    bool first = searchBox->getChildren().size() <= 1;
+                    addHeadingTo(searchBox, title, first ? 0.0f : 22.0f, 0.0f, headingInset());
+                    brls::View* strip = buildPosterStrip(sel, false, nullptr);
+                    searchBox->addView(strip);
+                    lastRow = strip;
+                }
             };
             section(tr("Movies"), false);
             section(tr("Shows"), true);
         }
         else
         {
-            // Split the results: movies on the left, shows on the right.
             columnsShown = true;
             auto* split  = new brls::Box();
             split->setAxis(brls::Axis::ROW);
@@ -2989,13 +3188,11 @@ void StremioTab::renderSearch()
             auto makeCol = [](const char* title) {
                 auto* col = new brls::Box();
                 col->setAxis(brls::Axis::COLUMN);
-                col->setWidthPercentage(50.0f);  // hard 50/50, not content-sized
+                col->setWidthPercentage(50.0f);
                 auto* h = new brls::Label();
                 h->setText(title);
                 h->setFontSize(20.0f);
                 h->setTextColor(theme::textMuted());
-                // 16, the rows' own left padding: the heading lines up with the
-                // posters under it instead of sitting inside them.
                 h->setMargins(0.0f, 0.0f, 10.0f, 16.0f);
                 col->addView(h);
                 return col;
@@ -3024,7 +3221,7 @@ void StremioTab::renderSearch()
 
             split->addView(moviesCol);
             split->addView(showsCol);
-            libList->addView(split);
+            searchBox->addView(split);
             lastRow = split;
         }
     }
@@ -3053,9 +3250,23 @@ void StremioTab::promptSearch()
         tr("Search Stremio"), "", 128, searchQuery);
 }
 
+void StremioTab::scheduleRenderHome()
+{
+    if (homeRenderScheduled || view != View::Home) return;
+    homeRenderScheduled = true;
+    auto live = alive;
+    brls::sync([this, live]() {
+        if (!*live) return;
+        homeRenderScheduled = false;
+        if (view == View::Home) renderHome();
+    });
+}
+
 // Fetches Cinemeta's "top" catalog for `type` into `cache`, then renders it if
 void StremioTab::renderHome()
 {
+    if (!homeBox) return;
+
     // Start background loads for Cinemeta top and year catalogs if not yet fetched
     if (!popMoviesLoaded)
     {
@@ -3065,7 +3276,7 @@ void StremioTab::renderHome()
                 if (!*live || !r.ok) return;
                 popMovies = r.items;
                 popMoviesLoaded = true;
-                if (view == View::Home) renderHome();
+                if (view == View::Home) scheduleRenderHome();
             });
     }
     if (!popSeriesLoaded)
@@ -3076,7 +3287,7 @@ void StremioTab::renderHome()
                 if (!*live || !r.ok) return;
                 popSeries = r.items;
                 popSeriesLoaded = true;
-                if (view == View::Home) renderHome();
+                if (view == View::Home) scheduleRenderHome();
             });
     }
     loadFeatured("movie");
@@ -3084,13 +3295,8 @@ void StremioTab::renderHome()
     loadAddonCatalogs("movie");
     loadAddonCatalogs("series");
 
-    if (libList->getChildren().empty())
+    if (homeBox->getChildren().empty())
     {
-        parkFocusOffList();
-        *rowsAlive = false;
-        rowsAlive  = std::make_shared<bool>(true);
-        homeRenderedStrips.clear();
-
         if (!popMoviesLoaded && !popSeriesLoaded && featMovies.empty() && featSeries.empty() &&
             addonMovieSections.empty() && addonSeriesSections.empty())
         {
@@ -3099,6 +3305,11 @@ void StremioTab::renderHome()
             return;
         }
 
+        loadingBox->setVisibility(brls::Visibility::GONE);
+        stremio::setLibraryCount(std::string("  ") + tr("Home"));
+    }
+    else
+    {
         loadingBox->setVisibility(brls::Visibility::GONE);
         stremio::setLibraryCount(std::string("  ") + tr("Home"));
     }
@@ -3180,7 +3391,7 @@ void StremioTab::renderHome()
         box->addView(h);
         for (const auto& it : head(items)) box->addView(buildItemRow(it, false));
         if (overflows(items)) box->addView(buildSeeMoreRow(title, items, catType, catId, addonBase));
-        libList->addView(box);
+        homeBox->addView(box);
         last = box;
     };
 
@@ -3276,19 +3487,19 @@ void StremioTab::loadFeatured(const char* type)
         [this, live = alive, want, &cache](stremio::LibraryResult r) {
             if (!*live || !r.ok || r.items.empty()) return;
             cache = r.items;
-            if (view == View::Home) renderHome();
+            if (view == View::Home) scheduleRenderHome();
             else if (view == want) renderView();
         });
 }
 
 void StremioTab::loadAddonCatalogs(const char* type)
 {
+    if (authKey.empty()) return;
+
     bool series = std::string(type) == "series";
     bool& asked = series ? addonSeriesSectionsAsked : addonMovieSectionsAsked;
     if (asked) return;
     asked = true;
-
-    if (authKey.empty()) return;
 
     std::string catType = type;
     stremio::fetchAddonsAsync(authKey, [this, live = alive, catType, series](stremio::AddonsResult r) {
@@ -3327,7 +3538,7 @@ void StremioTab::loadAddonCatalogs(const char* type)
                     {
                         secs[i].items = res.items;
                         secs[i].loaded = true;
-                        if (view == View::Home) renderHome();
+                        if (view == View::Home) scheduleRenderHome();
                         else if (view == want) renderView();
                     }
                 });
@@ -3341,17 +3552,18 @@ brls::View* StremioTab::addStripSection(const std::string& title,
                                         const std::vector<stremio::LibItem>& items,
                                         brls::Box* seeMore)
 {
-    bool first = libList->getChildren().empty();
+    brls::Box* target = homeBox ? homeBox : libList;
+    bool first = target->getChildren().empty();
     if (!title.empty())
     {
         // Nothing under it: the strip carries its own slack for the cursor's
         // glow, and that slack is the gap.
-        addHeading(title, first ? 0.0f : 22.0f, 0.0f, headingInset());
+        addHeadingTo(target, title, first ? 0.0f : 22.0f, 0.0f, headingInset());
         first = false;  // ... the heading is on the page now
     }
     brls::View* strip =
-        buildPosterStrip(items, libList->getChildren().size() <= 1, seeMore);
-    libList->addView(strip);
+        buildPosterStrip(items, target->getChildren().size() <= 1, seeMore);
+    target->addView(strip);
     return strip;
 }
 
@@ -3772,15 +3984,21 @@ void StremioTab::openSection(std::string title,
 // A section heading into libList. `left` is the inset the style needs -- see
 // headingInset(); `bottom` is nothing over a poster strip, which carries slack
 // of its own, and a real gap over rows, which start immediately.
-void StremioTab::addHeading(const std::string& title, float top, float bottom,
-                            float left)
+void StremioTab::addHeadingTo(brls::Box* parent, const std::string& title, float top, float bottom,
+                              float left)
 {
     auto* h = new brls::Label();
     h->setText(title);
     h->setFontSize(20.0f);
     h->setTextColor(theme::textMuted());
     h->setMargins(top, 0.0f, bottom, left);
-    libList->addView(h);
+    if (parent) parent->addView(h);
+}
+
+void StremioTab::addHeading(const std::string& title, float top, float bottom,
+                            float left)
+{
+    addHeadingTo(homeBox ? homeBox : libList, title, top, bottom, left);
 }
 
 // Where a heading has to start to sit over the artwork rather than inside it.
@@ -3859,8 +4077,13 @@ void StremioTab::showItems(const std::vector<stremio::LibItem>& items,
 // Builds one poster/title/progress row for `it`, adds it to libList, returns it.
 brls::Box* StremioTab::addItemRow(const stremio::LibItem& it)
 {
+    return addItemRowTo(libList, it);
+}
+
+brls::Box* StremioTab::addItemRowTo(brls::Box* parent, const stremio::LibItem& it)
+{
     auto* row = buildItemRow(it, true);
-    libList->addView(row);
+    if (parent) parent->addView(row);
     return row;
 }
 
@@ -4571,21 +4794,25 @@ brls::Box* StremioTab::buildClassicRow(const stremio::LibItem& it, bool showType
 // a view change, the up-route to the tab bar, and the bottom inset.
 void StremioTab::finishList(brls::View* lastRow)
 {
-    if (!libList->getChildren().empty())
+    brls::Box* activeBox = nullptr;
+    switch (view)
+    {
+        case View::Home: activeBox = homeBox; break;
+        case View::ContinueWatching: activeBox = continueBox; break;
+        case View::Library: activeBox = libraryBoxView; break;
+        case View::Search: activeBox = searchBox; break;
+        default: break;
+    }
+    if (!activeBox) activeBox = libList;
+
+    if (!activeBox->getChildren().empty())
     {
         // Top inset on the first row, mirroring the bottom one below: it starts
         // right under the header otherwise.
-        libList->getChildren()[0]->setMarginTop(20.0f);
+        activeBox->getChildren()[0]->setMarginTop(20.0f);
 
-        // The first thing on the page that can actually take the cursor -- NOT
-        // simply the first child: with a section heading above it, that child is
-        // a Label, giveFocus() on a view that resolves to nothing is a silent
-        // no-op, and Application::currentFocus was left parked on libraryBox,
-        // which this function then makes unfocusable. Everything after that is
-        // navigating from a view that is not in the running, and the boxes it
-        // walks still hold lastFocusedView pointers into the list we just freed.
         brls::View* first = nullptr;
-        for (brls::View* child : libList->getChildren())
+        for (brls::View* child : activeBox->getChildren())
             if ((first = child->getDefaultFocus())) break;
 
         brls::View* focus = brls::Application::getCurrentFocus();

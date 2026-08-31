@@ -1594,7 +1594,29 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
                                  : &brls::BUTTONSTYLE_BORDERLESS);
     };
 
-    auto select = [content, localBtn, stremioBtn, frame, curTab,
+    brls::View* localView = buildTab(config::Tab::LOCAL);
+    localView->setGrow(1.0f);
+
+    brls::View* stremioView = buildTab(config::Tab::STREMIO);
+    stremioView->setGrow(1.0f);
+
+    localView->registerAction(
+        tr("Back"), brls::BUTTON_B,
+        [localBtn](brls::View*) {
+            brls::Application::giveFocus(localBtn);
+            return true;
+        },
+        false, false, brls::SOUND_BACK);
+
+    stremioView->registerAction(
+        tr("Back"), brls::BUTTON_B,
+        [stremioBtn](brls::View*) {
+            brls::Application::giveFocus(stremioBtn);
+            return true;
+        },
+        false, false, brls::SOUND_BACK);
+
+    auto select = [content, localView, stremioView, frame, curTab,
                    restyleTabs](config::Tab tab) {
         *curTab = tab;
         restyleTabs();
@@ -1603,25 +1625,16 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
         bool stremioUp = tab == config::Tab::STREMIO;
         frame->setActionAvailable(brls::BUTTON_LB, stremioUp);
         frame->setActionAvailable(brls::BUTTON_RB, stremioUp);
-        content->clearViews();  // deletes the previous tab
-        brls::View* v = buildTab(tab);
-        v->setGrow(1.0f);
-        content->addView(v);
-        applyTabIdentity(frame, tab);
 
-        // B returns to the tab bar, which is what TabFrame does for its sidebar
-        // -- and the only reliable way back up here. Navigating UP out of a list
-        // does not do it: ScrollingFrame::getNextFocus keeps the focus inside
-        // while the list can still scroll up, so a deep tab (Stremio's library
-        // sits under two more boxes than the local list) never hands it over.
-        brls::Button* active = tab == config::Tab::STREMIO ? stremioBtn : localBtn;
-        v->registerAction(
-            tr("Back"), brls::BUTTON_B,
-            [active](brls::View*) {
-                brls::Application::giveFocus(active);
-                return true;
-            },
-            false, false, brls::SOUND_BACK);
+        content->clearViews(false);
+        content->addView(tab == config::Tab::LOCAL ? localView : stremioView);
+
+        if (stremioUp)
+            stremio::reportView(0);
+        else
+            stremio::reportView(-1);
+
+        applyTabIdentity(frame, tab);
     };
 
     stremioBtn->setText(tr("Stremio"));
@@ -2075,7 +2088,7 @@ int main(int argc, char* argv[])
 
     while (brls::Application::mainLoop())
     {
-        stremio::processPendingImageUploads(2);
+        stremio::processPendingImageUploads(4);
     }
 
     download::shutdown();

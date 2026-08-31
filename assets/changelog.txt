@@ -1,3 +1,22 @@
+# 🚀 NX Torrent Player MOD v0.0.2-1 — Release Notes
+
+¡Bienvenidos a la versión **v0.0.2-1** de **NX Torrent Player (MOD)** creada por **dl3g0**!
+
+### ⚡ Novedades y Correcciones en v0.0.2-1:
+* **Intercalado Instantáneo de Pestañas (L / R) Sin Congelamientos**:
+  * Implementación de caché de pósters 100% en memoria RAM (`s_knownCachedPosters`).
+  * Se eliminaron los cientos de lecturas físicas síncronas a disco (`fopen`/`stat`) en la MicroSD FAT32 al cambiar de pestaña. El cambio entre Inicio, Continuar, Biblioteca y Búsqueda ahora es **instantáneo (< 0.2s)** sin los 7 segundos de retraso previo.
+* **Carga Acelerada y Completa de Imágenes de Addons**:
+  * Aumento del flujo de subida de texturas OpenGL de 2 a 4 por fotograma.
+  * Preservación de descargas en segundo plano para que ninguna carátula quede en blanco al recargar o alternar vistas.
+  * *Debounce* de renderizado agrupado para evitar que los catálogos concurrentes congelen la pantalla de inicio.
+* **Protección Anti-Carga Infinita en Streams y Torrents**:
+  * *Watchdog* de conexión con temporizador inteligente (18s) en enlaces HTTP / Debrid, mostrando un mensaje claro de reintento si el servidor no responde.
+  * Consultas concurrentes en paralelo a los 4 espejos HTTP de metadatos (`fetch_http_torrent_cache`) para arranque sub-segundo de magnets.
+  * Timeouts estrictos en anuncios de trackers UDP para prevenir bloqueos por trackers caídos.
+
+---
+
 # 🚀 NX Torrent Player MOD v0.0.2 — Release Notes
 
 ¡Bienvenidos a la versión **v0.0.2** de **NX Torrent Player (MOD)** creada por **dl3g0**!

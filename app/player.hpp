@@ -308,6 +308,7 @@ class MpvView : public brls::Box
     int64_t lastBytes = 0;
     double speedBps   = 0.0;
     std::chrono::steady_clock::time_point lastSample;
+    std::chrono::steady_clock::time_point streamStartTime;
 
     // Stremio watch-state sync: the position is sampled alongside logStats and
     // pushed to the API every couple of minutes, plus once at teardown -- so

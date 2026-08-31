@@ -930,13 +930,20 @@ class AddonSourcePicker : public brls::Activity
                 // The Switch outputs 1080p docked, so 4K streams cost bandwidth
                 // for pixels it cannot show; hidden by default (Options).
                 std::vector<stremio::Stream> playable;
+                int hidden4k = 0;
                 for (const auto& s : r.streams)
-                    if (!(config::get().hide4k && isFourK(s)))
-                        playable.push_back(s);
+                {
+                    if (config::get().hide4k && isFourK(s)) { hidden4k++; continue; }
+                    playable.push_back(s);
+                }
                 streamCache[i] = playable;
                 if (playable.empty())
                 {
-                    showSourcesMessage(tr("No source from this addon"), false);
+                    showSourcesMessage(
+                        hidden4k > 0
+                            ? tr("4K sources hidden (see Options)")
+                            : tr("No source from this addon"),
+                        false);
                     return;
                 }
                 buildSourceCards(playable);
@@ -1182,30 +1189,42 @@ class AsyncButton : public brls::Button
 // `host` must be the view the cursor lives under; actions are dispatched up the
 // focused view's parents, so registering on the content root reaches everything.
 void bindLibraryToggle(brls::View* host, const std::string& authKey,
-                       const stremio::LibItem& item)
+                       const stremio::LibItem& item,
+                       std::shared_ptr<bool> liveToken = nullptr)
 {
     auto hint = [](const std::string& id) {
         return stremio::inLibrary(id) ? tr("Remove from library")
                                       : tr("Add to library");
     };
 
+    auto alive = liveToken ? liveToken : std::make_shared<bool>(true);
+
     host->registerAction(
         hint(item.id), brls::BUTTON_X,
-        [authKey, item, hint](brls::View* v) {
+        [host, authKey, item, hint, alive](brls::View*) {
+            if (!*alive) return true;
             bool add = !stremio::inLibrary(item.id);
-            // The footer follows immediately -- inLibrary has already flipped,
-            // the write goes on in the background -- and only moves back if the
-            // account refuses it.
-            auto repaint = [v, hint, id = item.id]() {
-                v->updateActionHint(brls::BUTTON_X, hint(id));
+
+            auto repaint = [host, hint, id = item.id, alive]() {
+                if (!*alive) return;
+                host->updateActionHint(brls::BUTTON_X, hint(id));
                 brls::Application::getGlobalHintsUpdateEvent()->fire();
             };
+
             stremio::setLibraryMemberAsync(
-                authKey, item, add, [repaint, add](bool ok) {
+                authKey, item, add, [repaint, add, alive](bool ok) {
+                    if (!*alive) return;
                     repaint();
                     if (!ok)
-                        dialog(add ? tr("Could not add it to your library.")
-                                   : tr("Could not remove it from your library."));
+                    {
+                        brls::Application::notify(add ? tr("Could not add it to your library.")
+                                                      : tr("Could not remove it from your library."));
+                    }
+                    else
+                    {
+                        brls::Application::notify(add ? tr("Added to library")
+                                                      : tr("Removed from library"));
+                    }
                 });
             repaint();
             return true;
@@ -1314,7 +1333,7 @@ class MovieDetailActivity : public AddonSourcePicker
 
         root->addView(right);
 
-        bindLibraryToggle(root, authKey, item);
+        bindLibraryToggle(root, authKey, item, alive);
 
         auto* frame = new GradientAppletFrame();
         frame->pushContentView(root);
@@ -1757,7 +1776,7 @@ class SeriesDetailActivity : public brls::Activity
 
         root->addView(right);
 
-        bindLibraryToggle(root, authKey, item);
+        bindLibraryToggle(root, authKey, item, alive);
 
         auto* frame = new GradientAppletFrame();
         frame->pushContentView(root);

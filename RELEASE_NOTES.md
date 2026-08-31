@@ -1,3 +1,23 @@
+# 🚀 NX Torrent Player MOD v0.0.2-1 — Release Notes
+
+¡Bienvenidos a la versión **v0.0.2-1** de **NX Torrent Player (MOD)** creada por **dl3g0**!
+
+Esta actualización menor pero crítica implementa una arquitectura **UI Zero-Freeze** y optimiza la estabilidad al reproducir streams en Nintendo Switch:
+
+### ⚡ Novedades y Correcciones en v0.0.2-1:
+* **Intercalado Instantáneo de Pestañas (L / R) Sin Retardo**:
+  * **Caché en Memoria RAM de Pósters (`s_knownCachedPosters`)**: Eliminación del 100% de llamadas síncronas bloqueantes a la tarjeta MicroSD (`fopen`/`stat`) durante el cambio de pestañas y construcción de listas. El cambio entre Inicio, Continuar, Biblioteca y Búsqueda ahora es **inmediato (< 0.2s)** en lugar de los 7 segundos anteriores.
+* **Carga Completa y Fluida de Imágenes de Addons**:
+  * Incremento en la tasa de inyección de texturas OpenGL de 2 a 4 por fotograma.
+  * Preservación de descargas asíncronas para que las carátulas no desaparezcan al navegar o refrescar catálogos.
+  * *Debounce* inteligente de renderizado para consolidar la llegada de múltiples secciones de addons sin congelar la pantalla.
+* **Watchdog y Protección Contra Carga Infinita en Streams**:
+  * *Watchdog* de conexión con temporizador inteligente (18s) en streams HTTP/Debrid, permitiendo regresar a la selección de fuentes si un enlace está muerto o no responde.
+  * Consultas concurrentes en paralelo a los espejos HTTP de metadatos (`fetch_http_torrent_cache`) para arranque sub-segundo de magnets.
+  * Timeouts estrictos en anuncios de trackers UDP para prevenir bloqueos por trackers caídos.
+
+---
+
 # 🚀 NX Torrent Player MOD v0.0.2 — Release Notes
 
 ¡Bienvenidos a la versión **v0.0.2** de **NX Torrent Player (MOD)** creada por **dl3g0**!
