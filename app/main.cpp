@@ -2088,7 +2088,7 @@ int main(int argc, char* argv[])
 
     while (brls::Application::mainLoop())
     {
-        stremio::processPendingImageUploads(4);
+        stremio::processPendingImageUploads(2);
     }
 
     download::shutdown();

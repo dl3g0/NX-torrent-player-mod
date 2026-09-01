@@ -630,7 +630,6 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
             {
                 epArt.bgId   = (*eps)[i].id;
                 epArt.bgUrl  = (*eps)[i].thumbnail;
-                epArt.blurBg = false;  // a still is already busy and low-contrast
             }
             WatchInfo watch;
             watch.authKey = authKey;
@@ -2092,7 +2091,6 @@ class SeriesDetailActivity : public brls::Activity
         {
             epArt.bgId   = v.id;
             epArt.bgUrl  = v.thumbnail;
-            epArt.blurBg = false;  // a still is already busy and low-contrast
         }
         WatchInfo w;
         std::string prevId;
@@ -2353,11 +2351,15 @@ void openLibraryItem(const std::string& authKey, const stremio::LibItem& item)
     // than us blocking the tap on a download.
     PlayerArt art;
     art.posterPath = stremio::cachedPosterPath(item.id);
-    // The background: the poster again, full-size and blurred. An episode
-    // overrides this with its own still further down (see showEpisodes).
     art.bgId   = item.id;
-    art.bgUrl  = item.poster;
-    art.blurBg = true;
+    std::string imdb = stremio::imdbIdOf(item.id);
+    art.bgUrl  = !imdb.empty()
+                     ? "https://images.metahub.space/background/medium/" + imdb + "/img"
+                     : item.poster;
+    art.logoId = item.id;
+    art.logoUrl = !imdb.empty()
+                      ? "https://images.metahub.space/logo/medium/" + imdb + "/img"
+                      : "";
 
     // A film has no season/episode tree -- open its detail screen (poster,
     // synopsis, and the addons as source cards).
@@ -2422,7 +2424,6 @@ void openEpisodeById(const std::string& authKey, const std::string& seriesId,
             {
                 epArt.bgId   = v->id;
                 epArt.bgUrl  = v->thumbnail;
-                epArt.blurBg = false;  // a still is already busy and low-contrast
             }
 
             WatchInfo w;

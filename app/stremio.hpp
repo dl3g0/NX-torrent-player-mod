@@ -86,6 +86,16 @@ void fetchPosterAsync(const std::string& id, const std::string& url,
                       std::function<void(std::string)> done,
                       std::shared_ptr<bool> alive = nullptr);
 
+// Full-size horizontal background backdrop for `id`
+void fetchBackgroundAsync(const std::string& id, const std::string& url,
+                          std::function<void(std::string)> done,
+                          std::shared_ptr<bool> alive = nullptr);
+
+// Transparent title logo for `id`
+void fetchLogoAsync(const std::string& id, const std::string& url,
+                    std::function<void(std::string)> done,
+                    std::shared_ptr<bool> alive = nullptr);
+
 // Full-size artwork for `id`, cached separately from the list thumbnail (which
 // is fetched at ~100px wide and looks it when blown up to the screen). Calls
 // back on the UI thread with the on-disk path, or "" on failure.
@@ -97,6 +107,9 @@ void fetchHqArtAsync(const std::string& id, const std::string& url,
 // fetchPosterAsync), "" otherwise. Never touches the network -- for callers
 // that need a path right now and can do without artwork if there is none.
 std::string cachedPosterPath(const std::string& id);
+
+// Extract IMDb ID ("tt1234567") from Stremio item ID
+std::string imdbIdOf(const std::string& id);
 
 // Processes paced texture loading on the UI thread (up to maxPerFrame per frame)
 // to prevent frame drops / freezing when many posters land at once.
@@ -199,6 +212,8 @@ struct MetaResult
     std::string releaseInfo;  // release year ("2026"), or a span for a series
     std::string runtime;      // "127 min"
     std::string imdbRating;   // "7.5"
+    std::string background;   // horizontal backdrop url
+    std::string logo;         // transparent logo url
 
     std::string error;
 };

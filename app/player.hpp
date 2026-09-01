@@ -33,15 +33,13 @@ struct PlayerArt
     // show's poster. The cached thumbnail is enough at that size.
     std::string posterPath;
 
-    // Full-screen background, downloaded at full size when playback starts (the
-    // thumbnail is ~100px wide and looks like it when blown up). For a film this
-    // is the poster again; for an episode, the episode's own still.
+    // Full-screen horizontal background (16:9 backdrop)
     std::string bgId;   // cache key
     std::string bgUrl;  // where to fetch it
 
-    // Blur the background. A poster is one big image behind text, so it has to
-    // be pushed back; an episode still is already a busy, low-contrast frame.
-    bool blurBg = false;
+    // Title logo image (transparent PNG)
+    std::string logoId;
+    std::string logoUrl;
 };
 
 // Ties a playback to its Stremio library entry, so the player can resume where

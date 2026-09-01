@@ -477,115 +477,10 @@ void cycleActiveView(int dir)
 // of pixels IS a box filter, but a 50x bilinear upscale of it shows its own
 // blocky structure -- the "blur" looked pixelated. So blur at a resolution the
 // upscale can't expose: shrink to kBlurWidth, then run a real box blur over it,
-// which leaves no high frequencies for the upscale to reveal.
+// Returns posterPath directly (blur disabled for high fidelity and zero CPU overhead)
 std::string blurredPosterPath(const std::string& posterPath)
 {
-    if (posterPath.empty()) return "";
-    // Deliberately not ".bg.png": that name belongs to the 24px version above,
-    // and a cache hit never revalidates, so reusing it would keep serving the
-    // pixelated one from everybody's SD card.
-    std::string out = posterPath + ".blur.png";
-
-    // Posters never change, so a hit is final.
-    if (FILE* f = std::fopen(out.c_str(), "rb"))
-    {
-        std::fclose(f);
-        return out;
-    }
-
-    int w = 0, h = 0, comp = 0;
-    uint8_t* px = stbi_load(posterPath.c_str(), &w, &h, &comp, 3);
-    if (!px || w <= 0 || h <= 0)
-    {
-        if (px) stbi_image_free(px);
-        brls::Logger::warning("[stremio] blur: cannot decode {}", posterPath);
-        return "";
-    }
-
-    // Enough resolution that stretching it to 1280 stays smooth, small enough
-    // that the blur below is a handful of milliseconds.
-    const int bw = 256;
-    int bh       = (int)((int64_t)h * bw / w);
-    if (bh < 1) bh = 1;
-
-    // Box-average down to bw x bh (a plain nearest pick would alias).
-    std::vector<uint8_t> img((size_t)bw * bh * 3);
-    for (int y = 0; y < bh; y++)
-    {
-        int y0 = (int)((int64_t)y * h / bh), y1 = (int)((int64_t)(y + 1) * h / bh);
-        if (y1 <= y0) y1 = y0 + 1;
-        for (int x = 0; x < bw; x++)
-        {
-            int x0 = (int)((int64_t)x * w / bw), x1 = (int)((int64_t)(x + 1) * w / bw);
-            if (x1 <= x0) x1 = x0 + 1;
-            int acc[3] = { 0, 0, 0 }, n = 0;
-            for (int yy = y0; yy < y1 && yy < h; yy++)
-                for (int xx = x0; xx < x1 && xx < w; xx++)
-                {
-                    const uint8_t* p = px + ((size_t)yy * w + xx) * 3;
-                    acc[0] += p[0]; acc[1] += p[1]; acc[2] += p[2];
-                    n++;
-                }
-            uint8_t* d = &img[((size_t)y * bw + x) * 3];
-            for (int c = 0; c < 3; c++) d[c] = (uint8_t)(acc[c] / (n ? n : 1));
-        }
-    }
-    stbi_image_free(px);
-
-    // Separable box blur, three passes: box^3 is close enough to a gaussian
-    // that nothing of the poster survives but its colours. Edges clamp, so the
-    // border does not darken.
-    const int radius = 14;
-    std::vector<uint8_t> tmp(img.size());
-    auto blurAxis = [&](std::vector<uint8_t>& src, std::vector<uint8_t>& dst,
-                        int lineCount, int lineLen, int stepInLine,
-                        int stepBetweenLines) {
-        for (int l = 0; l < lineCount; l++)
-        {
-            const size_t base = (size_t)l * stepBetweenLines;
-            for (int c = 0; c < 3; c++)
-            {
-                int sum = 0;
-                auto at = [&](int i) -> uint8_t& {
-                    return src[base + (size_t)i * stepInLine + c];
-                };
-                // Prime the running sum with the first window, clamped.
-                for (int i = -radius; i <= radius; i++)
-                    sum += at(i < 0 ? 0 : (i >= lineLen ? lineLen - 1 : i));
-                const int win = radius * 2 + 1;
-                for (int i = 0; i < lineLen; i++)
-                {
-                    dst[base + (size_t)i * stepInLine + c] = (uint8_t)(sum / win);
-                    int out = i - radius, in = i + radius + 1;
-                    sum -= at(out < 0 ? 0 : out);
-                    sum += at(in >= lineLen ? lineLen - 1 : in);
-                }
-            }
-        }
-    };
-    for (int pass = 0; pass < 3; pass++)
-    {
-        blurAxis(img, tmp, bh, bw, 3, (size_t)bw * 3);          // horizontal
-        blurAxis(tmp, img, bw, bh, (size_t)bw * 3, 3);          // vertical
-    }
-
-    std::string png;
-    stbi_write_png_to_func(
-        [](void* ctx, void* data, int size) {
-            ((std::string*)ctx)->append((const char*)data, size);
-        },
-        &png, bw, bh, 3, img.data(), bw * 3);
-    if (png.empty()) return "";
-
-    FILE* f = std::fopen(out.c_str(), "wb");
-    if (!f) return "";
-    bool ok = std::fwrite(png.data(), 1, png.size(), f) == png.size();
-    std::fclose(f);
-    if (!ok) { std::remove(out.c_str()); return ""; }
-
-    brls::Logger::info("[stremio] blur {} ({}x{}) -> {}x{}", posterPath, w, h,
-                       bw, bh);
-    return out;
+    return posterPath;
 }
 
 void createDeviceLinkAsync(
@@ -1541,7 +1436,7 @@ static void downloadImageAsync(const std::string& id, const std::string& url,
 // IMDB part is not always first: an episode is "tt123:1:3", but a trailer the
 // user watched is "yt_id:trailer:tt1999890" -- those were the ones showing up
 // with no artwork.
-static std::string imdbIdOf(const std::string& id)
+std::string imdbIdOf(const std::string& id)
 {
     size_t from = 0;
     while (from <= id.size())
@@ -1603,21 +1498,65 @@ void fetchPosterAsync(const std::string& id, const std::string& url,
         return;
     }
 
-    // Already cached: skip the network entirely. Posters never change, so a hit
-    // is final -- this is what keeps a scroll through the library instant.
-    std::string hit = cachedPosterPath(id);
-    if (!hit.empty())
+    // Always route through downloadImageAsync / ImageQueue so that checking disk cache
+    // and uploading textures is paced smoothly at 2 per frame, eliminating UI thread freezes
+    // when populating catalog rows.
+    downloadImageAsync(id, metahubSize(src, "/small/"), posterCachePath(id),
+                       done, alive);
+}
+
+void fetchBackgroundAsync(const std::string& id, const std::string& url,
+                          std::function<void(std::string)> done,
+                          std::shared_ptr<bool> alive)
+{
+    if (id.empty())
     {
-        done(hit);
+        done("");
         return;
     }
 
-    // A Switch row shows the poster at ~100px wide, so pulling the full-size art
-    // would be several hundred KB per item to then throw the pixels away on
-    // downscale. Ask for the small variant -- that IS the compression, done
-    // server-side.
-    downloadImageAsync(id, metahubSize(src, "/small/"), posterCachePath(id),
-                       done, alive);
+    std::string src = url;
+    if (src.empty())
+    {
+        std::string imdb = imdbIdOf(id);
+        if (!imdb.empty())
+            src = "https://images.metahub.space/background/medium/" + imdb + "/img";
+    }
+    if (src.empty())
+    {
+        done("");
+        return;
+    }
+
+    std::string path = posterCachePath(id) + ".bg.jpg";
+    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive);
+}
+
+void fetchLogoAsync(const std::string& id, const std::string& url,
+                    std::function<void(std::string)> done,
+                    std::shared_ptr<bool> alive)
+{
+    if (id.empty())
+    {
+        done("");
+        return;
+    }
+
+    std::string src = url;
+    if (src.empty())
+    {
+        std::string imdb = imdbIdOf(id);
+        if (!imdb.empty())
+            src = "https://images.metahub.space/logo/medium/" + imdb + "/img";
+    }
+    if (src.empty())
+    {
+        done("");
+        return;
+    }
+
+    std::string path = posterCachePath(id) + ".logo.png";
+    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive);
 }
 
 void fetchHqArtAsync(const std::string& id, const std::string& url,
@@ -1943,6 +1882,8 @@ void fetchMetaAsync(const std::string& addonBase, const std::string& type,
             if (r.releaseInfo.empty()) r.releaseInfo = json::str(src, "year");
             r.runtime    = json::str(src, "runtime");
             r.imdbRating = json::str(src, "imdbRating");
+            r.background = json::str(src, "background");
+            r.logo       = json::str(src, "logo");
 
             for (const auto& o : json::objects(resp, "videos"))
             {
@@ -2623,15 +2564,15 @@ StremioTab::~StremioTab()
     if (focusSubbed)
         brls::Application::getGlobalFocusChangeEvent()->unsubscribe(focusSub);
 
-    auto safeFree = [](brls::Box* b) {
-        if (!b) return;
-        if (!b->getParent())
-            delete b;
-    };
-    safeFree(homeBox);
-    safeFree(continueBox);
-    safeFree(libraryBoxView);
-    safeFree(searchBox);
+    if (libList) libList->clearViews(false);
+    delete homeBox;
+    delete continueBox;
+    delete libraryBoxView;
+    delete searchBox;
+    homeBox = nullptr;
+    continueBox = nullptr;
+    libraryBoxView = nullptr;
+    searchBox = nullptr;
 }
 
 void StremioTab::onGlobalFocus(brls::View* focused)
@@ -2990,10 +2931,10 @@ void StremioTab::loadLibrary()
         }
         libItems  = r.items;   // cached for Continue Watching + Library views
         libLoaded = true;
-        renderContinueWatching();
-        renderLibrary();
-        if (view == View::ContinueWatching || view == View::Library)
-            renderView();
+        if (view == View::ContinueWatching)
+            renderContinueWatching();
+        else if (view == View::Library)
+            renderLibrary();
     });
 }
 
@@ -3005,8 +2946,6 @@ void StremioTab::cycleView(int dir)
     resetOnShow  = true;              // land on the first row, scrolled to the top
     pendingSlide = dir > 0 ? 1 : -1;  // slide the new list in from that side
     renderView();
-    if (view == View::ContinueWatching || view == View::Library)
-        loadLibrary();
 }
 
 // A header tab-bar pick: jump straight to `v`. Like cycleView, and it hands the
@@ -3020,8 +2959,6 @@ void StremioTab::selectView(View v)
     view = v;
     resetOnShow = true;
     renderView();
-    if (view == View::ContinueWatching || view == View::Library)
-        loadLibrary();
 }
 
 // Builds or toggles the list for the current view.

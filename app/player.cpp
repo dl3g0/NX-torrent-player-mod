@@ -1723,36 +1723,45 @@ void MpvView::pumpEvents()
     }
 }
 
-// Paints `path` as the background, blurring it first when the artwork is a
-// poster (see PlayerArt::blurBg).
+// Paints `path` directly as the background without CPU blur for crisp visuals and instant loading
 void MpvView::setBackgroundArt(const std::string& path)
 {
     if (!bgImage || path.empty()) return;
-    std::string use = art.blurBg ? stremio::blurredPosterPath(path) : "";
-    bgImage->setImageFromFile(use.empty() ? path : use);
+    bgImage->setImageFromFile(path);
 }
+
+class PulsingImage : public brls::Image
+{
+  public:
+    void draw(NVGcontext* vg, float x, float y, float w, float h,
+              brls::Style style, brls::FrameContext* ctx) override
+    {
+        double sec = (double)brls::getCPUTimeUsec() / 1000000.0;
+        // Smooth sine wave oscillating opacity between 0.50 and 1.00
+        float a = 0.75f + 0.25f * (float)sin(sec * 3.5);
+        if (a < 0.5f) a = 0.5f;
+        if (a > 1.0f) a = 1.0f;
+
+        nvgSave(vg);
+        nvgGlobalAlpha(vg, a);
+        brls::Image::draw(vg, x, y, w, h, style, ctx);
+        nvgRestore(vg);
+    }
+};
 
 void MpvView::buildLoadingOverlay(const std::string& title)
 {
     brls::Theme theme = brls::Application::getTheme();
 
-    // The dark theme's text_disabled is RGB(80,80,80) -- it is meant for a
-    // disabled control on a flat background, and over the artwork it is barely
-    // there. Secondary text here is dimmer than the title but still readable.
     const NVGcolor dimText = nvgRGB(190, 190, 195);
 
     // Full-screen centred column over the (black) video.
     loadingOverlay = new brls::Box();
-    // Carries NO padding of its own: a percentage-sized child resolves against
-    // the content box while an absolute one is placed against the padding box,
-    // so the full-bleed background below came out 120px short (a black strip
-    // down the right edge). The padding lives on the inner column instead.
     loadingOverlay->setAxis(brls::Axis::COLUMN);
     loadingOverlay->setGrow(1.0f);
     loadingOverlay->setBackgroundColor(theme.getColor("brls/background"));
 
-    // Full-screen artwork behind everything else. Absolute so it is out of the
-    // column's flow, and added first so the column draws on top of it.
+    // Full-screen horizontal backdrop behind everything else.
     if (!art.bgId.empty() || !art.posterPath.empty())
     {
         bgImage = new brls::Image();
@@ -1761,25 +1770,21 @@ void MpvView::buildLoadingOverlay(const std::string& title)
         bgImage->setPositionLeft(0.0f);
         bgImage->setWidthPercentage(100.0f);
         bgImage->setHeightPercentage(100.0f);
-        // FILL, not FIT: a poster is 2:3 and the screen is 16:9, so fitting it
-        // would letterbox the "background" into a strip down the middle.
         bgImage->setScalingType(brls::ImageScalingType::FILL);
-        // Faint enough that the text over it stays readable.
-        bgImage->setAlpha(0.18f);
+        bgImage->setAlpha(0.25f);
         loadingOverlay->addView(bgImage);
 
-        // Show the thumbnail we already have right away, then swap in the
-        // full-size art when it lands -- rather than a black screen for as long
-        // as the download takes.
-        setBackgroundArt(art.posterPath);
+        if (!art.posterPath.empty())
+            setBackgroundArt(art.posterPath);
+
         if (!art.bgId.empty())
         {
             auto liveFlag = this->alive;
-            stremio::fetchHqArtAsync(art.bgId, art.bgUrl,
-                                     [this, liveFlag](std::string path) {
-                                         if (!*liveFlag || path.empty()) return;
-                                         setBackgroundArt(path);
-                                     });
+            stremio::fetchBackgroundAsync(art.bgId, art.bgUrl,
+                                          [this, liveFlag](std::string path) {
+                                              if (!*liveFlag || path.empty()) return;
+                                              setBackgroundArt(path);
+                                          }, liveFlag);
         }
     }
 
@@ -1792,22 +1797,47 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     column->setPadding(0, 60, 0, 60);
     loadingOverlay->addView(column);
 
-    // The poster when the caller knows what we're playing, otherwise the app
-    // logo (bundled at romfs:/NX-torrent-player-bg-rounded.png).
-    auto* logo = new brls::Image();
-    if (!art.posterPath.empty())
+    // Pulsing title logo (opacity between 0.5 and 1.0)
+    auto* logo = new PulsingImage();
+    logo->setDimensions(280.0f, 120.0f);
+    logo->setScalingType(brls::ImageScalingType::FIT);
+    logo->setMargins(0, 0, 24, 0);
+
+    if (!art.logoId.empty())
+    {
+        auto liveFlag = this->alive;
+        std::string pPath = art.posterPath;
+        stremio::fetchLogoAsync(art.logoId, art.logoUrl,
+                                [logo, liveFlag, pPath](std::string path) {
+                                    if (!*liveFlag) return;
+                                    if (!path.empty())
+                                    {
+                                        logo->setImageFromFile(path);
+                                    }
+                                    else if (!pPath.empty())
+                                    {
+                                        logo->setImageFromFile(pPath);
+                                        logo->setDimensions(130.0f, 195.0f);
+                                        logo->setCornerRadius(8.0f);
+                                    }
+                                    else
+                                    {
+                                        logo->setImageFromRes("NX-torrent-player-bg-rounded.png");
+                                        logo->setDimensions(120.0f, 120.0f);
+                                    }
+                                }, liveFlag);
+    }
+    else if (!art.posterPath.empty())
     {
         logo->setImageFromFile(art.posterPath);
-        logo->setDimensions(148.0f, 222.0f);  // posters are 2:3
-        logo->setCornerRadius(8.0f);           // rounded poster corners
+        logo->setDimensions(130.0f, 195.0f);
+        logo->setCornerRadius(8.0f);
     }
     else
     {
         logo->setImageFromRes("NX-torrent-player-bg-rounded.png");
-        logo->setDimensions(148.0f, 148.0f);
+        logo->setDimensions(120.0f, 120.0f);
     }
-    logo->setScalingType(brls::ImageScalingType::FIT);
-    logo->setMargins(0, 0, 28, 0);
     column->addView(logo);
 
     auto* titleLabel = new brls::Label();
