@@ -49,9 +49,11 @@ struct LibItem
     double durationMs   = 0;  // duration of videoId
 
     // Last time the item changed on the account (ISO 8601, so it sorts
-    // lexicographically = chronologically). Watching pushes a new state, which
-    // bumps it, so sorting by it descending puts the most recently viewed first.
+    // lexicographically = chronologically).
     std::string mtime;
+    // The exact timestamp when this video was last watched (state.lastWatched).
+    std::string lastWatched;
+    int flaggedWatched = 0; // state.flaggedWatched (1 = finished/marked as watched)
 
     // removed = not in the explicit "+ Library" grid; temp = auto-added by
     // watching. Neither excludes it from Continue Watching, which is driven by

@@ -973,6 +973,7 @@ void LocalMpvView::openTrackMenu()
     };
 
     std::vector<std::string> aLabels, sLabels{ tr("Off") };
+    std::vector<std::string> aLangs, sLangs{ "" };
     std::vector<int64_t> aIds, sIds{ -1 };
     int aCur = 0, sCur = 0;
 
@@ -1009,12 +1010,14 @@ void LocalMpvView::openTrackMenu()
                 {
                     if (sel) aCur = (int)aIds.size();
                     aLabels.push_back(label(lang, title, id));
+                    aLangs.push_back(!lang.empty() ? lang : title);
                     aIds.push_back(id);
                 }
                 else if (type == "sub")
                 {
                     if (sel) sCur = (int)sIds.size();
                     sLabels.push_back(label(lang, title, id));
+                    sLangs.push_back(!lang.empty() ? lang : title);
                     sIds.push_back(id);
                 }
             }
@@ -1096,11 +1099,20 @@ void LocalMpvView::openTrackMenu()
     if (!aLabels.empty())
     {
         auto* a = new LocalTrackCell();
-        a->init(tr("Track"), aLabels, aCur, [this, aIds](int sel) {
+        a->init(tr("Track"), aLabels, aCur, [this, aIds, aLangs](int sel) {
             char v[24];
             std::snprintf(v, sizeof(v), "%lld", (long long)aIds[sel]);
             const char* cmd[] = { "set", "aid", v, nullptr };
             mpv_command_async(mpv, 0, cmd);
+            if (sel >= 0 && sel < (int)aLangs.size())
+            {
+                std::string code = config::langCodeFor(aLangs[sel]);
+                if (!code.empty() && code != "auto")
+                {
+                    config::get().audioLang = code;
+                    config::save();
+                }
+            }
         });
         content->addView(a);
     }
@@ -1121,7 +1133,7 @@ void LocalMpvView::openTrackMenu()
     if (sLabels.size() > 1)
     {
         auto* s = new LocalTrackCell();
-        s->init(tr("Subtitles"), sLabels, sCur, [this, sIds](int sel) {
+        s->init(tr("Subtitles"), sLabels, sCur, [this, sIds, sLangs](int sel) {
             int64_t sid = sIds[(size_t)sel];
             if (sid <= 0)
             {
@@ -1129,12 +1141,22 @@ void LocalMpvView::openTrackMenu()
                 mpv_set_property(mpv, "sid", MPV_FORMAT_INT64, &noId);
                 int visible = 0;
                 mpv_set_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &visible);
+                config::get().subtitles = false;
+                config::save();
             }
             else
             {
                 mpv_set_property(mpv, "sid", MPV_FORMAT_INT64, &sid);
                 int visible = 1;
                 mpv_set_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &visible);
+                if (sel >= 0 && sel < (int)sLangs.size())
+                {
+                    std::string code = config::langCodeFor(sLangs[sel]);
+                    if (!code.empty() && code != "auto")
+                        config::get().subLang = code;
+                }
+                config::get().subtitles = true;
+                config::save();
             }
         });
         content->addView(s);

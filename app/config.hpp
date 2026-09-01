@@ -124,6 +124,10 @@ const std::vector<std::string>& langLabels();
 // which is the honest answer for the long tail of what addons send.
 std::string langLabelFor(const std::string& tag);
 
+// Resolves a language tag, label, or track name to its canonical ISO-639-1 code
+// ("es", "en", "fr", etc.) for preference storage.
+std::string langCodeFor(const std::string& tag);
+
 // The subtitle language actually preferred right now: the setting, with "auto"
 // resolved to the console's own language. ISO-639-1.
 std::string preferredSubLang();

@@ -255,8 +255,12 @@ std::string subObject(const std::string& o, const char* key)
     std::string pat = std::string("\"") + key + "\"";
     size_t k        = o.find(pat);
     if (k == std::string::npos) return "";
-    size_t open = o.find('{', k + pat.size());
-    if (open == std::string::npos) return "";
+    size_t colon = o.find(':', k + pat.size());
+    if (colon == std::string::npos) return "";
+    size_t open = colon + 1;
+    while (open < o.size() && (o[open] == ' ' || o[open] == '\t' || o[open] == '\r' || o[open] == '\n'))
+        open++;
+    if (open >= o.size() || o[open] != '{') return "";
     int depth  = 0;
     bool inStr = false;
     for (size_t i = open; i < o.size(); i++)
@@ -746,9 +750,11 @@ void fetchLibraryAsync(const std::string& authKey,
                     std::string st = subObject(o, "state");
                     if (!st.empty())
                     {
-                        it.videoId      = json::str(st, "video_id");
-                        it.timeOffsetMs = (double)json::integer(st, "timeOffset", 0);
-                        it.durationMs   = (double)json::integer(st, "duration", 0);
+                        it.videoId        = json::str(st, "video_id");
+                        it.timeOffsetMs   = (double)json::integer(st, "timeOffset", 0);
+                        it.durationMs     = (double)json::integer(st, "duration", 0);
+                        it.lastWatched    = json::str(st, "lastWatched");
+                        it.flaggedWatched = (int)json::integer(st, "flaggedWatched", 0);
                         if (it.timeOffsetMs > 0)
                             brls::Logger::info(
                                 "[stremio] state {}: video={} off={}s dur={}s "
@@ -1121,8 +1127,69 @@ void pushWatchStateAsync(const std::string& authKey, const std::string& itemId,
         auto objs = json::objects(resp, "result");
         if (objs.empty())
         {
-            brls::Logger::warning("[stremio] watch-state: item {} not found",
-                                  itemId);
+            // Item was not in the account library yet: fetch metadata and create a new libraryItem
+            // with temp: true so it syncs with Continue Watching across all devices (Android, PC, Web, etc.).
+            std::string inferredType = (videoId.find(':') != std::string::npos || (!videoId.empty() && videoId != itemId)) ? "series" : "movie";
+            std::string metaUrl = "https://v3-cinemeta.strem.io/meta/" + inferredType + "/" + http::urlEncode(itemId) + ".json";
+            std::string metaResp, metaErr;
+            LibItem item;
+            item.id = itemId;
+            item.type = inferredType;
+            if (http::get(metaUrl, metaResp, metaErr))
+            {
+                std::string meta = subObject(metaResp, "meta");
+                const std::string& src = meta.empty() ? metaResp : meta;
+                item.name = json::str(src, "name");
+                item.poster = json::str(src, "poster");
+                item.year = json::str(src, "releaseInfo");
+                if (item.year.empty()) item.year = json::str(src, "year");
+                std::string t = json::str(src, "type");
+                if (!t.empty()) item.type = t;
+            }
+            if (item.name.empty()) item.name = itemId;
+
+            std::time_t tt = std::time(nullptr);
+            std::tm g {};
+            gmtime_r(&tt, &g);
+            char iso[40];
+            std::strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%S.000Z", &g);
+            std::string isoStr(iso);
+
+            std::string newObj = "{";
+            newObj += "\"_id\":\"" + json::escape(item.id) + "\",";
+            newObj += "\"name\":\"" + json::escape(item.name) + "\",";
+            newObj += "\"type\":\"" + json::escape(item.type) + "\",";
+            newObj += "\"poster\":\"" + json::escape(item.poster) + "\",";
+            newObj += "\"posterShape\":\"poster\",";
+            newObj += "\"background\":\"\",\"logo\":\"\",";
+            newObj += "\"year\":\"" + json::escape(item.year) + "\",";
+            newObj += "\"_ctime\":\"" + isoStr + "\",\"_mtime\":\"" + isoStr + "\",";
+            newObj += "\"removed\":false,\"temp\":true,";
+
+            char posNum[32], durNum[32];
+            long long ms = (long long)(posSec * 1000.0);
+            std::snprintf(posNum, sizeof(posNum), "%lld", ms < 0 ? 0 : ms);
+            std::snprintf(durNum, sizeof(durNum), "%lld", (long long)(durSec * 1000.0));
+
+            newObj += "\"state\":{";
+            newObj += "\"lastWatched\":\"" + isoStr + "\",";
+            newObj += "\"timeOffset\":" + std::string(posNum) + ",";
+            newObj += "\"duration\":" + std::string(durNum) + ",";
+            newObj += "\"video_id\":\"" + json::escape(videoId) + "\",";
+            newObj += "\"watched\":\"\",\"flaggedWatched\":0,";
+            newObj += "\"noNotif\":false,\"season\":0,\"episode\":0,";
+            newObj += "\"overallTimeWatched\":" + std::string(posNum) + ",";
+            newObj += "\"timesWatched\":1";
+            newObj += "}}";
+
+            std::string put = "{\"authKey\":\"" + json::escape(authKey) +
+                              "\",\"collection\":\"libraryItem\",\"changes\":[" +
+                              newObj + "]}";
+            std::string resp2;
+            if (!http::postJson("https://api.strem.io/api/datastorePut", put, resp2, err))
+                brls::Logger::warning("[stremio] watch-state new item put failed: {}", err);
+            else
+                brls::Logger::info("[stremio] watch-state new item {} created and pushed to Stremio servers", itemId);
             return;
         }
         std::string obj = objs[0];
@@ -2938,6 +3005,8 @@ void StremioTab::cycleView(int dir)
     resetOnShow  = true;              // land on the first row, scrolled to the top
     pendingSlide = dir > 0 ? 1 : -1;  // slide the new list in from that side
     renderView();
+    if (view == View::ContinueWatching || view == View::Library)
+        loadLibrary();
 }
 
 // A header tab-bar pick: jump straight to `v`. Like cycleView, and it hands the
@@ -2951,6 +3020,8 @@ void StremioTab::selectView(View v)
     view = v;
     resetOnShow = true;
     renderView();
+    if (view == View::ContinueWatching || view == View::Library)
+        loadLibrary();
 }
 
 // Builds or toggles the list for the current view.
@@ -3016,11 +3087,22 @@ void StremioTab::renderContinueWatching()
             it.timeOffsetMs = lw.offsetMs;
             it.durationMs   = lw.durationMs;
         }
-        double p           = it.progress();
-        bool   inProgress  = p > 0.005 && p < 0.95;
-        bool watchedSeries = it.type == "series" && !it.videoId.empty();
-        if (inProgress || watchedSeries) cw.push_back(it);
+
+        // Stremio Core continue watching rule:
+        // Must have an active videoId and remaining progress (timeOffsetMs > 0 and < 95%)
+        if (it.videoId.empty() || it.timeOffsetMs <= 0) continue;
+        double p = it.progress();
+        if (p >= 0.95) continue;
+
+        cw.push_back(it);
     }
+
+    // Sort strictly by lastWatched descending (most recently viewed first), falling back to mtime
+    std::stable_sort(cw.begin(), cw.end(), [](const stremio::LibItem& a, const stremio::LibItem& b) {
+        const std::string& ta = !a.lastWatched.empty() ? a.lastWatched : a.mtime;
+        const std::string& tb = !b.lastWatched.empty() ? b.lastWatched : b.mtime;
+        return ta > tb;
+    });
 
     std::string header = std::string("  ") + tr("Continue Watching");
     stremio::setLibraryCount(header);

@@ -179,6 +179,39 @@ std::string langLabelFor(const std::string& tag)
     return t;
 }
 
+std::string langCodeFor(const std::string& tag)
+{
+    if (tag.empty()) return "";
+    std::string t;
+    for (char c : tag) t += (char)std::tolower((unsigned char)c);
+
+    for (const auto& l : kLangs)
+    {
+        if (!std::strcmp(l.code, "auto")) continue;
+        if (t == l.code) return l.code;
+        std::string list = l.mpv;
+        for (size_t a = 0; a <= list.size();)
+        {
+            size_t b = list.find(',', a);
+            if (b == std::string::npos) b = list.size();
+            if (list.compare(a, b - a, t) == 0) return l.code;
+            a = b + 1;
+        }
+        std::string lbl;
+        for (const char* p = l.label; *p; p++)
+            lbl += (char)std::tolower((unsigned char)*p);
+        if (lbl == t || t.find(lbl) != std::string::npos) return l.code;
+    }
+    // Check if tag starts with a known 2-letter ISO code (e.g. "es-419", "en-US")
+    if (t.size() >= 2)
+    {
+        std::string prefix = t.substr(0, 2);
+        for (const auto& l : kLangs)
+            if (prefix == l.code) return l.code;
+    }
+    return t;
+}
+
 std::string preferredSubLang()
 {
     const std::string& s = cfg.subLang;

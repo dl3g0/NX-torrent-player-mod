@@ -940,6 +940,77 @@ void MpvView::fetchOnlineSubs()
             brls::Logger::info("[player] addon subtitles: {} ({})",
                                onlineSubs.size(),
                                r.ok ? "ok" : onlineSubErr.c_str());
+
+            // Sticky subtitles (Netflix-style): If the user has subtitles enabled,
+            // check if mpv already has an active embedded subtitle in the preferred language.
+            // If not, auto-load and select the first matching addon subtitle.
+            if (r.ok && config::get().subtitles && mpv)
+            {
+                int subVis = 0;
+                int64_t currentSid = 0;
+                mpv_get_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &subVis);
+                mpv_get_property(mpv, "sid", MPV_FORMAT_INT64, &currentSid);
+                bool hasMatchingSub = false;
+                std::string prefLang = config::preferredSubLang();
+
+                if (subVis && currentSid > 0)
+                {
+                    mpv_node node;
+                    if (mpv_get_property(mpv, "track-list", MPV_FORMAT_NODE, &node) >= 0)
+                    {
+                        if (node.format == MPV_FORMAT_NODE_ARRAY && node.u.list)
+                        {
+                            for (int i = 0; i < node.u.list->num; i++)
+                            {
+                                mpv_node& tn = node.u.list->values[i];
+                                if (tn.format != MPV_FORMAT_NODE_MAP || !tn.u.list) continue;
+                                int64_t id = 0;
+                                std::string trackType, trackLang, trackTitle;
+                                bool sel = false;
+                                for (int k = 0; k < tn.u.list->num; k++)
+                                {
+                                    const char* key = tn.u.list->keys[k];
+                                    mpv_node& v     = tn.u.list->values[k];
+                                    if (!std::strcmp(key, "type") && v.format == MPV_FORMAT_STRING)
+                                        trackType = v.u.string;
+                                    else if (!std::strcmp(key, "id") && v.format == MPV_FORMAT_INT64)
+                                        id = v.u.int64;
+                                    else if (!std::strcmp(key, "lang") && v.format == MPV_FORMAT_STRING)
+                                        trackLang = v.u.string;
+                                    else if (!std::strcmp(key, "title") && v.format == MPV_FORMAT_STRING)
+                                        trackTitle = v.u.string;
+                                    else if (!std::strcmp(key, "selected") && v.format == MPV_FORMAT_FLAG)
+                                        sel = v.u.flag;
+                                }
+                                if (trackType == "sub" && (sel || id == currentSid))
+                                {
+                                    std::string code = config::langCodeFor(trackLang);
+                                    if (code.empty()) code = config::langCodeFor(trackTitle);
+                                    if (code == prefLang)
+                                    {
+                                        hasMatchingSub = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        mpv_free_node_contents(&node);
+                    }
+                }
+
+                if (!hasMatchingSub)
+                {
+                    for (size_t i = 0; i < onlineSubs.size(); i++)
+                    {
+                        std::string code = config::langCodeFor(onlineSubs[i].lang);
+                        if (code == prefLang || onlineSubs[i].lang == prefLang)
+                        {
+                            loadOnlineSub((int)i);
+                            break;
+                        }
+                    }
+                }
+            }
         });
 }
 
@@ -1125,6 +1196,7 @@ void MpvView::openTrackMenu()
     // which is selected. Subtitles get an "Off" entry so the one selector both
     // switches and disables them.
     std::vector<std::string> aLabels, sLabels{ tr("Off") };
+    std::vector<std::string> aLangs, sLangs{ "" };
     std::vector<int64_t> aIds, sIds{ -1 };
     int aCur = 0, sCur = 0;  // sCur 0 = Off
 
@@ -1160,12 +1232,14 @@ void MpvView::openTrackMenu()
                 {
                     if (sel) aCur = (int)aIds.size();
                     aLabels.push_back(label(lang, title, id));
+                    aLangs.push_back(!lang.empty() ? lang : title);
                     aIds.push_back(id);
                 }
                 else if (type == "sub")
                 {
                     if (sel) sCur = (int)sIds.size();
                     sLabels.push_back(label(lang, title, id));
+                    sLangs.push_back(!lang.empty() ? lang : title);
                     sIds.push_back(id);
                 }
             }
@@ -1205,7 +1279,7 @@ void MpvView::openTrackMenu()
     // Near-opaque: this sits over moving video, and anything lighter makes
     // every label fight the frame behind it.
     panel->setBackgroundColor(theme::isLight() ? nvgRGBA(246, 246, 250, 242)
-                                               : nvgRGBA(18, 18, 22, 238));
+                                                : nvgRGBA(18, 18, 22, 238));
     root->addView(panel);
 
     // B closes it. Registered on the panel, and actions bubble from the focused
@@ -1269,11 +1343,20 @@ void MpvView::openTrackMenu()
     if (!aLabels.empty())
     {
         auto* a = new TrackCell();
-        a->init(tr("Track"), aLabels, aCur, [this, aIds](int sel) {
+        a->init(tr("Track"), aLabels, aCur, [this, aIds, aLangs](int sel) {
             char v[24];
             std::snprintf(v, sizeof(v), "%lld", (long long)aIds[sel]);
             const char* cmd[] = { "set", "aid", v, nullptr };
             mpv_command_async(mpv, 0, cmd);
+            if (sel >= 0 && sel < (int)aLangs.size())
+            {
+                std::string code = config::langCodeFor(aLangs[sel]);
+                if (!code.empty() && code != "auto")
+                {
+                    config::get().audioLang = code;
+                    config::save();
+                }
+            }
         });
         content->addView(a);
     }
@@ -1353,12 +1436,17 @@ void MpvView::openTrackMenu()
         if (labels.size() > 1)  // something besides "Off"
         {
             auto* s = new TrackCell();
-            s->init(tr("Subtitles"), labels, cur, [this, picks](int sel) {
+            s->init(tr("Subtitles"), labels, cur, [this, picks, sLangs](int sel) {
                 const Pick& p = picks[(size_t)sel];
                 if (p.sid == kNoteSid) return;  // the status entry: not a choice
                 if (p.sub >= 0)
                 {
                     loadOnlineSub(p.sub);
+                    std::string code = config::langCodeFor(onlineSubs[p.sub].lang);
+                    if (!code.empty() && code != "auto")
+                        config::get().subLang = code;
+                    config::get().subtitles = true;
+                    config::save();
                     return;
                 }
                 if (p.sid <= 0)
@@ -1367,12 +1455,22 @@ void MpvView::openTrackMenu()
                     mpv_set_property(mpv, "sid", MPV_FORMAT_INT64, &sid);
                     int visible = 0;
                     mpv_set_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &visible);
+                    config::get().subtitles = false;
+                    config::save();
                     return;
                 }
                 int64_t sid = p.sid;
                 mpv_set_property(mpv, "sid", MPV_FORMAT_INT64, &sid);
                 int visible = 1;
                 mpv_set_property(mpv, "sub-visibility", MPV_FORMAT_FLAG, &visible);
+                if (sel >= 0 && sel < (int)sLangs.size())
+                {
+                    std::string code = config::langCodeFor(sLangs[sel]);
+                    if (!code.empty() && code != "auto")
+                        config::get().subLang = code;
+                }
+                config::get().subtitles = true;
+                config::save();
             });
             content->addView(s);
         }
