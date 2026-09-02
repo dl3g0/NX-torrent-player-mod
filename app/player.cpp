@@ -205,6 +205,7 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
                  const std::string& titleOverride, int fileIndex,
                  WatchInfo watchInfo)
     : art(art)
+    , requestedFileIndex(fileIndex)
     , watch(std::move(watchInfo))
 {
     // Tell the OS a video is playing, so it does not dim the screen or sleep
@@ -265,6 +266,75 @@ MpvView::MpvView(const std::string& source, const PlayerArt& art,
     startEngine(source, fileIndex);
 }
 
+void MpvView::retryStream()
+{
+    brls::Logger::info("[player] retryStream triggered for {}", streamSource);
+
+    // Cancel in-flight background operations from previous attempt
+    *alive = false;
+    alive = std::make_shared<bool>(true);
+
+    if (tfs)
+    {
+        torrentfs_cancel(tfs);
+        torrentfs* t = tfs;
+        tfs = nullptr;
+        torrentfs_close(t);
+    }
+    if (renderCtx)
+    {
+        mpv_render_context_free(renderCtx);
+        renderCtx = nullptr;
+    }
+    if (mpv)
+    {
+        mpv_terminate_destroy(mpv);
+        mpv = nullptr;
+    }
+
+    ready = false;
+    engineFailed = false;
+    engineError.clear();
+    fileLoaded = false;
+    ended = false;
+    shownPct = 0;
+    streamStartTime = std::chrono::steady_clock::now();
+    lastSample = streamStartTime;
+    obsPos = 0.0;
+    obsDur = 0.0;
+    obsCacheSecs = 0.0;
+    obsCacheIdle = false;
+    obsPausedForCache = false;
+    obsCoreIdle = false;
+
+    if (barTrack) barTrack->setVisibility(brls::Visibility::VISIBLE);
+    if (barFill) barFill->setWidthPercentage(0.0f);
+    if (percentLabel)
+    {
+        percentLabel->setText("0%");
+        percentLabel->setVisibility(brls::Visibility::VISIBLE);
+    }
+    if (statsLabel)
+    {
+        statsLabel->setText(tr("Retrying stream..."));
+        statsLabel->setVisibility(brls::Visibility::VISIBLE);
+    }
+    if (loadingSpinner)
+    {
+        loadingSpinner->setVisibility(brls::Visibility::VISIBLE);
+        loadingSpinner->animate(true);
+    }
+    if (statusLabel)
+    {
+        brls::Theme theme = brls::Application::getTheme();
+        statusLabel->setTextColor(theme.getColor("brls/text"));
+        statusLabel->setText(isHttpStream ? tr("Connecting to stream...") : tr("Connecting to peers..."));
+    }
+    if (loadingOverlay) loadingOverlay->setVisibility(brls::Visibility::VISIBLE);
+
+    startEngine(streamSource, requestedFileIndex);
+}
+
 // Opens the torrent off the UI thread. For a magnet this announces to trackers
 // and pulls the metadata from peers (BEP 9) -- seconds of blocking work. Doing
 // it inline froze the whole app on a black screen until it finished or failed.
@@ -294,8 +364,13 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
         auto liveFlag = this->alive;
         brls::sync([this, liveFlag]() {
             if (!*liveFlag) return;
-            if (!startMpv() && statusLabel)
-                statusLabel->setText(tr("Player initialisation failed"));
+            if (!startMpv())
+            {
+                engineFailed = true;
+                engineError  = tr("Player initialisation failed");
+                if (statusLabel) statusLabel->setText(tr("Failed: ") + engineError);
+                if (statsLabel) statsLabel->setText("");
+            }
         });
         return;
     }
@@ -328,6 +403,7 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
                 engineFailed = true;
                 engineError  = e.empty() ? tr("No peer provided the metadata") : e;
                 if (statusLabel) statusLabel->setText(tr("Failed: ") + engineError);
+                if (statsLabel) statsLabel->setText("");
                 return;
             }
             tfs = t;
@@ -339,7 +415,8 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
             {
                 engineFailed = true;
                 engineError  = tr("Player initialisation failed");
-                if (statusLabel) statusLabel->setText(engineError);
+                if (statusLabel) statusLabel->setText(tr("Failed: ") + engineError);
+                if (statsLabel) statsLabel->setText("");
             }
         });
     });
@@ -547,11 +624,15 @@ bool MpvView::startMpv()
 // the whole time -- that is the only way out of a stuck load.
 void MpvView::registerPlayerActions()
 {
-    // Y locks / unlocks every other control for the session (see toggleLock).
-    // Registered first, and never gated, so it is always the way out of a lock.
+    // Y locks / unlocks every other control during playback, or retries the stream if still loading / failed.
     this->registerAction(
         tr("Lock"), brls::BUTTON_Y,
         [this](brls::View*) {
+            if (!ready)
+            {
+                retryStream();
+                return true;
+            }
             toggleLock();
             return true;
         },
@@ -1669,10 +1750,15 @@ void MpvView::pumpEvents()
                     else if (ef->reason == MPV_END_FILE_REASON_ERROR)
                     {
                         brls::Logger::error("[mpv event] error loading file: {}", ef->error);
+                        engineFailed = true;
+                        engineError = tr("Failed to load stream (network or link error).");
                         if (statusLabel)
                         {
-                            statusLabel->setText(tr("Failed to load stream (network or link error)."));
-                            if (statsLabel) statsLabel->setText(tr("Press B to go back"));
+                            statusLabel->setText(tr("Failed: ") + engineError);
+                        }
+                        if (statsLabel)
+                        {
+                            statsLabel->setText("");
                         }
                     }
                 }
@@ -1762,7 +1848,7 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     loadingOverlay->setBackgroundColor(theme.getColor("brls/background"));
 
     // Full-screen horizontal backdrop behind everything else.
-    if (!art.bgId.empty() || !art.posterPath.empty())
+    if (!art.bgId.empty() || !art.bgUrl.empty())
     {
         bgImage = new brls::Image();
         bgImage->setPositionType(brls::PositionType::ABSOLUTE);
@@ -1774,18 +1860,18 @@ void MpvView::buildLoadingOverlay(const std::string& title)
         bgImage->setAlpha(0.25f);
         loadingOverlay->addView(bgImage);
 
-        if (!art.posterPath.empty())
-            setBackgroundArt(art.posterPath);
-
-        if (!art.bgId.empty())
+        std::string cachedBg = stremio::cachedBackgroundPath(art.bgId);
+        if (!cachedBg.empty())
         {
-            auto liveFlag = this->alive;
-            stremio::fetchBackgroundAsync(art.bgId, art.bgUrl,
-                                          [this, liveFlag](std::string path) {
-                                              if (!*liveFlag || path.empty()) return;
-                                              setBackgroundArt(path);
-                                          }, liveFlag);
+            setBackgroundArt(cachedBg);
         }
+
+        auto liveFlag = this->alive;
+        stremio::fetchBackgroundAsync(art.bgId, art.bgUrl,
+                                      [this, liveFlag](std::string path) {
+                                          if (!*liveFlag || path.empty()) return;
+                                          setBackgroundArt(path);
+                                      }, liveFlag);
     }
 
     // Everything the user actually reads, centred over the background.
@@ -1801,10 +1887,18 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     auto* logo = new PulsingImage();
     logo->setDimensions(280.0f, 120.0f);
     logo->setScalingType(brls::ImageScalingType::FIT);
-    logo->setMargins(0, 0, 24, 0);
+    logo->setMargins(0, 0, 16, 0);
+
+    bool hasLogo = !art.logoId.empty() || !art.posterPath.empty();
 
     if (!art.logoId.empty())
     {
+        std::string cachedLogo = stremio::cachedLogoPath(art.logoId);
+        if (!cachedLogo.empty())
+        {
+            logo->setImageFromFile(cachedLogo);
+        }
+
         auto liveFlag = this->alive;
         std::string pPath = art.posterPath;
         stremio::fetchLogoAsync(art.logoId, art.logoUrl,
@@ -1840,25 +1934,29 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     }
     column->addView(logo);
 
-    auto* titleLabel = new brls::Label();
+    titleLabel = new brls::Label();
     titleLabel->setText(title);
-    titleLabel->setFontSize(28);
+    titleLabel->setFontSize(26);
     titleLabel->setTextColor(theme.getColor("brls/text"));
     titleLabel->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-    titleLabel->setMargins(0, 0, 44, 0);
+    titleLabel->setMargins(0, 0, 20, 0);
+    if (hasLogo)
+        titleLabel->setVisibility(brls::Visibility::GONE);
     column->addView(titleLabel);
 
     statusLabel = new brls::Label();
     statusLabel->setText(tr("Connecting to peers..."));
-    statusLabel->setFontSize(21);
+    statusLabel->setFontSize(20);
     statusLabel->setTextColor(theme.getColor("brls/text"));
     statusLabel->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-    statusLabel->setMargins(0, 0, 22, 0);
+    statusLabel->setIsWrapping(true);
+    statusLabel->setMaxWidth(860.0f);
+    statusLabel->setMargins(0, 0, 16, 0);
     column->addView(statusLabel);
 
     // Progress bar: a rounded track (spanning the screen width) holding an
     // accent-coloured fill.
-    auto* barTrack = new brls::Box();
+    barTrack = new brls::Box();
     barTrack->setAxis(brls::Axis::ROW);
     barTrack->setAlignItems(brls::AlignItems::CENTER);
     barTrack->setWidthPercentage(100.0f);
@@ -1879,7 +1977,7 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     percentLabel->setFontSize(18);
     percentLabel->setTextColor(theme.getColor("brls/text"));
     percentLabel->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-    percentLabel->setMargins(16, 0, 0, 0);
+    percentLabel->setMargins(10, 0, 0, 0);
     column->addView(percentLabel);
 
     statsLabel = new brls::Label();
@@ -1887,24 +1985,24 @@ void MpvView::buildLoadingOverlay(const std::string& title)
     statsLabel->setFontSize(16);
     statsLabel->setTextColor(dimText);
     statsLabel->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-    statsLabel->setMargins(30, 0, 0, 0);
+    statsLabel->setMargins(14, 0, 0, 0);
     column->addView(statsLabel);
 
     // Animated spinner so it's clear the app is working even when the swarm is
     // slow to feed us.
-    auto* spinner = new brls::ProgressSpinner(brls::ProgressSpinnerSize::LARGE);
-    spinner->setDimensions(52.0f, 52.0f);
-    spinner->setMargins(34, 0, 0, 0);
-    spinner->animate(true);
-    column->addView(spinner);
+    loadingSpinner = new brls::ProgressSpinner(brls::ProgressSpinnerSize::LARGE);
+    loadingSpinner->setDimensions(52.0f, 52.0f);
+    loadingSpinner->setMargins(20, 0, 0, 0);
+    loadingSpinner->animate(true);
+    column->addView(loadingSpinner);
 
-    // Hint that B cancels and returns to the list.
+    // Hint that Y retries and B cancels.
     auto* backHint = new brls::Label();
-    backHint->setText(tr("Press B to go back"));
+    backHint->setText(tr("Press Y to retry  •  Press B to go back"));
     backHint->setFontSize(18);
     backHint->setTextColor(dimText);
     backHint->setHorizontalAlign(brls::HorizontalAlign::CENTER);
-    backHint->setMargins(40, 0, 0, 0);
+    backHint->setMargins(24, 0, 0, 0);
     column->addView(backHint);
 
     this->addView(loadingOverlay);
@@ -2358,14 +2456,26 @@ void MpvView::updateLoadingOverlay()
     if (!loadingOverlay)
         return;
 
+    if (engineFailed)
+    {
+        if (barTrack) barTrack->setVisibility(brls::Visibility::GONE);
+        if (percentLabel) percentLabel->setVisibility(brls::Visibility::GONE);
+        if (statsLabel) statsLabel->setVisibility(brls::Visibility::GONE);
+        if (loadingSpinner)
+        {
+            loadingSpinner->setVisibility(brls::Visibility::GONE);
+            loadingSpinner->animate(false);
+        }
+        if (statusLabel)
+        {
+            statusLabel->setText(tr("Failed: ") + engineError);
+            statusLabel->setTextColor(nvgRGB(255, 95, 95));
+        }
+        return;
+    }
+
     if (isHttpStream)
     {
-        if (engineFailed)
-        {
-            if (statusLabel) statusLabel->setText(tr("Failed: ") + engineError);
-            return;
-        }
-
         if (fileLoaded && mpv)
         {
             ready = true;
@@ -2379,12 +2489,23 @@ void MpvView::updateLoadingOverlay()
         {
             auto now  = std::chrono::steady_clock::now();
             double elapsed = std::chrono::duration<double>(now - streamStartTime).count();
-            if (elapsed > 18.0)
+            if (elapsed >= 15.0)
             {
                 engineFailed = true;
-                engineError  = tr("Connection timeout. Press B to select another source.");
-                if (statusLabel) statusLabel->setText(tr("Failed: ") + engineError);
-                if (statsLabel) statsLabel->setText(tr("Press B to return"));
+                engineError  = tr("Connection timeout. Press Y to retry or B to return.");
+                if (statusLabel)
+                {
+                    statusLabel->setText(tr("Failed: ") + engineError);
+                    statusLabel->setTextColor(nvgRGB(255, 95, 95));
+                }
+                if (barTrack) barTrack->setVisibility(brls::Visibility::GONE);
+                if (percentLabel) percentLabel->setVisibility(brls::Visibility::GONE);
+                if (statsLabel) statsLabel->setVisibility(brls::Visibility::GONE);
+                if (loadingSpinner)
+                {
+                    loadingSpinner->setVisibility(brls::Visibility::GONE);
+                    loadingSpinner->animate(false);
+                }
                 return;
             }
 
@@ -2393,16 +2514,16 @@ void MpvView::updateLoadingOverlay()
             {
                 lastSample = now;
                 statusLabel->setText(tr("Connecting to stream..."));
-                statsLabel->setText(tr("Streaming via Debrid / HTTP"));
+                if (elapsed >= 6.0)
+                {
+                    statsLabel->setText(tr("Taking longer than usual... Press Y to retry"));
+                }
+                else
+                {
+                    statsLabel->setText(tr("Streaming via Debrid / HTTP"));
+                }
             }
         }
-        return;
-    }
-
-    if (engineFailed)
-    {
-        if (statusLabel)
-            statusLabel->setText(tr("Failed: ") + engineError);
         return;
     }
 

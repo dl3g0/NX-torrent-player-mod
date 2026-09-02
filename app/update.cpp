@@ -16,7 +16,7 @@
 #include "i18n.hpp"
 
 #ifndef APP_VERSION
-#define APP_VERSION "0.0.2"
+#define APP_VERSION "0.0.3"
 #endif
 #ifndef UPDATE_API_URL
 #define UPDATE_API_URL "https://api.github.com/repos/dl3g0/NX-torrent-player-mod/releases/latest"
@@ -235,7 +235,7 @@ void fetchNotesAsync(
                     std::fread(&localDoc[0], 1, sz, f);
                     std::fclose(f);
                     brls::sync([done, localDoc]() {
-                        done(true, "NX Torrent Player MOD v0.0.1", localDoc, "");
+                        done(true, "NX Torrent Player MOD v" APP_VERSION, localDoc, "");
                     });
                     return;
                 }
@@ -403,6 +403,16 @@ void showChangelog(const std::string& version)
     });
 }
 
+void showChangelog(const Release& r)
+{
+    if (!r.notes.empty())
+    {
+        showNotes(r.title, r.notes);
+        return;
+    }
+    showChangelog(r.version);
+}
+
 void promptInstall(const Release& r)
 {
     // Just the release's own title -- it already reads "0.2.0 — <overview>". The
@@ -421,7 +431,7 @@ void promptInstall(const Release& r)
         // them back in the app. showChangelog puts its own blocking spinner over
         // this re-opened prompt while it fetches.
         promptInstall(r);
-        showChangelog(r.version);
+        showChangelog(r);
     });
     ask->addButton(tr("Update"), [r]() {
         // Its own dialog, with a label we keep writing into. Not cancelable:

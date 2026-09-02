@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.15)
+set(CMAKE_DEPENDS_USE_COMPILER OFF)
 
 # ---------------------------------------------------------------------------
 # NX Torrent Player — borealis (official Horizon-style UI) front-end.
@@ -19,7 +20,7 @@ include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 project(NX-torrent-player)
 set(VERSION_MAJOR "0")
 set(VERSION_MINOR "0")
-set(VERSION_ALTER "2")
+set(VERSION_ALTER "3")
 set(PROJECT_AUTHOR "dl3g0")
 # On-device app name shown in the Homebrew Menu.
 set(APP_TITLE "NX Torrent Player MOD")

@@ -62,6 +62,7 @@ void showNotes(const std::string& title, const std::string& notes);
 // twice or dismissed mid-load), then swaps it for the changelog page -- or an
 // error note. Both the Options button and the update prompt call this.
 void showChangelog(const std::string& version);
+void showChangelog(const Release& r);
 
 // Downloads `r`'s .nro next to the running one, as "<name>.nro.new".
 // `progress` is called on the UI thread with 0..1 (-1 while the size is

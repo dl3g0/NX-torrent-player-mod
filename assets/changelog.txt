@@ -1,94 +1,47 @@
-# 🚀 NX Torrent Player MOD v0.0.2-1 — Release Notes
+# 🚀 NX Torrent Player MOD v0.0.3 — Release Notes
 
-¡Bienvenidos a la versión **v0.0.2-1** de **NX Torrent Player (MOD)** creada por **dl3g0**!
+¡Bienvenidos a la versión **v0.0.3** de **NX Torrent Player (MOD)** creada por **dl3g0**!
 
-### ⚡ Novedades y Correcciones en v0.0.2-1:
-* **Intercalado Instantáneo de Pestañas (L / R) Sin Congelamientos**:
-  * Implementación de caché de pósters 100% en memoria RAM (`s_knownCachedPosters`).
-  * Se eliminaron los cientos de lecturas físicas síncronas a disco (`fopen`/`stat`) en la MicroSD FAT32 al cambiar de pestaña. El cambio entre Inicio, Continuar, Biblioteca y Búsqueda ahora es **instantáneo (< 0.2s)** sin los 7 segundos de retraso previo.
-* **Carga Acelerada y Completa de Imágenes de Addons**:
-  * Aumento del flujo de subida de texturas OpenGL de 2 a 4 por fotograma.
-  * Preservación de descargas en segundo plano para que ninguna carátula quede en blanco al recargar o alternar vistas.
-  * *Debounce* de renderizado agrupado para evitar que los catálogos concurrentes congelen la pantalla de inicio.
-* **Protección Anti-Carga Infinita en Streams y Torrents**:
-  * *Watchdog* de conexión con temporizador inteligente (18s) en enlaces HTTP / Debrid, mostrando un mensaje claro de reintento si el servidor no responde.
-  * Consultas concurrentes en paralelo a los 4 espejos HTTP de metadatos (`fetch_http_torrent_cache`) para arranque sub-segundo de magnets.
-  * Timeouts estrictos en anuncios de trackers UDP para prevenir bloqueos por trackers caídos.
+Esta gran actualización rediseña la experiencia visual con **fondos panorámicos 16:9** y **logotipos animados con pulso**, perfecciona la **sincronización en tiempo real de "Continuar Viendo"** con el orden oficial de Stremio, optimiza la fluidez eliminando recargas innecesarias y resuelve problemas críticos de estabilidad y cierres al salir.
 
 ---
 
-# 🚀 NX Torrent Player MOD v0.0.2 — Release Notes
+## 🌟 Novedades Principales en v0.0.3
 
-¡Bienvenidos a la versión **v0.0.2** de **NX Torrent Player (MOD)** creada por **dl3g0**!
-
-Esta actualización representa un salto masivo en estabilidad, rendimiento y funcionalidades, incorporando un **reproductor local dedicado**, **gestor completo de descargas offline a la MicroSD (Debrid + Torrent P2P)**, **cero congelamientos en catálogos**, **CPU Boost inteligente** y solución definitiva a los cuelgues al adelantar vídeos o cambiar de pista de audio.
-
----
-
-## 🌟 Novedades Principales en v0.0.2
-
-### 🎬 1. Nuevo Reproductor Exclusivo para Archivos Locales y Descargas
-* **Arquitectura 100% Desacoplada**:
-  * Se diseñó un reproductor dedicado (`LocalPlayerActivity` / `LocalMpvView`) exclusivo para archivos en la MicroSD y descargas completadas, eliminando toda sobrecarga de red y P2P.
-* **Interfaz y Controles Completos**:
-  * Controles táctiles completos (toque en barra de búsqueda y arrastre suave para previsualizar).
-  * Panel lateral de configuración translúcido (`X`) con selector de pistas de audio, subtítulos integrados/externos, tamaño y retardo de subtítulos (`sub-delay`), y velocidad de reproducción (0.5x - 2.0x).
-  * Bloqueo de controles con botón **`Y`** para evitar toques accidentales.
-  * Adelantar/Retroceder continuo y fluido mediante el **Joystick izquierdo/derecho** con aceleración progresiva y sin pausar el vídeo.
+### 🎬 1. Sincronización Oficial de "Continuar Viendo" (*Continue Watching*)
+* **Ordenamiento Oficial por `lastWatched`**:
+  * La lista de reproducción en curso ahora coincide al 100% con las aplicaciones oficiales de Stremio (Android, PC y Web), ordenando estrictamente por la última fecha y hora de visualización.
+  * Filtrado inteligente: requiere un `videoId` activo, progreso mayor a cero (`timeOffsetMs > 0`) y menor al 95%.
+* **Eliminación Directa con Botón `X`**:
+  * Permite eliminar cualquier película o serie de la lista de progreso con solo pulsar **`X` (Remove)**, actualizando la nube de Stremio y la memoria local en tiempo real sin recargar la pantalla.
 
 ---
 
-### 📴 2. Gestor de Descargas Offline a la MicroSD (Debrid + Torrents P2P)
-* **Descarga de Contenido Completo en Segundo Plano**:
-  * Descarga películas o episodios completos directamente a `sdmc:/switch/NX-torrent-player/downloads/` para verlos sin conexión a internet (ideal para viajes o juego portátil).
-* **Acceso Directo con Botón `Y`**:
-  * Al explorar fuentes de cualquier título en Stremio, presiona **`Y` (Descargar)** para añadir el enlace (Directo Debrid o Torrent P2P) a la cola de descargas.
-* **Cola de Descargas Secuencial Inteligente**:
-  * Procesa las descargas una a una a máxima velocidad para proteger el sistema de archivos FAT32 de la Switch y evitar cuellos de botella de escritura.
-  * Estados en tiempo real: `Descargando: 45.2% (1.2 GB) - 3.8 MB/s` y `In queue (Waiting)`.
-* **Resolución Automática de Colisiones y Duplicados**:
-  * Permite descargar diferentes versiones o calidades del mismo título generando nombres únicos (`(1)`, `(2)`) sin pisar archivos previos.
-* **Verificación de Integridad y Eliminación Segura**:
-  * Sincronización forzada a la MicroSD (`fsync`) antes de finalizar la descarga para evitar archivos truncados.
-  * Pausa, reanudación y eliminación de tareas en cola o activas sin riesgo de crasheos del sistema operativo.
+### 🎨 2. Experiencia Visual Cinematográfica (Fondos 16:9 y Logos con Pulso)
+* **Fondos Panorámicos Reales 16:9 (`background`)**:
+  * Se sustituyeron las carátulas verticales deformadas por los fondos horizontales de alta resolución de Cinemeta / Metahub (`https://images.metahub.space/background/medium/{id}/img`).
+  * Opacidad suave y cinematográfica integrada con el tema oscuro de la consola.
+* **Logotipos Oficiales con Animación "Pulse"**:
+  * En la pantalla de carga y reproducción de contenidos, se muestra el **logotipo oficial transparente** del título (`logo` de Metahub).
+  * Nuevo componente `PulsingImage` con animación de opacidad senoidal fluida entre **0.50 y 1.00** para una experiencia visual moderna y premium.
+* **Eliminación del Desenfoque por CPU (*CPU Blur Removal*)**:
+  * Se eliminó el pesado algoritmo de desenfoque por software para acelerar la carga de la pantalla de reproducción y ahorrar memoria RAM.
 
 ---
 
-### 🏎️ 3. Cero Congelamiento de UI (Zero Freeze / 60 FPS Fluidos)
-* **Subida Pautada de Texturas OpenGL (*Paced Image Queue*)**:
-  * Eliminación de micro-tirones (*stutters*) al navegar catálogos grandes con decenas de pósters.
-  * La carga de texturas a la GPU se procesa dosificada (máximo 2 por fotograma), manteniendo **60 FPS estables** en todo momento.
-* **Descarga Paralela con 3 Hilos**: Carga concurrente ultra-rápida de carátulas sin interferir con el hilo de dibujo.
+### 🏎️ 3. Navegación Fluida Sin Recargas Innecesarias
+* **Cero Parpadeos al Cambiar Pestañas (`L` / `R`)**:
+  * Al desplazarse entre *Inicio*, *Continuar*, *Biblioteca* y *Búsqueda*, los contenidos se muestran inmediatamente desde la memoria RAM sin disparar descargas de red duplicadas.
+  * Se eliminaron las triples reconstrucciones automáticas en segundo plano.
+* **Subida de Texturas Pautada (*Paced Image Queue*)**:
+  * Dosificación de carga a 2 texturas OpenGL por fotograma para mantener 60 FPS estables al desplazarse por catálogos extensos con decenas de carruseles.
 
 ---
 
-### ⚡ 4. Rendimiento y Batería (CPU Boost Inteligente `1785 MHz`)
-* **FastLoad Automático (1785 MHz)**:
-  * Al iniciar la búsqueda de fuentes, metadatos y arranque de torrents, la CPU sube automáticamente a **1785 MHz** para acelerar el inicio del búfer a la mitad de tiempo.
-* **Normalización Dinámica (1020 MHz)**:
-  * Una vez que la reproducción comienza, la CPU vuelve automáticamente a **1020 MHz**, manteniendo la consola silenciosa, fría y alargando la vida de la batería.
-
----
-
-### 🛠️ 5. Corrección de Crashes al Adelantar / Buscar (`vd-lavc-dr=no`)
-* **Solución a Fallos de Decodificación por Hardware**:
-  * Se desactivó el *Direct Rendering* (`vd-lavc-dr=no`) en libmpv para evitar colisiones de memoria DMA en el chip Nvidia Tegra X1 (T210).
-  * El seek / adelantar vídeo ahora es completamente estable y seguro.
-
----
-
-### 🔊 6. Cambio Fluido e Instantáneo de Pistas de Audio y Subtítulos
-* **Pistas de Audio Asíncronas**:
-  * Cambio inmediato de idiomas o pistas de audio (Stereo / 5.1 Surround / DTS) sin congelar la interfaz ni bloquear el menú.
-* **Audio Continuo Sin Reinicios**:
-  * Activación de `audio-stream-silence=yes` y `audio-wait-open=0` para que el driver de sonido de la Switch no interrumpa la salida de fotogramas de vídeo.
-* **Detección de Búfer Inteligente**:
-  * Evita la aparición espuria de la pantalla "Cargando búfer..." durante el reajuste milimétrico de paquetes de audio.
-
----
-
-### 📊 7. Indicador de Velocidad en Tiempo Real (Speed HUD)
-* Indicador visual en la esquina superior derecha (`📥 3.4 MB/s` / `750 KB/s`) activo al pausar o mostrar los controles en pantalla, compatible tanto con Torrents P2P como con enlaces Debrid/HTTP.
+### 🛠️ 4. Corrección de Cierres Inesperados al Salir y varias optimizaciones (*Crash Fix on Exit*)
+* **Doble Liberación de Memoria Corregida (*Double Free Fix*)**:
+  * Se solucionó un problema en `StremioTab::~StremioTab()` donde el destructor intentaba liberar vistas que ya habían sido eliminadas por el contenedor principal `libList`.
+  * La aplicación ahora se cierra de forma instantánea y limpia al pulsar el botón Home o salir al menú principal.
 
 ---
 

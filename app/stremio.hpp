@@ -107,6 +107,8 @@ void fetchHqArtAsync(const std::string& id, const std::string& url,
 // fetchPosterAsync), "" otherwise. Never touches the network -- for callers
 // that need a path right now and can do without artwork if there is none.
 std::string cachedPosterPath(const std::string& id);
+std::string cachedBackgroundPath(const std::string& id);
+std::string cachedLogoPath(const std::string& id);
 
 // Extract IMDb ID ("tt1234567") from Stremio item ID
 std::string imdbIdOf(const std::string& id);

@@ -1225,6 +1225,50 @@ std::string cachedPosterPath(const std::string& id)
     return "";
 }
 
+std::string cachedBackgroundPath(const std::string& id)
+{
+    if (id.empty()) return "";
+    std::string path = posterCachePath(id) + ".bg.jpg";
+
+    {
+        std::lock_guard<std::mutex> lock(g_posterCacheMtx);
+        ensurePosterCacheScanned();
+        if (g_knownCachedPosters.count(path))
+            return path;
+    }
+
+    if (FILE* f = std::fopen(path.c_str(), "rb"))
+    {
+        std::fclose(f);
+        std::lock_guard<std::mutex> lock(g_posterCacheMtx);
+        g_knownCachedPosters.insert(path);
+        return path;
+    }
+    return "";
+}
+
+std::string cachedLogoPath(const std::string& id)
+{
+    if (id.empty()) return "";
+    std::string path = posterCachePath(id) + ".logo.png";
+
+    {
+        std::lock_guard<std::mutex> lock(g_posterCacheMtx);
+        ensurePosterCacheScanned();
+        if (g_knownCachedPosters.count(path))
+            return path;
+    }
+
+    if (FILE* f = std::fopen(path.c_str(), "rb"))
+    {
+        std::fclose(f);
+        std::lock_guard<std::mutex> lock(g_posterCacheMtx);
+        g_knownCachedPosters.insert(path);
+        return path;
+    }
+    return "";
+}
+
 // Downloads one image into `path` and calls back on the UI thread with it ("" on
 // failure). Shared by the list thumbnails and the full-size background: both
 // have to survive a host that answers WebP, or an HTML error page.

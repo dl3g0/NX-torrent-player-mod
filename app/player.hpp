@@ -98,7 +98,8 @@ class MpvView : public brls::Box
     // (BEP 9) -- seconds of blocking work. It runs on a background thread, so
     // this guards against the result landing after the view is gone.
     std::shared_ptr<bool> alive = std::make_shared<bool>(true);
-    std::string pendingSource;
+    void retryStream();
+    int requestedFileIndex = -1;
     bool isHttpStream = false;
     bool isLocalFile = false;
     std::string streamSource;
@@ -208,10 +209,13 @@ class MpvView : public brls::Box
 
     // Loading screen (borealis views drawn as children, hidden once ready).
     brls::Box* loadingOverlay = nullptr;
+    brls::Label* titleLabel   = nullptr;
     brls::Label* statusLabel  = nullptr;
     brls::Label* statsLabel   = nullptr;
     brls::Label* percentLabel = nullptr;
+    brls::Box* barTrack       = nullptr;
     brls::Box* barFill        = nullptr;
+    brls::ProgressSpinner* loadingSpinner = nullptr;
 
     // Small "buffering" spinner shown mid-playback when the stream stalls.
     brls::Box* bufferOverlay = nullptr;
