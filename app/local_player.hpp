@@ -84,6 +84,16 @@ class LocalMpvView : public brls::Box
     void toggleLock();
     void flashLock();
     void updateLockHint();
+    void handleVideoTap(float x, float y);
+    void triggerMultiStepSeek(int side, bool fromTouch = false);
+    void updateDoubleTapSeek();
+    int tapSide = 0;
+    int consecutiveTapCount = 0;
+    int cumulativeSeekSecs = 0;
+    bool pendingTouchTap = false;
+    std::chrono::steady_clock::time_point lastTapTime;
+    std::chrono::steady_clock::time_point pendingSingleTapTime;
+    bool pendingSingleTap = false;
 
     // Speed & subtitle delay pills
     double playSpeed          = 1.0;

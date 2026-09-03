@@ -20,7 +20,7 @@ include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 project(NX-torrent-player)
 set(VERSION_MAJOR "0")
 set(VERSION_MINOR "0")
-set(VERSION_ALTER "3")
+set(VERSION_ALTER "4")
 set(PROJECT_AUTHOR "dl3g0")
 # On-device app name shown in the Homebrew Menu.
 set(APP_TITLE "NX Torrent Player MOD")

@@ -1,47 +1,60 @@
-# 🚀 NX Torrent Player MOD v0.0.3 — Release Notes
+# 🚀 NX Torrent Player MOD v0.0.4 — Release Notes
 
-¡Bienvenidos a la versión **v0.0.3** de **NX Torrent Player (MOD)** creada por **dl3g0**!
+¡Bienvenidos a la versión **v0.0.4** de **NX Torrent Player (MOD)** creada por **dl3g0**!
 
-Esta gran actualización rediseña la experiencia visual con **fondos panorámicos 16:9** y **logotipos animados con pulso**, perfecciona la **sincronización en tiempo real de "Continuar Viendo"** con el orden oficial de Stremio, optimiza la fluidez eliminando recargas innecesarias y resuelve problemas críticos de estabilidad y cierres al salir.
-
----
-
-## 🌟 Novedades Principales en v0.0.3
-
-### 🎬 1. Sincronización Oficial de "Continuar Viendo" (*Continue Watching*)
-* **Ordenamiento Oficial por `lastWatched`**:
-  * La lista de reproducción en curso ahora coincide al 100% con las aplicaciones oficiales de Stremio (Android, PC y Web), ordenando estrictamente por la última fecha y hora de visualización.
-  * Filtrado inteligente: requiere un `videoId` activo, progreso mayor a cero (`timeOffsetMs > 0`) y menor al 95%.
-* **Eliminación Directa con Botón `X`**:
-  * Permite eliminar cualquier película o serie de la lista de progreso con solo pulsar **`X` (Remove)**, actualizando la nube de Stremio y la memoria local en tiempo real sin recargar la pantalla.
+Esta actualización añade la función de **reintento de streams con el botón `Y`**, implementa un **límite de tiempo de espera inteligente (15s)** para erradicar las cargas infinitas, optimiza la carga de fondos y logos directamente desde el almacenamiento local y **rediseña la pantalla de carga/error** eliminando elementos congelados y cajas invisibles.
 
 ---
 
-### 🎨 2. Experiencia Visual Cinematográfica (Fondos 16:9 y Logos con Pulso)
-* **Fondos Panorámicos Reales 16:9 (`background`)**:
-  * Se sustituyeron las carátulas verticales deformadas por los fondos horizontales de alta resolución de Cinemeta / Metahub (`https://images.metahub.space/background/medium/{id}/img`).
-  * Opacidad suave y cinematográfica integrada con el tema oscuro de la consola.
-* **Logotipos Oficiales con Animación "Pulse"**:
-  * En la pantalla de carga y reproducción de contenidos, se muestra el **logotipo oficial transparente** del título (`logo` de Metahub).
-  * Nuevo componente `PulsingImage` con animación de opacidad senoidal fluida entre **0.50 y 1.00** para una experiencia visual moderna y premium.
-* **Eliminación del Desenfoque por CPU (*CPU Blur Removal*)**:
-  * Se eliminó el pesado algoritmo de desenfoque por software para acelerar la carga de la pantalla de reproducción y ahorrar memoria RAM.
+## 🌟 Novedades Principales en v0.0.4
+
+### 🔄 1. Reintento Rápido de Streams con Botón `Y`
+* **Reconexión Instantánea sin Salir al Menú**:
+  * Si un stream HTTP / Debrid o Torrent se queda colgado, experimenta lentitud o arroja un error de red/enlace caído, ahora puedes presionar **`Y` (Reintentar)** para reiniciar la petición de inmediato.
+  * Durante la reproducción normal, el botón **`Y`** conserva su función de bloqueo/desbloqueo de controles (*Lock Controls*).
 
 ---
 
-### 🏎️ 3. Navegación Fluida Sin Recargas Innecesarias
-* **Cero Parpadeos al Cambiar Pestañas (`L` / `R`)**:
-  * Al desplazarse entre *Inicio*, *Continuar*, *Biblioteca* y *Búsqueda*, los contenidos se muestran inmediatamente desde la memoria RAM sin disparar descargas de red duplicadas.
-  * Se eliminaron las triples reconstrucciones automáticas en segundo plano.
-* **Subida de Texturas Pautada (*Paced Image Queue*)**:
-  * Dosificación de carga a 2 texturas OpenGL por fotograma para mantener 60 FPS estables al desplazarse por catálogos extensos con decenas de carruseles.
+### ⏱️ 2. Detección de Cargas Lentas y Límite de Espera (Timeout a los 15s)
+* **Fin a los Cuelgues y Cargas Infinitas**:
+  * Si un servidor tarda más de **15 segundos** en responder, la app cancela automáticamente la espera indefinida y muestra el mensaje de fallo junto con la opción de reintentar con **`Y`** o volver con **`B`**.
+  * Si la carga sobrepasa los **6 segundos**, la interfaz notifica de forma dinámica: *"Demorando más de lo habitual... Presiona Y para reintentar"*.
 
 ---
 
-### 🛠️ 4. Corrección de Cierres Inesperados al Salir y varias optimizaciones (*Crash Fix on Exit*)
-* **Doble Liberación de Memoria Corregida (*Double Free Fix*)**:
-  * Se solucionó un problema en `StremioTab::~StremioTab()` donde el destructor intentaba liberar vistas que ya habían sido eliminadas por el contenedor principal `libList`.
-  * La aplicación ahora se cierra de forma instantánea y limpia al pulsar el botón Home o salir al menú principal.
+### 🎨 3. Carga Inmediata de Fondos 16:9 y Logotipos Oficiales (Cero Parpadeos)
+* **Renderizado Directo desde Almacenamiento Local**:
+  * Los fondos panorámicos 16:9 (`.bg.jpg`) y los logos oficiales transparentes (`.logo.png`) se leen desde la caché en disco desde el primer fotograma (0 ms).
+  * Se eliminó por completo el parpadeo donde antes aparecía momentáneamente la carátula vertical estirada antes de cargar el fondo definitivo.
+
+---
+
+### 📐 4. Rediseño Limpio de la Pantalla de Carga y Error
+* **Eliminación de Elementos Fantasma y Cajas Descuadradas**:
+  * En caso de error o tiempo de espera agotado, la barra de progreso, los porcentajes y el círculo de carga se ocultan por completo, evitando espacios vacíos o descuadres en el centro de la pantalla.
+  * Los mensajes de error ahora se muestran centrados, con ajuste de línea automático (*word wrapping*) y en un tono suave.
+  * Se eliminó la duplicidad del texto en pantalla para mantener una leyenda limpia en el pie de página: `"Presiona Y para reintentar  •  Presiona B para volver"`.
+
+---
+
+### 👆 5. Salto Rápido con Doble Toque Táctil y Botones `ZL` / `ZR` (*Multi-Step Seek*)
+* **Avance y Retroceso Estilo Netflix / YouTube**:
+  * **Pantalla Táctil**:
+    * **Lado Derecho**: Doble toque avanza **+10 segundos** (`+10s ⏩`). Toques continuos acumulan **+20s**, **+30s**, **+40s**...
+    * **Lado Izquierdo**: Doble toque retrocede **-10 segundos** (`⏪ 10s`). Toques continuos acumulan **⏪ 20s**, **⏪ 30s**...
+    * **Centro**: Un toque abre y cierra la barra de controles inmediatamente.
+  * **Botones Físicos `ZL` / `ZR`**:
+    * **Gatillo `ZR`**: Presionar 2 veces avanza **+10 segundos** (`+10s ⏩`). Pulsaciones continuas acumulan **+20s**, **+30s**, **+40s**...
+    * **Gatillo `ZL`**: Presionar 2 veces retrocede **-10 segundos** (`⏪ 10s`). Pulsaciones continuas acumulan **⏪ 20s**, **⏪ 30s**...
+* **Panel de Diagnóstico Trasladado al Menú de Opciones (`X`)**:
+  * El overlay de estadísticas y debug ya no se activa accidentalmente con `ZR`. Ahora se habilita/deshabilita de forma limpia como una opción dentro del menú de configuración de reproducción (**`X` > DIAGNÓSTICO > Estadísticas detalladas**).
+
+---
+
+### 📏 6. Corrección de Superposición en Títulos Largos de Películas
+* **Ajuste y Desplazamiento Automático (*Marquee*)**:
+  * Se acotó el ancho máximo de la píldora superior izquierda de título a 560px con auto-scroll suave.
+  * Ya no se sobrepone nunca más a los botones de la esquina superior derecha (*Opciones, Bloqueo, Velocidad*) ni al indicador de *Buffering*.
 
 ---
 

@@ -175,11 +175,19 @@ class MpvView : public brls::Box
     bool pillFlashActive     = false;
     std::chrono::steady_clock::time_point pillFlashUntil;
 
-    // Touch controls: tap the video to play/pause (and reveal the bar), tap the
-    // seek bar to jump to that point, tap the Options hint to open the track menu.
     void onPlayPause();                 // the A-button behaviour, reused by a tap
     void setControlsVisible(bool show); // pause overlay + title + hint + seek bar
     void seekToFraction(double frac);   // seek to frac (0..1) of the duration
+    void handleVideoTap(float x, float y);
+    void triggerMultiStepSeek(int side, bool fromTouch = false);
+    void updateDoubleTapSeek();
+    int tapSide = 0;
+    int consecutiveTapCount = 0;
+    int cumulativeSeekSecs = 0;
+    bool pendingTouchTap = false;
+    std::chrono::steady_clock::time_point lastTapTime;
+    std::chrono::steady_clock::time_point pendingSingleTapTime;
+    bool pendingSingleTap = false;
 
     // Control lock (Y). Blocks every player input -- buttons, the stick and touch
     // -- for the session, so a running video is not disturbed by an accidental

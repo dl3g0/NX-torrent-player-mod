@@ -405,17 +405,19 @@ void LocalMpvView::buildLoadingOverlay(const std::string& title)
     pauseTitleBox->setPositionType(brls::PositionType::ABSOLUTE);
     pauseTitleBox->setPositionTop(48.0f);
     pauseTitleBox->setPositionLeft(60.0f);
-    pauseTitleBox->setPadding(12.0f, 22.0f, 12.0f, 22.0f);
+    pauseTitleBox->setPadding(10.0f, 20.0f, 10.0f, 20.0f);
+    pauseTitleBox->setMaxWidth(560.0f);
     pauseTitleBox->setCornerRadius(8.0f);
     pauseTitleBox->setBackgroundColor(nvgRGBA(0, 0, 0, 140));
     pauseTitleBox->setVisibility(brls::Visibility::GONE);
     {
         auto* tl = new brls::Label();
         tl->setText(title);
-        tl->setFontSize(26.0f);
+        tl->setFontSize(24.0f);
         tl->setTextColor(nvgRGB(255, 255, 255));
         tl->setSingleLine(true);
-        tl->setMaxWidth(760.0f);
+        tl->setMaxWidth(520.0f);
+        tl->setAutoAnimate(true);
         pauseTitleBox->addView(tl);
     }
     this->addView(pauseTitleBox);
@@ -568,10 +570,15 @@ void LocalMpvView::buildLoadingOverlay(const std::string& title)
     this->addView(seekOverlay);
 
     // --- Touch gestures ---
+    // Tap the video:
+    // - Center tap: show/hide controls overlay immediately
+    // - Left side (35%): double/multi tap rewinds (-10s, -20s, etc.)
+    // - Right side (35%): double/multi tap fast forwards (+10s, +20s, etc.)
     this->addGestureRecognizer(
-        new brls::TapGestureRecognizer(this, [this]() {
-            if (controlsLocked) { flashLock(); return; }
-            if (ready) setControlsVisible(!controlsShown);
+        new brls::TapGestureRecognizer([this](brls::TapGestureStatus status, brls::Sound*) {
+            if (status.state != brls::GestureState::END)
+                return;
+            handleVideoTap(status.position.x, status.position.y);
         }));
 
     seekOverlay->addGestureRecognizer(new brls::TapGestureRecognizer(
@@ -694,16 +701,23 @@ void LocalMpvView::registerPlayerActions()
             return true;
         },
         false, false, brls::SOUND_CLICK);
-
+    // ZL (Seek -): double-press rewinds 10s, triple-press 20s, etc.
     this->registerAction(
-        tr("Info"), brls::BUTTON_RT,
+        tr("Seek -"), brls::BUTTON_LT,
         [this](brls::View*) {
-            if (controlsLocked) { flashLock(); return true; }
-            infoShown = !infoShown;
-            if (infoOverlay) infoOverlay->setVisibility(infoShown ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+            triggerMultiStepSeek(-1, false);
             return true;
         },
-        false, false, brls::SOUND_CLICK);
+        false, true, brls::SOUND_NONE);
+
+    // ZR (Seek +): double-press fast forwards 10s, triple-press 20s, etc.
+    this->registerAction(
+        tr("Seek +"), brls::BUTTON_RT,
+        [this](brls::View*) {
+            triggerMultiStepSeek(1, false);
+            return true;
+        },
+        false, true, brls::SOUND_NONE);
 }
 
 void LocalMpvView::onPlayPause()
@@ -954,6 +968,110 @@ void LocalMpvView::updatePill()
     {
         pillFlashActive = false;
         hintPill->setVisibility(brls::Visibility::GONE);
+    }
+}
+
+void LocalMpvView::handleVideoTap(float x, float y)
+{
+    if (controlsLocked)
+    {
+        flashLock();
+        return;
+    }
+    if (!ready || !mpv)
+        return;
+
+    float w = this->getWidth();
+    if (w <= 0.0f) w = 1280.0f;
+
+    // Determine zone: left 35% (rewind), right 35% (fast forward), center 30% (toggle overlay)
+    int side = 0;
+    if (x < w * 0.35f)
+        side = -1;
+    else if (x > w * 0.65f)
+        side = 1;
+    else
+        side = 0;
+
+    if (side == 0)
+    {
+        pendingSingleTap = false;
+        pendingTouchTap = false;
+        consecutiveTapCount = 0;
+        cumulativeSeekSecs = 0;
+        tapSide = 0;
+        setControlsVisible(!controlsShown);
+        return;
+    }
+
+    triggerMultiStepSeek(side, true);
+}
+
+void LocalMpvView::triggerMultiStepSeek(int side, bool fromTouch)
+{
+    if (controlsLocked)
+    {
+        flashLock();
+        return;
+    }
+    if (!ready || !mpv)
+        return;
+
+    auto now = std::chrono::steady_clock::now();
+    double dt = std::chrono::duration<double, std::milli>(now - lastTapTime).count();
+
+    if (side == tapSide && dt < 500.0)
+    {
+        pendingSingleTap = false;
+        pendingTouchTap = false;
+        consecutiveTapCount++;
+
+        int displaySecs = (consecutiveTapCount - 1) * 10;
+        cumulativeSeekSecs = side * displaySecs;
+
+        char v[32];
+        std::snprintf(v, sizeof(v), "%.1f", (double)(side * 10.0));
+        const char* cmd[] = { "seek", v, "relative", nullptr };
+        mpv_command_async(mpv, 0, cmd);
+
+        std::string pillText;
+        if (side > 0)
+            pillText = "+" + std::to_string(displaySecs) + "s  ⏩";
+        else
+            pillText = "⏪  " + std::to_string(displaySecs) + "s";
+
+        flashPill(pillText);
+        lastTapTime = now;
+    }
+    else
+    {
+        tapSide = side;
+        consecutiveTapCount = 1;
+        cumulativeSeekSecs = 0;
+        lastTapTime = now;
+        pendingTouchTap = fromTouch;
+        pendingSingleTap = true;
+        pendingSingleTapTime = now + std::chrono::milliseconds(320);
+    }
+}
+
+void LocalMpvView::updateDoubleTapSeek()
+{
+    if (!pendingSingleTap)
+        return;
+
+    auto now = std::chrono::steady_clock::now();
+    if (now >= pendingSingleTapTime)
+    {
+        pendingSingleTap = false;
+        if (pendingTouchTap && consecutiveTapCount == 1)
+        {
+            setControlsVisible(!controlsShown);
+        }
+        pendingTouchTap = false;
+        consecutiveTapCount = 0;
+        cumulativeSeekSecs = 0;
+        tapSide = 0;
     }
 }
 
@@ -1208,6 +1326,15 @@ void LocalMpvView::openTrackMenu()
         content->addView(s);
     }
 
+    content->addView(panelSection(tr("DIAGNOSTICS"), 18.0f));
+    auto* diag = new brls::BooleanCell();
+    diag->init(tr("Detailed statistics (Debug)"), infoShown, [this](bool val) {
+        infoShown = val;
+        if (infoOverlay)
+            infoOverlay->setVisibility(infoShown ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+    });
+    content->addView(diag);
+
     auto liveFlag = this->alive;
     brls::Application::pushActivity(
         new LocalSettingsActivity(root, [this, liveFlag]() {
@@ -1337,6 +1464,7 @@ void LocalMpvView::draw(NVGcontext* vg, float x, float y, float width, float hei
     updateControlsAutoHide();
     updateLockHint();
     updatePill();
+    updateDoubleTapSeek();
 
     brls::Box::draw(vg, x, y, width, height, style, ctx);
 }

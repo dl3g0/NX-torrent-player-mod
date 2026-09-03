@@ -144,6 +144,8 @@ const Entry kEs[] = {
     { " loaded", " cargado" },
     { "Subtitle download failed", "Error al descargar subtítulos" },
     { "Subtitle could not be loaded", "No se pudo cargar el subtítulo" },
+    { "DIAGNOSTICS", "DIAGNÓSTICO" },
+    { "Detailed statistics (Debug)", "Estadísticas detalladas (Debug)" },
 
     // ---- Options ----------------------------------------------------------
     { " (default)", " (predeterminado)" },
@@ -528,6 +530,8 @@ const Entry kFr[] = {
     { " loaded", " chargé" },
     { "Subtitle download failed", "Échec du téléchargement du sous-titre" },
     { "Subtitle could not be loaded", "Le sous-titre n'a pas pu être chargé" },
+    { "DIAGNOSTICS", "DIAGNOSTICS" },
+    { "Detailed statistics (Debug)", "Statistiques détaillées (Debug)" },
 
     // ---- Options ----------------------------------------------------------
     { " (default)", " (par défaut)" },

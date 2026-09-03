@@ -49,13 +49,18 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 ### 🎬 2. Motor de Reproducción de Alto Rendimiento (`libmpv`)
 * **Decodificación por Hardware en Tegra X1**: Decodificación acelerada para códecs modernos (H.264, H.265 / HEVC 10-bit) a resolución nativa 720p (portátil) y 1080p (modo dock).
 * **Reproductor Desacoplado para Archivos Locales (`LocalPlayerActivity`)**: Un motor exclusivo optimizado para reproducir archivos locales de la MicroSD y descargas finalizadas, libre de sobrecargas de red o búferes de torrent.
+* **Salto Rápido Estilo Netflix/YouTube (*Multi-Step Seek*)**:
+  * **Pantalla Táctil**: Doble toque en el lado derecho avanza **+10s** (`+10s ⏩`); en el lado izquierdo retrocede **-10s** (`⏪ 10s`). Toques continuos acumulan saltos mayores (**+20s**, **+30s**, **+40s**...). Un solo toque en el centro alterna los controles de inmediato.
+  * **Gatillos Físicos `ZL` / `ZR`**: Doble pulsación rápida en **`ZR`** avanza +10s (acumulativo); doble pulsación en **`ZL`** retrocede -10s (acumulativo).
+* **Ajuste Inteligente de Títulos Largos**: Los nombres extensos de películas o episodios se delimitan y desplazan suavemente (*marquee/auto-scroll*) sin sobreponerse al indicador de buffer ni a los botones de ajustes.
 * **Menú de Configuración Rápida en Pantalla (`X`)**:
   * Selector de pistas de audio (multiidioma).
   * Selector de subtítulos incrustados y externos.
   * Ajuste de retardo de subtítulos (`sub-delay`) para sincronizar audio/subtítulos desfasados.
   * Modificador de velocidad de reproducción (0.5x hasta 2.0x).
+  * **Panel de Diagnóstico Técnico**: Activa estadísticas avanzadas de red, mpv y torrents sin entorpecer la pantalla principal.
 * **Navegación Fluida con Joystick Analógico**: Adelanta y retrocede de forma continua con aceleración progresiva y previsualización de tiempo sin congelar el vídeo.
-* **Bloqueo Táctil (`Y`)**: Evita pulsaciones accidentales en la pantalla en modo portátil.
+* **Bloqueo de Controles (`Y`)**: Evita pulsaciones accidentales en la pantalla o botones durante la reproducción.
 
 ---
 
@@ -70,6 +75,9 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 
 ### 🚀 4. Soporte Integral Debrid & BitTorrent P2P
 * **Compatibilidad Debrid de Alta Velocidad**: Enlaces premium instantáneos de **Real-Debrid**, **AllDebrid**, **Torbox**, **Premiumize** y URLs HTTP/HTTPS directas.
+* **Reintento Inmediato de Streams (`Y`) y Detección de Timeout (15s)**:
+  * Si un enlace falla, se corta o sufre lentitud excesiva, pulsa **`Y`** para reintentar la conexión al instante sin salir al menú.
+  * Límite de espera inteligente a los 15 segundos para evitar cuelgues o pantallas de carga infinitas.
 * **Motor BitTorrent Avanzado**:
   * Protocolo **uTP** para optimizar la latencia y atravesar NATs complicadas.
   * **MagnetResolver**: Captura y deduplica automáticamente los trackers de los addons (`stream.sources`).
@@ -79,8 +87,9 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 ---
 
 ### 🎨 5. Experiencia Visual y Diseño Cinematográfico
-* **Fondos Panorámicos 16:9 (`background`)**: Reemplaza pósters estirados por fondos oficiales panorámicos de alta calidad de Metahub/Cinemeta con suave opacidad cinematográfica.
-* **Logotipos Oficiales con Animación "Pulse"**: Al entrar a reproducir o cargar un contenido, se presenta el logotipo transparente oficial del título con una elegante animación de pulso senoidal (opacidad fluida entre `0.5` y `1.0`).
+* **Fondos Panorámicos 16:9 Reales**: Reemplaza pósters estirados por fondos oficiales panorámicos de alta calidad cargados al instante desde la caché local sin parpadeos.
+* **Logotipos Oficiales con Animación "Pulse"**: Al cargar un contenido, se presenta el logotipo oficial transparente del título con una suave animación de pulso senoidal (opacidad fluida entre `0.5` y `1.0`).
+* **Pantallas de Carga y Error Rediseñadas**: Ocultación limpia de barras y porcentajes huérfanos ante fallos de conexión, mostrando mensajes claros y centrados con saltos de línea automáticos.
 * **Tarjetas de Fuentes Rediseñadas (500px)**: Título completo con desplazamiento automático (*marquee auto-scroll*), etiqueta de calidad destacada (`[1080p] Torrentio`, `[RD+] Debrid`) y peso del archivo.
 * **Fuente de Emojis Nativa (`OpenMoji.ttf`)**: Renderizado perfecto de banderas de idiomas (🇪🇸, 🇲🇽, 🇺🇸, 🇯🇵) e iconos en los nombres de las fuentes.
 
@@ -103,8 +112,11 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 | **Lista "Continuar Viendo" Idéntica a Stremio** | ✅ **Orden oficial por `lastWatched` + Borrado con `X`** |
 | **Gestor de Descargas Offline a MicroSD** | ✅ **Descargas Debrid / Torrents en segundo plano (`Y`)** |
 | **Reproductor Local Exclusivo (`LocalPlayerActivity`)** | ✅ **Reproductor local desacoplado y optimizado** |
+| **Salto Rápido Doble Toque Táctil y Gatillos `ZL` / `ZR`** | ✅ **Estilo Netflix/YouTube (+10s, +20s, +30s...)** |
+| **Reintento Rápido de Streams (`Y`) y Anti-Timeout** | ✅ **Reconexión en 1 clic + Límite a los 15s** |
+| **Fondos Panorámicos 16:9 + Logos con Pulso** | ✅ **Renderizado nativo sin parpadeos** |
 | **CPU FastLoad Boost Inteligente** | ✅ **Dinámico: 1785 MHz carga -> 1020 MHz normal** |
-| **Subida de Texturas Pautada (*Paced Image Queue*)** | ✅ **UI Optimizada** |
+| **Subida de Texturas Pautada (*Paced Image Queue*)** | ✅ **UI a 60 FPS estables** |
 | **Soporte de Emojis / Banderas en Fuentes** | ✅ **Integración nativa de `OpenMoji.ttf`** |
 | **Filtro Automático de Fuentes 4K** | ✅ **Opción activa por defecto para estabilidad Switch** |
 
@@ -116,20 +128,26 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 * **`D-Pad` / `Stick Izquierdo`**: Moverse entre tarjetas, opciones y carruseles.
 * **`A`**: Seleccionar / Abrir contenido.
 * **`B`**: Volver atrás.
-* **`L` / `R`**: Cambiar entre vistas de Stremio (*Inicio*, *Continuar viendo*, *Biblioteca*, *Búsqueda*).
-* **`Y`**: Recargar catálogo o biblioteca manualmente.
-* **`X`**: En la pestaña *Continuar viendo*, elimina el título seleccionado del progreso.
+* **`L` / `R`**: Cambiar entre pestañas (*Inicio*, *Continuar*, *Biblioteca*, *Búsqueda*, *Local*).
+* **`Y`**: En catálogos: recargar lista. En selector de fuentes: mandar a descargar a la MicroSD.
+* **`X`**: En la pestaña *Continuar viendo*, elimina el título seleccionado del progreso en la nube.
 * **`+` / `-`**: Abrir Ajustes de la aplicación.
 
 ### 🎬 Durante la Reproducción de Vídeo
 * **`A`**: Pausar / Reanudar reproducción.
-* **`Stick Izquierdo (Izquierda / Derecha)`**: Búsqueda rápida y continua en la línea de tiempo.
+* **`ZL` (Doble pulsación rápida)**: Retroceso rápido acumulativo (**-10s**, **-20s**, **-30s**...).
+* **`ZR` (Doble pulsación rápida)**: Avance rápido acumulativo (**+10s**, **+20s**, **+30s**...).
+* **`Stick Izquierdo (Izquierda / Derecha)`**: Búsqueda continua en la línea de tiempo con previsualización.
 * **`D-Pad Izquierda / Derecha`**: Salto de tiempo corto (10 segundos).
-* **`D-Pad Arriba / Abajo`**: Ajuste rápido de volumen.
-* **`X`**: Abrir panel de opciones (pistas de audio, subtítulos, sincronización y velocidad).
-* **`Y`**: Bloquear / Desbloquear controles táctiles en pantalla.
+* **`L` / `R`**: Disminuir / Aumentar velocidad de reproducción.
+* **`X`**: Abrir panel de opciones (audio, subtítulos, sincronización, velocidad y diagnóstico).
+* **`Y`**: Durante la reproducción: Bloquear/Desbloquear controles. Durante la carga/error: Reintentar stream.
 * **`B`**: Detener reproducción y salir al menú.
-* **Pantalla Táctil**: Tocar la barra para saltar directamente a cualquier minuto; gestos deslizantes para volumen y brillo.
+* **Pantalla Táctil**:
+  * **Doble toque a la derecha**: Salto rápido hacia adelante (**+10s**, **+20s**, **+30s**...).
+  * **Doble toque a la izquierda**: Salto rápido hacia atrás (**-10s**, **-20s**, **-30s**...).
+  * **Toque simple en el centro**: Mostrar/Ocultar barra de controles y estado.
+  * **Tocar la barra de progreso**: Saltar directamente a cualquier punto de la línea de tiempo.
 
 ---
 
