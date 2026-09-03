@@ -56,6 +56,15 @@ Esta actualización añade la función de **reintento de streams con el botón `
   * Se acotó el ancho máximo de la píldora superior izquierda de título a 560px con auto-scroll suave.
   * Ya no se sobrepone nunca más a los botones de la esquina superior derecha (*Opciones, Bloqueo, Velocidad*) ni al indicador de *Buffering*.
 
+### 🛡️ 7. Optimización de Streaming Torrent 1080p y Corrección de Crash al Salir y Reentrar
+* **Ampliación de Ventana de Streaming (64 MB) y Pre-descarga de Índices (MKV/MP4)**:
+  * Se amplió la ventana de streaming (`STREAM_WINDOW`) de 32 MB a 64 MB para alimentar con holgura los decodificadores de hardware con contenido 1080p de alto bitrate.
+  * Se cuadruplicó la región crítica de cola (`CRIT_TAIL_BYTES` a 16 MB) para que los índices *Cues* de MKV y atom *moov* de MP4 se descarguen al instante sin pausar la reproducción.
+* **Arranque Inmediato sin Bloqueos de Búfer**:
+  * Se vinculó el evento `MPV_EVENT_PLAYBACK_RESTART` para despausar el vídeo en el instante exacto en que el primer fotograma es decodificado por hardware.
+* **Eliminación de Crashes por Colisión de Motores y Sockets BSD**:
+  * Se implementó exclusión mutua global (`s_torrentEngineMutex`) en el ciclo de vida del motor `torrentfs`. Si sales de un stream con `B` y vuelves a entrar de inmediato, la nueva instancia espera de forma segura a que la anterior libere sus hilos y sockets BSD, evitando corrupción de caché cruzada y cierres forzados del sistema operativo.
+
 ---
 
 ## 📥 Instalación

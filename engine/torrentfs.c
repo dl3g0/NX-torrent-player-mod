@@ -92,20 +92,20 @@
 // don't advance 50 pieces in parallel while the player starves on one. Byte-
 // budgeted, with a small piece floor and (in RAM mode) a ceiling of half the
 // RAM window so the look-ahead can never outrun what the window can hold.
-#define STREAM_WINDOW    (32LL * 1024 * 1024)
-#define STREAM_MIN_PIECES 2
+#define STREAM_WINDOW    (64LL * 1024 * 1024)
+#define STREAM_MIN_PIECES 4
 
-// Startup criticals: mpv probes the container head and tail (moov atom) first,
+// Startup criticals: mpv probes the container head and tail (moov atom / MKV cues) first,
 // so we speculatively pre-fetch both ends in parallel rather than let mpv's
 // blocking reads discover them one seek at a time. Budgeted in BYTES, not
 // pieces: it is a latency hedge over the region mpv is about to read, so with a
 // 64 MB piece one piece already covers it -- pre-fetching a fixed 3 tail pieces
 // there was 192 MB of speculation. The piece count is ceil(budget / piece_len),
 // clamped so tiny pieces do not explode and every torrent still probes >=1 each.
-#define CRIT_HEAD_BYTES  (1LL << 20)   // ~1 MB at the head (ftyp / start)
-#define CRIT_TAIL_BYTES  (4LL << 20)   // ~4 MB at the tail (where moov usually is)
-#define CRIT_HEAD_MAX    2
-#define CRIT_TAIL_MAX    3
+#define CRIT_HEAD_BYTES  (4LL << 20)   // ~4 MB at the head (ftyp / start)
+#define CRIT_TAIL_BYTES  (16LL << 20)  // ~16 MB at the tail (where moov / cues usually are)
+#define CRIT_HEAD_MAX    4
+#define CRIT_TAIL_MAX    8
 
 // FAT32 caps a file at 4 GB: the cache is chunked.
 #define CACHE_CHUNK      (1LL << 30)

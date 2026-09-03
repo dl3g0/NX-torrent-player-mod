@@ -56,7 +56,10 @@ void* getProcAddress(void*, const char* name)
 
 // Seconds of video mpv must buffer before playback starts (and the loading
 // screen reaches 100% / hands over to the video).
-constexpr double kBufferSecs = 5.0;
+constexpr double kBufferSecs = 2.5;
+
+// Global engine mutex: ensures only ONE torrentfs instance can open/close/delete cache at any time.
+static std::mutex s_torrentEngineMutex;
 
 // The loudness boost (Options -> Boost quiet audio). Realtime normalisation to
 // a consistent target: quiet 5.1 dialogue comes up without clipping the loud
@@ -382,6 +385,10 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
 
     auto liveFlag = this->alive;
     brls::async([this, liveFlag, source, fileIndex]() {
+        std::unique_lock<std::mutex> lock(s_torrentEngineMutex);
+        if (!*liveFlag)
+            return;
+
         char err[256] = { 0 };
         // Latched into the engine at open; pick it up from config for this video.
         torrentfs_set_ram_stream(config::get().ramStream ? 1 : 0);
@@ -394,7 +401,11 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
             // engine we just opened would leak.
             if (!*liveFlag)
             {
-                if (t) torrentfs_close(t);
+                if (t)
+                {
+                    std::lock_guard<std::mutex> lock(s_torrentEngineMutex);
+                    torrentfs_close(t);
+                }
                 return;
             }
             if (!t)
@@ -1799,7 +1810,10 @@ MpvView::~MpvView()
     mpv          = nullptr;
     renderCtx    = nullptr;
     if (t)
+    {
+        std::lock_guard<std::mutex> lock(s_torrentEngineMutex);
         torrentfs_close(t);
+    }
 
     brls::Logger::info("[teardown] ~MpvView leave (engine closed)");
 }
@@ -1844,12 +1858,9 @@ void MpvView::pumpEvents()
                 fetchOnlineSubs();
                 break;
             case MPV_EVENT_PLAYBACK_RESTART:
-                if (isHttpStream || isLocalFile)
-                {
-                    fileLoaded = true;
-                    ready = true;
-                }
-                brls::Logger::info("[mpv event] playback restart (first frame)");
+                fileLoaded = true;
+                ready      = true;
+                brls::Logger::info("[mpv event] playback restart (first frame ready)");
                 break;
             case MPV_EVENT_END_FILE:
             {
@@ -2675,9 +2686,11 @@ void MpvView::updateLoadingOverlay()
                 ready = true;  // buffered enough -> unpause and show video
         }
 
-        // Safety net for short files / a full demuxer cache: if there's nothing
-        // left to read, don't wait for the full target.
-        if (obsCacheIdle && pct > 0)
+        // Safety net for torrents and short files: if demuxer has >= 1.5s or cache is idle
+        int64_t piecesDone = 0;
+        if (tfs)
+            torrentfs_stats(tfs, &piecesDone, nullptr, nullptr);
+        if (obsCacheIdle || (piecesDone >= 4 && secs >= 1.5))
             ready = true;
     }
     if (pct > 100)
