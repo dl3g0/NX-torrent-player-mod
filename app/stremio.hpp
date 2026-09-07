@@ -117,6 +117,10 @@ std::string imdbIdOf(const std::string& id);
 // to prevent frame drops / freezing when many posters land at once.
 void processPendingImageUploads(int maxPerFrame = 4);
 
+// Pause or resume background poster/artwork downloads while video playback is active.
+void setBackgroundWorkersPaused(bool paused);
+bool isBackgroundWorkersPaused();
+
 struct LibraryResult
 {
     bool ok = false;

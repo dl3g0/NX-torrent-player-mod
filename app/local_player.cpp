@@ -10,11 +10,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <sys/stat.h>
 #include <fmt/core.h>
 
 #include "appdata.hpp"
 #include "config.hpp"
 #include "i18n.hpp"
+#include "stremio.hpp"
 #include "sys.hpp"
 #include "theme.hpp"
 
@@ -203,6 +205,9 @@ LocalMpvView::LocalMpvView(const std::string& filePath, const std::string& title
 
     sys::preventSleep(true);
     sys::setCpuBoost(true);
+    cpuBoostActive = true;
+    loadStartTime = std::chrono::steady_clock::now();
+    stremio::setBackgroundWorkersPaused(true);
 
     buildLoadingOverlay(displayTitle);
     registerPlayerActions();
@@ -219,8 +224,10 @@ LocalMpvView::~LocalMpvView()
 {
     brls::Logger::info("[local_player] ~LocalMpvView teardown enter");
     sys::setCpuBoost(false);
+    cpuBoostActive = false;
     sys::preventSleep(false);
     appletSetMediaPlaybackState(false);
+    stremio::setBackgroundWorkersPaused(false);
 
     *alive = false;
 
@@ -296,6 +303,10 @@ bool LocalMpvView::startMpv()
     mpv_set_option_string(mpv, "cache", "yes");
     mpv_set_option_string(mpv, "cache-pause", "no");
     mpv_set_option_string(mpv, "pause", "yes");
+    mpv_set_option_string(mpv, "demuxer-max-bytes", "64MiB");
+    mpv_set_option_string(mpv, "demuxer-max-back-bytes", "32MiB");
+    mpv_set_option_string(mpv, "demuxer-readahead-secs", "20");
+    mpv_set_option_string(mpv, "cache-secs", "30");
     mpv_set_option_string(mpv, "hr-seek", "default");
     mpv_set_option_string(mpv, "hr-seek-framedrop", "yes");
     mpv_set_option_string(mpv, "framedrop", "vo");
@@ -325,6 +336,7 @@ bool LocalMpvView::startMpv()
     mpv_observe_property(mpv, 0, "duration", MPV_FORMAT_DOUBLE);
     mpv_observe_property(mpv, 0, "paused-for-cache", MPV_FORMAT_FLAG);
     mpv_observe_property(mpv, 0, "core-idle", MPV_FORMAT_FLAG);
+    mpv_observe_property(mpv, 0, "demuxer-cache-duration", MPV_FORMAT_DOUBLE);
 
     const char* cmd[] = { "loadfile", filePath.c_str(), nullptr };
     mpv_command(mpv, cmd);
@@ -568,6 +580,34 @@ void LocalMpvView::buildLoadingOverlay(const std::string& title)
     seekTotal->setMargins(0, 0, 0, 20);
     seekOverlay->addView(seekTotal);
     this->addView(seekOverlay);
+
+    // Semi-transparent video / audio debug info panel, toggled from Options (X)
+    infoOverlay = new brls::Box();
+    infoOverlay->setAxis(brls::Axis::ROW);
+    infoOverlay->setPositionType(brls::PositionType::ABSOLUTE);
+    infoOverlay->setPositionTop(40.0f);
+    infoOverlay->setPositionLeft(40.0f);
+    infoOverlay->setWidth(960.0f);
+    infoOverlay->setHeight(560.0f);
+    infoOverlay->setPadding(16.0f, 20.0f, 16.0f, 20.0f);
+    infoOverlay->setCornerRadius(8.0f);
+    infoOverlay->setBackgroundColor(nvgRGBA(0, 0, 0, 165));
+    infoOverlay->setVisibility(brls::Visibility::GONE);
+
+    auto makeColumn = [&](float w) {
+        auto* l = new brls::Label();
+        l->setText("");
+        l->setFontSize(14);
+        l->setTextColor(nvgRGB(235, 235, 235));
+        l->setIsWrapping(true);
+        l->setWidth(w);
+        infoOverlay->addView(l);
+        return l;
+    };
+    infoLabel  = makeColumn(460.0f);  // Media & Video
+    infoLabel2 = makeColumn(440.0f);  // Audio & Playback
+    infoLabel2->setMarginLeft(20.0f);
+    this->addView(infoOverlay);
 
     // --- Touch gestures ---
     // Tap the video:
@@ -1346,7 +1386,103 @@ void LocalMpvView::openTrackMenu()
 
 void LocalMpvView::updateInfoOverlay()
 {
-    // Media info
+    if (!infoOverlay || !infoShown)
+        return;
+
+    auto now = std::chrono::steady_clock::now();
+    double dt = std::chrono::duration<double>(now - infoLastSample).count();
+    if (dt < 0.5)
+        return;
+    infoLastSample = now;
+
+    int64_t w = 0, h = 0, drop = 0, decDrop = 0;
+    int64_t vbitrate = 0, abitrate = 0, achannels = 0, asamplerate = 0;
+    double fps = 0.0, buf = obsCacheSecs, avsync = 0.0, speed = playSpeed;
+    char* hwdec = nullptr;
+    char* vcodec = nullptr;
+    char* acodec = nullptr;
+    char* format = nullptr;
+
+    if (mpv)
+    {
+        mpv_get_property(mpv, "width", MPV_FORMAT_INT64, &w);
+        mpv_get_property(mpv, "height", MPV_FORMAT_INT64, &h);
+        mpv_get_property(mpv, "container-fps", MPV_FORMAT_DOUBLE, &fps);
+        if (fps <= 0.0)
+            mpv_get_property(mpv, "estimated-vf-fps", MPV_FORMAT_DOUBLE, &fps);
+        mpv_get_property(mpv, "frame-drop-count", MPV_FORMAT_INT64, &drop);
+        mpv_get_property(mpv, "decoder-frame-drop-count", MPV_FORMAT_INT64, &decDrop);
+        mpv_get_property(mpv, "hwdec-current", MPV_FORMAT_STRING, &hwdec);
+        mpv_get_property(mpv, "video-codec", MPV_FORMAT_STRING, &vcodec);
+        mpv_get_property(mpv, "video-bitrate", MPV_FORMAT_INT64, &vbitrate);
+
+        mpv_get_property(mpv, "audio-codec", MPV_FORMAT_STRING, &acodec);
+        mpv_get_property(mpv, "audio-params/channel-count", MPV_FORMAT_INT64, &achannels);
+        mpv_get_property(mpv, "audio-params/samplerate", MPV_FORMAT_INT64, &asamplerate);
+        mpv_get_property(mpv, "audio-bitrate", MPV_FORMAT_INT64, &abitrate);
+
+        mpv_get_property(mpv, "file-format", MPV_FORMAT_STRING, &format);
+        mpv_get_property(mpv, "demuxer-cache-duration", MPV_FORMAT_DOUBLE, &buf);
+        mpv_get_property(mpv, "avsync", MPV_FORMAT_DOUBLE, &avsync);
+        mpv_get_property(mpv, "speed", MPV_FORMAT_DOUBLE, &speed);
+    }
+
+    const char* hw = (hwdec && hwdec[0] && std::strcmp(hwdec, "no") != 0) ? hwdec : "software";
+
+    struct stat st;
+    int64_t fileSize = 0;
+    if (stat(filePath.c_str(), &st) == 0)
+        fileSize = (int64_t)st.st_size;
+
+    char m1[1024];
+    std::snprintf(m1, sizeof(m1),
+                  "MEDIA & VIDEO\n"
+                  "File: %s\n"
+                  "Container: %s   Size: %s\n"
+                  "\n"
+                  "Resolution: %lldx%lld @ %.3f fps\n"
+                  "Video Codec: %s\n"
+                  "Hardware Decode: %s\n"
+                  "Video Bitrate: %lld kbps\n"
+                  "Dropped Frames: %lld (decoder %lld)",
+                  displayTitle.c_str(),
+                  format ? format : "-",
+                  fileSize > 0 ? sys::formatSize(fileSize).c_str() : "-",
+                  (long long)w, (long long)h, fps,
+                  vcodec ? vcodec : "-",
+                  hw,
+                  (long long)(vbitrate / 1000),
+                  (long long)drop, (long long)decDrop);
+    if (infoLabel) infoLabel->setText(m1);
+
+    int curSec = (int)std::max(0.0, obsPos);
+    int totalSec = (int)std::max(0.0, obsDur);
+
+    char m2[1024];
+    std::snprintf(m2, sizeof(m2),
+                  "AUDIO & PLAYBACK\n"
+                  "Audio Codec: %s\n"
+                  "Channels: %lld   Sample Rate: %lld Hz\n"
+                  "Audio Bitrate: %lld kbps\n"
+                  "\n"
+                  "Buffer Ahead: %.2f s\n"
+                  "A/V Desync: %.1f ms\n"
+                  "Playback Speed: %.2fx\n"
+                  "Position: %d:%02d / %d:%02d",
+                  acodec ? acodec : "-",
+                  (long long)achannels, (long long)asamplerate,
+                  (long long)(abitrate / 1000),
+                  buf,
+                  avsync * 1000.0,
+                  speed,
+                  curSec / 60, curSec % 60,
+                  totalSec / 60, totalSec % 60);
+    if (infoLabel2) infoLabel2->setText(m2);
+
+    if (hwdec) mpv_free(hwdec);
+    if (vcodec) mpv_free(vcodec);
+    if (acodec) mpv_free(acodec);
+    if (format) mpv_free(format);
 }
 
 void LocalMpvView::pumpEvents()
@@ -1360,9 +1496,10 @@ void LocalMpvView::pumpEvents()
         switch (ev->event_id)
         {
             case MPV_EVENT_FILE_LOADED:
-            case MPV_EVENT_PLAYBACK_RESTART:
                 fileLoaded = true;
-                ready = true;
+                break;
+            case MPV_EVENT_PLAYBACK_RESTART:
+                playbackRestarted = true;
                 break;
             case MPV_EVENT_END_FILE:
             {
@@ -1384,12 +1521,23 @@ void LocalMpvView::pumpEvents()
                         double v = *(double*)p->data;
                         if (std::strcmp(p->name, "time-pos") == 0) obsPos = v;
                         else if (std::strcmp(p->name, "duration") == 0) obsDur = v;
+                        else if (std::strcmp(p->name, "demuxer-cache-duration") == 0) obsCacheSecs = v;
                     }
                 }
                 break;
             }
             default:
                 break;
+        }
+    }
+
+    if (!ready && fileLoaded)
+    {
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - loadStartTime).count();
+        if (obsCacheSecs >= 1.0 || (playbackRestarted && obsCacheSecs >= 0.4) || elapsed >= 2.5)
+        {
+            ready = true;
         }
     }
 }
@@ -1454,7 +1602,18 @@ void LocalMpvView::draw(NVGcontext* vg, float x, float y, float width, float hei
         if (mpv) mpv_set_property_string(mpv, "pause", "no");
         loadingOverlay->setVisibility(brls::Visibility::GONE);
         overlayHidden = true;
-        sys::setCpuBoost(false);
+        playbackStartTime = std::chrono::steady_clock::now();
+    }
+
+    if (overlayHidden && cpuBoostActive)
+    {
+        auto now = std::chrono::steady_clock::now();
+        double activeElapsed = std::chrono::duration<double>(now - playbackStartTime).count();
+        if (activeElapsed >= 4.0)
+        {
+            sys::setCpuBoost(false);
+            cpuBoostActive = false;
+        }
     }
 
     if (ready)
@@ -1465,6 +1624,7 @@ void LocalMpvView::draw(NVGcontext* vg, float x, float y, float width, float hei
     updateLockHint();
     updatePill();
     updateDoubleTapSeek();
+    updateInfoOverlay();
 
     brls::Box::draw(vg, x, y, width, height, style, ctx);
 }

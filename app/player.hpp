@@ -313,6 +313,8 @@ class MpvView : public brls::Box
     bool overlayHidden = false;  // loading screen has been taken down
     bool ended         = false;  // reached EOF; the auto-close is scheduled
     int shownPct       = -1;     // last buffering % pushed to the bar
+    std::chrono::steady_clock::time_point playbackStartTime;
+    bool cpuBoostActive = false;
 
     // Download-speed sampling.
     int64_t lastBytes = 0;

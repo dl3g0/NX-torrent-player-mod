@@ -71,6 +71,11 @@ class LocalMpvView : public brls::Box
     // Observed mpv properties
     double obsPos             = 0.0;
     double obsDur             = 0.0;
+    double obsCacheSecs       = 0.0;
+    bool playbackRestarted    = false;
+    std::chrono::steady_clock::time_point loadStartTime;
+    std::chrono::steady_clock::time_point playbackStartTime;
+    bool cpuBoostActive       = false;
 
     // Touch & button actions
     void onPlayPause();

@@ -344,6 +344,8 @@ void MpvView::retryStream()
 void MpvView::startEngine(const std::string& source, int fileIndex)
 {
     sys::setCpuBoost(true);
+    cpuBoostActive = true;
+    stremio::setBackgroundWorkersPaused(true);
 
     if (isLocalFile)
     {
@@ -1771,6 +1773,8 @@ MpvView::~MpvView()
 {
     brls::Logger::info("[teardown] ~MpvView enter");
     sys::setCpuBoost(false);
+    cpuBoostActive = false;
+    stremio::setBackgroundWorkersPaused(false);
 
     // Playback is ending: let the OS dim/sleep on idle again.
     appletSetMediaPlaybackState(false);
@@ -2602,12 +2606,28 @@ void MpvView::updateLoadingOverlay()
     {
         if (fileLoaded && mpv)
         {
-            ready = true;
-            shownPct = 100;
-            barFill->setWidthPercentage(100.0f);
-            char pb[16];
-            std::snprintf(pb, sizeof(pb), "100%%");
-            percentLabel->setText(pb);
+            double target = 2.0;
+            double secs = obsCacheSecs;
+            auto now = std::chrono::steady_clock::now();
+            double elapsed = std::chrono::duration<double>(now - streamStartTime).count();
+            int pct = (int)(secs / target * 100.0);
+            if (pct > 100) pct = 100;
+            if (pct < 0) pct = 0;
+            if (pct != shownPct)
+            {
+                shownPct = pct;
+                barFill->setWidthPercentage((float)pct);
+                char pb[16];
+                std::snprintf(pb, sizeof(pb), "%d%%", pct);
+                percentLabel->setText(pb);
+            }
+            if (secs >= target || elapsed >= 5.0)
+            {
+                ready = true;
+                shownPct = 100;
+                barFill->setWidthPercentage(100.0f);
+                percentLabel->setText("100%");
+            }
         }
         else
         {
@@ -2678,7 +2698,7 @@ void MpvView::updateLoadingOverlay()
     {
         // Async-observed values (pumpEvents): no sync mpv call on this thread.
         double secs = obsCacheSecs;
-        double target = isHttpStream ? 5.0 : kBufferSecs;
+        double target = kBufferSecs;
         if (secs >= 0.0)
         {
             pct = (int)(secs / target * 100.0);
@@ -2686,11 +2706,11 @@ void MpvView::updateLoadingOverlay()
                 ready = true;  // buffered enough -> unpause and show video
         }
 
-        // Safety net for torrents and short files: if demuxer has >= 1.5s or cache is idle
+        // Safety net for torrents: if demuxer has >= 1.5s and at least 4 pieces landed
         int64_t piecesDone = 0;
         if (tfs)
             torrentfs_stats(tfs, &piecesDone, nullptr, nullptr);
-        if (obsCacheIdle || (piecesDone >= 4 && secs >= 1.5))
+        if (piecesDone >= 4 && secs >= 1.5)
             ready = true;
     }
     if (pct > 100)
@@ -3617,7 +3637,17 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
             mpv_set_property_string(mpv, "pause", "no");
         loadingOverlay->setVisibility(brls::Visibility::GONE);
         overlayHidden = true;
-        sys::setCpuBoost(false);
+        playbackStartTime = std::chrono::steady_clock::now();
+    }
+    if (overlayHidden && cpuBoostActive)
+    {
+        auto now = std::chrono::steady_clock::now();
+        double activeElapsed = std::chrono::duration<double>(now - playbackStartTime).count();
+        if (activeElapsed >= 4.0)
+        {
+            sys::setCpuBoost(false);
+            cpuBoostActive = false;
+        }
     }
     if (overlayHidden)
         updateBufferIndicator();

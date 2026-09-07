@@ -21,6 +21,17 @@
 ### ⚙️ 2. Mejoras de Compilación y Empaquetado
 * **Generación Automática del NRO**: Se configuró el objetivo `ALL` en CMake para que cada compilación empaquete y actualice siempre el archivo `NX-torrent-player.nro` con su RomFS de forma inmediata.
 
+### 🛠️ 3. Correcciones (Fixes)
+* **Eliminación de Lag / Tartamudeo Inicial al Reproducir**:
+  * Corregido el problema de micro-cortes y lag severo que ocurría al reproducir rápidamente cualquier vídeo (descargado, torrent, Debrid o desde el explorador) tras abrir la aplicación.
+  * Se pausan de inmediato las descargas y descompresión de carátulas en segundo plano al iniciar el reproductor para liberar los núcleos del CPU.
+  * Se garantiza un pre-búfer mínimo antes de comenzar a renderizar y se mantiene el **CPU Boost** (1785 MHz) activo durante los primeros 4 segundos de reproducción para inicializar shaders de mpv y decodificadores con máxima fluidez.
+* **Activación de Estadísticas Detalladas (Debug) en Reproductor Offline**:
+  * Solucionado el fallo por el cual la opción de diagnóstico no abría en el reproductor local/offline.
+  * Ahora el panel flotante muestra en tiempo real datos técnicos completos:
+    * **Video:** Contenedor, tamaño, resolución nativa, FPS actual/estimado, códec de vídeo, decodificación por hardware (NVDEC), bitrate y frames caídos.
+    * **Audio:** Códec de audio, canales, frecuencia de muestreo (Hz), bitrate de audio, búfer adelantado en RAM, desincronización A/V y posición/duración.
+
 ---
 
 ## 📥 Instalación

@@ -1296,7 +1296,7 @@ static std::deque<PacedImageCallback> g_pacedCallbacks;
 class ImageQueue
 {
 public:
-    ImageQueue() : stop(false)
+    ImageQueue() : stop(false), paused(false)
     {
         for (int i = 0; i < 3; i++)
         {
@@ -1315,6 +1315,21 @@ public:
         {
             if (t.joinable()) t.join();
         }
+    }
+
+    void setPaused(bool p)
+    {
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            paused = p;
+        }
+        if (!p)
+            cv.notify_all();
+    }
+
+    bool isPaused() const
+    {
+        return paused;
     }
 
     void push(ImageTask task)
@@ -1336,8 +1351,9 @@ private:
             ImageTask task;
             {
                 std::unique_lock<std::mutex> lock(mtx);
-                cv.wait(lock, [this]() { return stop || !tasks.empty(); });
+                cv.wait(lock, [this]() { return stop || (!paused && !tasks.empty()); });
                 if (stop && tasks.empty()) return;
+                if (paused) continue;
                 task = std::move(tasks.front());
                 tasks.pop_front();
             }
@@ -1436,6 +1452,7 @@ private:
     std::set<std::string> inFlight;
     std::vector<std::thread> workers;
     bool stop;
+    bool paused;
 };
 
 static ImageQueue& imageQueue()
@@ -1443,10 +1460,27 @@ static ImageQueue& imageQueue()
     static ImageQueue q;
     return q;
 }
+
+static std::atomic<bool> g_backgroundWorkersPaused{false};
+
+} // anonymous namespace
+
+void setBackgroundWorkersPaused(bool paused)
+{
+    g_backgroundWorkersPaused.store(paused, std::memory_order_relaxed);
+    imageQueue().setPaused(paused);
+}
+
+bool isBackgroundWorkersPaused()
+{
+    return g_backgroundWorkersPaused.load(std::memory_order_relaxed);
 }
 
 void processPendingImageUploads(int maxPerFrame)
 {
+    if (g_backgroundWorkersPaused.load(std::memory_order_relaxed))
+        return;
+
     std::vector<PacedImageCallback> batch;
     {
         std::lock_guard<std::mutex> lock(g_pacedMtx);
