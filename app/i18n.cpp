@@ -86,6 +86,11 @@ const Entry kEs[] = {
       "¿Eliminar este archivo .torrent de la tarjeta SD?" },
     { "Cancel", "Cancelar" },
     { "+  Add magnet", "+  Agregar magnet" },
+    { "File Browser", "Explorador de archivos" },
+    { "📁  File Browser", "📁  Explorador" },
+    { ".. (Parent folder)", ".. (Carpeta superior)" },
+    { "No video or torrent files found in this folder.",
+      "No se encontraron videos ni torrents en esta carpeta." },
     { "Back", "Atrás" },
     { "View", "Vista" },
 
@@ -472,6 +477,11 @@ const Entry kFr[] = {
       "Supprimer ce fichier .torrent de la carte SD ?" },
     { "Cancel", "Annuler" },
     { "+  Add magnet", "+  Ajouter un magnet" },
+    { "File Browser", "Explorateur de fichiers" },
+    { "📁  File Browser", "📁  Explorateur" },
+    { ".. (Parent folder)", ".. (Dossier parent)" },
+    { "No video or torrent files found in this folder.",
+      "Aucun fichier vidéo ou torrent trouvé dans ce dossier." },
     { "Back", "Retour" },
     { "View", "Vue" },
 

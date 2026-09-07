@@ -724,7 +724,9 @@ void playEntry(const TorrentEntry& e)
     for (char& c : lower) c = std::tolower(c);
     if (lower.rfind(".mkv") != std::string::npos || lower.rfind(".mp4") != std::string::npos ||
         lower.rfind(".avi") != std::string::npos || lower.rfind(".ts") != std::string::npos ||
-        lower.rfind(".webm") != std::string::npos)
+        lower.rfind(".webm") != std::string::npos || lower.rfind(".mov") != std::string::npos ||
+        lower.rfind(".m4v") != std::string::npos || lower.rfind(".wmv") != std::string::npos ||
+        lower.rfind(".flv") != std::string::npos)
     {
         brls::Application::pushActivity(new LocalPlayerActivity(e.path, e.name));
         return;
@@ -1102,7 +1104,9 @@ std::vector<TorrentEntry> scanDownloadedVideos(const std::string& dir)
         for (char& c : lower) c = std::tolower(c);
         if (lower.rfind(".mkv") != std::string::npos || lower.rfind(".mp4") != std::string::npos ||
             lower.rfind(".avi") != std::string::npos || lower.rfind(".ts") != std::string::npos ||
-            lower.rfind(".webm") != std::string::npos)
+            lower.rfind(".webm") != std::string::npos || lower.rfind(".mov") != std::string::npos ||
+            lower.rfind(".m4v") != std::string::npos || lower.rfind(".wmv") != std::string::npos ||
+            lower.rfind(".flv") != std::string::npos)
         {
             struct stat st;
             std::string sz;
@@ -1322,6 +1326,279 @@ class DownloadsActivity : public brls::Activity
     }
 };
 
+static std::string s_lastBrowserPath = "sdmc:/";
+
+class FileBrowserView : public brls::Box
+{
+  public:
+    FileBrowserView(brls::AppletFrame* frame)
+        : parentFrame(frame)
+    {
+        this->setAxis(brls::Axis::COLUMN);
+        this->setGrow(1.0f);
+
+        scroll = new brls::ScrollingFrame();
+        scroll->setGrow(1.0f);
+        scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
+
+        list = new brls::Box();
+        list->setAxis(brls::Axis::COLUMN);
+        list->setPadding(24.0f, 60.0f, 47.0f, 60.0f);
+        scroll->setContentView(list);
+
+        this->addView(scroll);
+
+        if (s_lastBrowserPath.empty())
+            s_lastBrowserPath = "sdmc:/";
+
+        navigateTo(s_lastBrowserPath);
+    }
+
+    bool isRoot(const std::string& path) const
+    {
+        return path == "sdmc:/" || path == "sdmc:" || path == "/" || path.empty();
+    }
+
+    std::string getParentPath(const std::string& path) const
+    {
+        if (isRoot(path)) return "sdmc:/";
+        std::string p = path;
+        while (!p.empty() && p.back() == '/')
+            p.pop_back();
+        size_t lastSlash = p.find_last_of('/');
+        if (lastSlash == std::string::npos || lastSlash <= 5) // "sdmc:"
+            return "sdmc:/";
+        return p.substr(0, lastSlash);
+    }
+
+    bool navigateUp()
+    {
+        if (isRoot(currentPath))
+            return false;
+        navigateTo(getParentPath(currentPath));
+        return true;
+    }
+
+    void navigateTo(const std::string& newPath)
+    {
+        currentPath = newPath;
+        if (currentPath.empty()) currentPath = "sdmc:/";
+        s_lastBrowserPath = currentPath;
+
+        if (parentFrame)
+            parentFrame->setTitle(std::string(tr("File Browser")) + " \xC2\xB7 " + currentPath);
+
+        rebuildList();
+    }
+
+    void rebuildList()
+    {
+        list->clearViews();
+
+        std::string dirPath = currentPath;
+        if (!dirPath.empty() && dirPath.back() != '/')
+            dirPath += '/';
+
+        std::vector<std::string> subdirs;
+        struct BrowserItem
+        {
+            std::string name;
+            std::string fullPath;
+            std::string sizeText;
+            bool isTorrent;
+        };
+        std::vector<BrowserItem> files;
+
+        DIR* d = opendir(dirPath.c_str());
+        if (d)
+        {
+            struct dirent* e;
+            while ((e = readdir(d)) != nullptr)
+            {
+                std::string name = e->d_name;
+                if (name == "." || name == ".." || name.empty() || name[0] == '.')
+                    continue;
+                if (name.find(".part") != std::string::npos)
+                    continue;
+
+                std::string full = dirPath + name;
+                struct stat st;
+                if (stat(full.c_str(), &st) != 0)
+                    continue;
+
+                if (S_ISDIR(st.st_mode))
+                {
+                    subdirs.push_back(name);
+                }
+                else if (S_ISREG(st.st_mode))
+                {
+                    std::string lower = name;
+                    for (char& c : lower) c = std::tolower(c);
+
+                    bool isVideo = (lower.rfind(".mkv") != std::string::npos ||
+                                    lower.rfind(".mp4") != std::string::npos ||
+                                    lower.rfind(".avi") != std::string::npos ||
+                                    lower.rfind(".ts") != std::string::npos ||
+                                    lower.rfind(".webm") != std::string::npos ||
+                                    lower.rfind(".mov") != std::string::npos ||
+                                    lower.rfind(".m4v") != std::string::npos ||
+                                    lower.rfind(".wmv") != std::string::npos ||
+                                    lower.rfind(".flv") != std::string::npos);
+                    bool isTorrent = (lower.rfind(".torrent") != std::string::npos);
+
+                    if (isVideo || isTorrent)
+                    {
+                        files.push_back({ name, full, humanSize(st.st_size), isTorrent });
+                    }
+                }
+            }
+            closedir(d);
+        }
+
+        std::sort(subdirs.begin(), subdirs.end(), [](const std::string& a, const std::string& b) {
+            return strcasecmp(a.c_str(), b.c_str()) < 0;
+        });
+        std::sort(files.begin(), files.end(), [](const BrowserItem& a, const BrowserItem& b) {
+            return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
+        });
+
+        brls::View* firstFocus = nullptr;
+
+        // If not at root, add ".." row to go to parent folder
+        if (!isRoot(currentPath))
+        {
+            auto* row = new brls::Box();
+            row->setFocusable(true);
+            row->setAxis(brls::Axis::ROW);
+            row->setAlignItems(brls::AlignItems::CENTER);
+            row->setHeight(60.0f);
+            row->setPaddingLeft(24.0f);
+            row->setPaddingRight(24.0f);
+            row->setCornerRadius(6.0f);
+            row->setMarginBottom(6.0f);
+
+            auto* icon = new brls::Label();
+            icon->setText("📁");
+            icon->setFontSize(26.0f);
+            icon->setMarginRight(20.0f);
+            row->addView(icon);
+
+            auto* label = new brls::Label();
+            label->setText(tr(".. (Parent folder)"));
+            label->setFontSize(20.0f);
+            label->setTextColor(theme::accent());
+            label->setGrow(1.0f);
+            row->addView(label);
+
+            row->registerClickAction([this](brls::View*) {
+                this->navigateUp();
+                return true;
+            });
+            list->addView(row);
+            firstFocus = row;
+        }
+
+        // Subdirectories
+        for (const auto& dirName : subdirs)
+        {
+            auto* row = new brls::Box();
+            row->setFocusable(true);
+            row->setAxis(brls::Axis::ROW);
+            row->setAlignItems(brls::AlignItems::CENTER);
+            row->setHeight(64.0f);
+            row->setPaddingLeft(24.0f);
+            row->setPaddingRight(24.0f);
+            row->setCornerRadius(6.0f);
+            row->setMarginBottom(4.0f);
+
+            auto* icon = new brls::Label();
+            icon->setText("📁");
+            icon->setFontSize(26.0f);
+            icon->setMarginRight(20.0f);
+            row->addView(icon);
+
+            auto* name = new brls::Label();
+            name->setFontSize(21.0f);
+            name->setGrow(1.0f);
+            name->setSingleLine(true);
+            name->setText(dirName);
+            row->addView(name);
+
+            std::string nextPath = dirPath + dirName;
+            row->registerClickAction([this, nextPath](brls::View*) {
+                this->navigateTo(nextPath);
+                return true;
+            });
+
+            list->addView(row);
+            if (!firstFocus) firstFocus = row;
+        }
+
+        // Files
+        for (const auto& f : files)
+        {
+            TorrentEntry entry;
+            entry.isMagnet = false;
+            entry.path = f.fullPath;
+            entry.name = f.name;
+            entry.sizeText = f.sizeText;
+            entry.needsResolve = false;
+
+            LocalRow w = makeLocalRow(entry);
+            list->addView(w.view);
+            if (!firstFocus) firstFocus = w.view;
+        }
+
+        if (subdirs.empty() && files.empty())
+        {
+            auto* empty = new brls::Label();
+            empty->setText(tr("No video or torrent files found in this folder."));
+            empty->setFontSize(18.0f);
+            empty->setTextColor(theme::textDim());
+            empty->setMarginTop(40.0f);
+            empty->setFocusable(true);
+            empty->setHideHighlight(true);
+            list->addView(empty);
+            if (!firstFocus) firstFocus = empty;
+        }
+
+        if (firstFocus)
+            brls::Application::giveFocus(firstFocus);
+    }
+
+  private:
+    std::string currentPath;
+    brls::ScrollingFrame* scroll = nullptr;
+    brls::Box* list = nullptr;
+    brls::AppletFrame* parentFrame = nullptr;
+};
+
+class FileBrowserActivity : public brls::Activity
+{
+  public:
+    FileBrowserActivity() = default;
+
+    brls::View* createContentView() override
+    {
+        auto* frame = new brls::AppletFrame();
+        auto* browser = new FileBrowserView(frame);
+        frame->pushContentView(browser);
+        frame->setTitle(tr("File Browser"));
+
+        frame->registerAction(
+            tr("Back"), brls::BUTTON_B,
+            [browser](brls::View*) {
+                if (browser->navigateUp())
+                    return true;
+                brls::Application::popActivity();
+                return true;
+            },
+            false, false, brls::SOUND_BACK);
+
+        return frame;
+    }
+};
+
 // The local list -- .torrent files, downloaded videos AND magnet.txt entries.
 brls::View* buildLocalTab()
 {
@@ -1413,11 +1690,21 @@ brls::View* buildLocalTab()
     else
         dwnBtn->setText(tr("📥  Downloads"));
     dwnBtn->setGrow(1.0f);
+    dwnBtn->setMarginRight(12.0f);
     dwnBtn->registerClickAction([](brls::View*) {
         brls::Application::pushActivity(new DownloadsActivity());
         return true;
     });
     btnRow->addView(dwnBtn);
+
+    auto* expBtn = new brls::Button();
+    expBtn->setText(tr("📁  File Browser"));
+    expBtn->setGrow(1.0f);
+    expBtn->registerClickAction([](brls::View*) {
+        brls::Application::pushActivity(new FileBrowserActivity());
+        return true;
+    });
+    btnRow->addView(expBtn);
 
     list->addView(btnRow);
 

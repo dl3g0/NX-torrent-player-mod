@@ -20,7 +20,7 @@ include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 project(NX-torrent-player)
 set(VERSION_MAJOR "0")
 set(VERSION_MINOR "0")
-set(VERSION_ALTER "4")
+set(VERSION_ALTER "5")
 set(PROJECT_AUTHOR "dl3g0")
 # On-device app name shown in the Homebrew Menu.
 set(APP_TITLE "NX Torrent Player MOD")
@@ -87,7 +87,7 @@ if (PLATFORM_SWITCH)
     # Bundle borealis' resources into the nro's romfs (borealis reads them from
     # "romfs:/"). The font is dropped — borealis uses the Switch shared system
     # font on device. This mirrors borealis/demo's Switch packaging.
-    add_custom_target(${PROJECT_NAME}.nro DEPENDS ${PROJECT_NAME}
+    add_custom_target(${PROJECT_NAME}.nro ALL DEPENDS ${PROJECT_NAME}
         COMMAND ${NX_NACPTOOL_EXE} --create "${APP_TITLE}" "${PROJECT_AUTHOR}" "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_ALTER}" ${PROJECT_NAME}.nacp --titleid=${PROJECT_TITLEID}
         COMMAND ${CMAKE_COMMAND} -E copy_directory ${PROJECT_RESOURCES} ${CMAKE_BINARY_DIR}/resources
         COMMAND ${CMAKE_COMMAND} -E remove_directory ${CMAKE_BINARY_DIR}/resources/font

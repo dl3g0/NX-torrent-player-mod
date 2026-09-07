@@ -64,7 +64,15 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 
 ---
 
-### 📴 3. Gestor de Descargas Offline a la MicroSD
+### 📁 3. Explorador de Archivos de la MicroSD Integrado (`File Browser`)
+* **Navegación Total por la MicroSD**: Explora cualquier carpeta de tu consola desde `sdmc:/` mediante el nuevo botón dedicado **`📁 Explorador`** en la pestaña **LOCAL**.
+* **Soporte Universal de Formatos**: Reconoce y reproduce vídeos `.mkv`, `.mp4`, `.avi`, `.ts`, `.webm`, `.mov`, `.m4v`, `.wmv`, `.flv` y archivos `.torrent`.
+* **Navegación Rápida con Botón `B`**: Retrocede de nivel de directorio fácilmente o regresa a la pestaña principal al llegar a la raíz.
+* **Memoria de Carpeta**: Recuerda la última ruta visitada durante la sesión para reanudar la navegación sin tener que empezar desde la raíz.
+
+---
+
+### 📴 4. Gestor de Descargas Offline a la MicroSD
 * **Descargas en Segundo Plano**: Descarga películas o episodios completos a `sdmc:/switch/NX-torrent-player/downloads/` para disfrutarlos sin conexión (viajes, aviones o zonas sin Wi-Fi).
 * **Acceso Directo con Botón `Y`**: En la lista de fuentes y enlaces de cualquier película o capítulo, pulsa **`Y` (Descargar)** para mandarlo a la cola de descargas.
 * **Compatible con Enlaces Debrid y Torrents P2P**: Descarga directa a máxima velocidad desde tus servicios Debrid o directamente desde la red BitTorrent.
@@ -73,8 +81,13 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 
 ---
 
-### 🚀 4. Soporte Integral Debrid & BitTorrent P2P
+### 🚀 5. Soporte Integral Debrid & BitTorrent P2P (Streaming 1080p Optimizado)
 * **Compatibilidad Debrid de Alta Velocidad**: Enlaces premium instantáneos de **Real-Debrid**, **AllDebrid**, **Torbox**, **Premiumize** y URLs HTTP/HTTPS directas.
+* **Streaming Torrent 1080p sin Deadlocks**:
+  * Ventana de descarga ampliada a **64 MB** para alimentar vídeos Full HD con alto bitrate sin pausas.
+  * Pre-descarga de cola crítica (**16 MB**) para procesar índices *Cues* de MKV y atoms *moov* de MP4 al instante.
+  * Despausado inmediato en el milisegundo exacto en que el decodificador de hardware presenta el primer fotograma (`MPV_EVENT_PLAYBACK_RESTART`).
+* **Protección Anti-Crash (`s_torrentEngineMutex`)**: Blindaje global de ciclo de vida para evitar colisiones de sockets BSD o borrado cruzado de caché al salir con `B` y reingresar deprisa a un stream.
 * **Reintento Inmediato de Streams (`Y`) y Detección de Timeout (15s)**:
   * Si un enlace falla, se corta o sufre lentitud excesiva, pulsa **`Y`** para reintentar la conexión al instante sin salir al menú.
   * Límite de espera inteligente a los 15 segundos para evitar cuelgues o pantallas de carga infinitas.
@@ -86,7 +99,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 
 ---
 
-### 🎨 5. Experiencia Visual y Diseño Cinematográfico
+### 🎨 6. Experiencia Visual y Diseño Cinematográfico
 * **Fondos Panorámicos 16:9 Reales**: Reemplaza pósters estirados por fondos oficiales panorámicos de alta calidad cargados al instante desde la caché local sin parpadeos.
 * **Logotipos Oficiales con Animación "Pulse"**: Al cargar un contenido, se presenta el logotipo oficial transparente del título con una suave animación de pulso senoidal (opacidad fluida entre `0.5` y `1.0`).
 * **Pantallas de Carga y Error Rediseñadas**: Ocultación limpia de barras y porcentajes huérfanos ante fallos de conexión, mostrando mensajes claros y centrados con saltos de línea automáticos.
@@ -95,8 +108,9 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 
 ---
 
-### ⚡ 6. Rendimiento y Optimización del Sistema
+### ⚡ 7. Rendimiento y Optimización del Sistema
 * **CPU FastLoad Boost (`1785 MHz` -> `1020 MHz`)**: Overclock seguro y dinámico que sube la CPU a 1785 MHz durante el arranque de búferes, handshakes TCP y hashes SHA-1 para iniciar la reproducción al instante, regresando a la frecuencia base (1020 MHz) para ahorrar batería.
+* **Decodificación HEVC 10-bit Blindada (`hwdec-extra-frames = 32`)**: 32 superficies de búfer en memoria NVDEC para erradicar el efecto fantasma y desincronizaciones de audio presentes en NXMP.
 * **Subida Pautada de Texturas (*Paced Texture Queue*)**: Limita la subida de imágenes a OpenGL (máximo 2 texturas por fotograma), evitando micro-congelamientos de la interfaz al desplazarse por catálogos densos.
 * **Eliminación de Recargas Innecesarias**: Caché en memoria para transiciones instantáneas y fluidas entre pestañas (`Home`, `Continuar`, `Biblioteca`, `Búsqueda`).
 * **Traducción Integral al Español**: Textos, menús, diálogos y descripciones adaptados al Español con configuraciones iniciales pensadas para la mejor experiencia.
@@ -110,9 +124,12 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 | **Inicio de Sesión Stremio Link (QR / Web)**| ✅ **QR + Código Web (`link.stremio.com`) y Email** |
 | **Pestaña Inicio con Catálogos de Addons** | ✅ **Catálogos dinámicos completos** |
 | **Lista "Continuar Viendo" Idéntica a Stremio** | ✅ **Orden oficial por `lastWatched` + Borrado con `X`** |
+| **Explorador de Archivos MicroSD (`File Browser`)** | ✅ **Navegación libre por `sdmc:/` y reproducción directa** |
 | **Gestor de Descargas Offline a MicroSD** | ✅ **Descargas Debrid / Torrents en segundo plano (`Y`)** |
 | **Reproductor Local Exclusivo (`LocalPlayerActivity`)** | ✅ **Reproductor local desacoplado y optimizado** |
 | **Salto Rápido Doble Toque Táctil y Gatillos `ZL` / `ZR`** | ✅ **Estilo Netflix/YouTube (+10s, +20s, +30s...)** |
+| **Streaming Torrent 1080p sin Deadlocks** | ✅ **Ventana de 64 MB + Pre-descarga de cola 16 MB** |
+| **Protección Anti-Crash al Salir y Reentrar** | ✅ **Exclusión mutua global de ciclo de vida** |
 | **Reintento Rápido de Streams (`Y`) y Anti-Timeout** | ✅ **Reconexión en 1 clic + Límite a los 15s** |
 | **Fondos Panorámicos 16:9 + Logos con Pulso** | ✅ **Renderizado nativo sin parpadeos** |
 | **CPU FastLoad Boost Inteligente** | ✅ **Dinámico: 1785 MHz carga -> 1020 MHz normal** |
