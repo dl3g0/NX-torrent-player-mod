@@ -29,3 +29,7 @@ void applyUiScale();
 // change comes from setWindowSize, which does NOT fire the window-size-changed
 // event (that event is what calls us, not the other way round).
 void setUiScaleHook(std::function<void()> fn);
+
+// Instantly reloads the entire UI in the new language without restarting the app.
+void reloadAppUi();
+

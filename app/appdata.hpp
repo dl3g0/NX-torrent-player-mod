@@ -23,3 +23,8 @@
 #define APPDATA_SUBS     APPDATA_DIR "/subtitles"
 // Folder where offline downloads are stored for playback without internet.
 #define APPDATA_DOWNLOADS APPDATA_DIR "/downloads"
+// Folder where custom fonts (e.g. Arabic subfont.ttf) can be placed.
+#define APPDATA_FONTS     APPDATA_DIR "/fonts"
+
+// Automatically installs/updates the bundled universal subtitle font (Arabic/Latin/Cyrillic)
+void ensureSubfont();

@@ -145,6 +145,8 @@ void ensureAppDataDir()
     mkdir(APPDATA_TORRENTS, 0777); // where the user drops .torrent files
     mkdir(APPDATA_POSTERS, 0777);  // cached Stremio artwork
     mkdir(APPDATA_SUBS, 0777);     // subtitles pulled from Stremio addons
+    mkdir(APPDATA_DOWNLOADS, 0777);// offline video downloads
+    mkdir(APPDATA_FONTS, 0777);    // custom user fonts (e.g. Arabic subfont.ttf)
 
     // Seed magnet.txt so the user has a file to edit from a PC (and knows the
     // format). Only when it does not exist yet -- never clobber their list.
@@ -163,7 +165,6 @@ void ensureAppDataDir()
         std::fclose(w);
     }
 }
-
 
 struct TorrentEntry
 {
@@ -1599,6 +1600,9 @@ class FileBrowserActivity : public brls::Activity
     }
 };
 
+static std::function<void()> s_browserLanguageHook;
+static std::function<void()> s_localTabLanguageHook;
+
 // The local list -- .torrent files, downloaded videos AND magnet.txt entries.
 brls::View* buildLocalTab()
 {
@@ -1706,6 +1710,16 @@ brls::View* buildLocalTab()
     });
     btnRow->addView(expBtn);
 
+    s_localTabLanguageHook = [addBtn, dwnBtn, expBtn]() {
+        addBtn->setText(tr("+  Add magnet"));
+        int curDwn = download::activeCount();
+        if (curDwn > 0)
+            dwnBtn->setText(fmt::format(tr("📥  Downloads ({} active)"), curDwn));
+        else
+            dwnBtn->setText(tr("📥  Downloads"));
+        expBtn->setText(tr("📁  File Browser"));
+    };
+
     list->addView(btnRow);
 
     if (items.empty())
@@ -1747,6 +1761,11 @@ class BrowserFrame : public brls::AppletFrame
     // so clearing every bridge here makes those late calls harmless no-ops.
     ~BrowserFrame() override
     {
+        if (this->hasWinSub)
+        {
+            brls::Application::getWindowSizeChangedEvent()->unsubscribe(this->winSub);
+            this->hasWinSub = false;
+        }
         // Same reasoning for the repaint hook: it captures the header's two bars.
         theme::setRepaintHook(nullptr);
         stremio::setViewTabSink(nullptr);
@@ -1754,6 +1773,14 @@ class BrowserFrame : public brls::AppletFrame
         stremio::setViewCycler(nullptr);
         stremio::setLibraryUpTarget(nullptr);
         stremio::setLibraryCountSink(nullptr);
+        s_browserLanguageHook = nullptr;
+        s_localTabLanguageHook = nullptr;
+    }
+
+    void setWindowSizeSub(brls::Event<>::Subscription sub)
+    {
+        this->winSub = sub;
+        this->hasWinSub = true;
     }
 
     // Both the background gradient and the header mark are Stremio-tab-only.
@@ -1796,6 +1823,8 @@ class BrowserFrame : public brls::AppletFrame
     // Resolved once: getView() walks the tree by id, which has no business
     // running every frame.
     brls::View* iconSlot = nullptr;
+    brls::Event<>::Subscription winSub;
+    bool hasWinSub = false;
 };
 
 // Header identity on every tab switch.
@@ -2097,7 +2126,10 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
         viewBar->setPositionLeft(w <= config::kDefaultHandheldUiWidth ? 120.0f
                                                                      : 0.0f);
     };
-    brls::Application::getWindowSizeChangedEvent()->subscribe(insetViewBar);
+    if (auto* bf = dynamic_cast<BrowserFrame*>(frame))
+        bf->setWindowSizeSub(brls::Application::getWindowSizeChangedEvent()->subscribe(insetViewBar));
+    else
+        brls::Application::getWindowSizeChangedEvent()->subscribe(insetViewBar);
     // Docking fires the event above; editing the UI size in Options does not
     // (applyUiScale resizes the logical space itself), hence the second route.
     setUiScaleHook(insetViewBar);
@@ -2201,6 +2233,49 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
         restyleTabs();
         applyViewBar(*curView);
     });
+
+    s_browserLanguageHook = [localBtn, stremioBtn, viewBtns, searchIdx, frame, localView, stremioView]() {
+        localBtn->setText(tr("Local"));
+        stremioBtn->setText(tr("Stremio"));
+
+        const auto& labels = stremio::viewLabels();
+        for (size_t i = 0; i < viewBtns.size(); i++)
+        {
+            if (i == searchIdx) continue;
+            const std::string& full = labels[i];
+            size_t sp = full.find(' ');
+            std::string text = sp == std::string::npos ? full : full.substr(sp + 1);
+            viewBtns[i]->setText(text);
+        }
+
+        frame->registerAction(std::string("  ") + tr("View"), brls::BUTTON_LB, [](brls::View*) {
+            stremio::cycleActiveView(-1);
+            return true;
+        }, false, false, brls::SOUND_NONE);
+        frame->registerAction(tr("View"), brls::BUTTON_RB, [](brls::View*) {
+            stremio::cycleActiveView(+1);
+            return true;
+        }, true, false, brls::SOUND_NONE);
+
+        localView->registerAction(
+            tr("Back"), brls::BUTTON_B,
+            [localBtn](brls::View*) {
+                brls::Application::giveFocus(localBtn);
+                return true;
+            },
+            false, false, brls::SOUND_BACK);
+
+        stremioView->registerAction(
+            tr("Back"), brls::BUTTON_B,
+            [stremioBtn](brls::View*) {
+                brls::Application::giveFocus(stremioBtn);
+                return true;
+            },
+            false, false, brls::SOUND_BACK);
+
+        if (s_localTabLanguageHook) s_localTabLanguageHook();
+        stremio::onLanguageChanged();
+    };
 }
 
 brls::View* buildBrowser()
@@ -2251,6 +2326,108 @@ brls::View* buildBrowser()
 }
 
 } // namespace
+
+void reloadAppUi()
+{
+    brls::sync([] {
+        i18n::load();
+        if (s_browserLanguageHook)
+            s_browserLanguageHook();
+        brls::Application::popActivity(brls::TransitionAnimation::NONE, [] {
+            brls::sync([] {
+                brls::Application::pushActivity(new SettingsActivity(), brls::TransitionAnimation::NONE);
+            });
+        });
+    });
+}
+
+void ensureSubfont()
+{
+#if defined(__SWITCH__)
+    static bool s_done = false;
+    if (s_done) return;
+    s_done = true;
+
+    setenv("MPV_HOME", APPDATA_DIR, 1);
+    std::string fontDst = std::string(APPDATA_DIR) + "/subfont.ttf";
+    std::string customFont = std::string(APPDATA_FONTS) + "/subfont.ttf";
+    std::string romfsFont = "romfs:/fonts/subfont.ttf";
+    std::string verFile = std::string(APPDATA_DIR) + "/subfont.ver";
+
+    bool hasCustom = (access(customFont.c_str(), F_OK) == 0);
+    bool hasRomfs = (access(romfsFont.c_str(), F_OK) == 0);
+
+    std::string currentVer;
+    if (FILE* vf = std::fopen(verFile.c_str(), "r"))
+    {
+        char buf[32] = {0};
+        if (std::fgets(buf, sizeof(buf), vf))
+            currentVer = buf;
+        std::fclose(vf);
+        while (!currentVer.empty() && (currentVer.back() == '\n' || currentVer.back() == '\r'))
+            currentVer.pop_back();
+    }
+
+    bool needInstall = (access(fontDst.c_str(), F_OK) != 0) || (currentVer != "0.0.6" && !hasCustom);
+
+    if (hasCustom)
+    {
+        FILE* src = std::fopen(customFont.c_str(), "rb");
+        if (src)
+        {
+            FILE* dst = std::fopen(fontDst.c_str(), "wb");
+            if (dst)
+            {
+                char buf[8192];
+                size_t n;
+                while ((n = std::fread(buf, 1, sizeof(buf), src)) > 0)
+                    std::fwrite(buf, 1, n, dst);
+                std::fclose(dst);
+                brls::Logger::info("[font] installed user custom font from {}", customFont);
+            }
+            std::fclose(src);
+        }
+    }
+    else if (needInstall && hasRomfs)
+    {
+        FILE* src = std::fopen(romfsFont.c_str(), "rb");
+        if (src)
+        {
+            FILE* dst = std::fopen(fontDst.c_str(), "wb");
+            if (dst)
+            {
+                char buf[8192];
+                size_t n;
+                while ((n = std::fread(buf, 1, sizeof(buf), src)) > 0)
+                    std::fwrite(buf, 1, n, dst);
+                std::fclose(dst);
+                brls::Logger::info("[font] automatically installed bundled universal font (Arabic/Cyrillic/Latin) to {}", fontDst);
+
+                if (FILE* vf = std::fopen(verFile.c_str(), "w"))
+                {
+                    std::fprintf(vf, "0.0.6\n");
+                    std::fclose(vf);
+                }
+            }
+            std::fclose(src);
+        }
+    }
+    else if (access(fontDst.c_str(), F_OK) != 0)
+    {
+        PlFontData font;
+        if (R_SUCCEEDED(plGetSharedFontByType(&font, PlSharedFontType_Standard)))
+        {
+            FILE* f = std::fopen(fontDst.c_str(), "wb");
+            if (f)
+            {
+                std::fwrite(font.address, 1, font.size, f);
+                std::fclose(f);
+                brls::Logger::info("[font] exported Switch standard font ({} bytes) to {}", font.size, fontDst);
+            }
+        }
+    }
+#endif
+}
 
 int main(int argc, char* argv[])
 {
@@ -2339,6 +2516,8 @@ int main(int argc, char* argv[])
         brls::Logger::error("Unable to init borealis");
         return EXIT_FAILURE;
     }
+
+    ensureSubfont();
 
     brls::Application::createWindow("NX Torrent Player");
     // Order matters: SwitchPlatform caches the console's ColorSetId at

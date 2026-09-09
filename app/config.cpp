@@ -77,14 +77,17 @@ struct Lang
 
 const Lang kLangs[] = {
     { "auto", "Console language", "" },  // resolved via consoleLang()
+    { "es-419", "Spanish (Latin America)", "es-419,es-la,es,spa" },
+    { "es-es", "Spanish (Spain)", "es-es,es-ES,spa-es,castellano,castilian,spain" },
     { "en", "English", "en,eng" },
     { "fr", "French", "fr,fre,fra" },
-    { "es", "Spanish", "es,spa" },
+    { "pob", "Portuguese (Brazil)", "pob,pt-br,pt-BR,por-br,pb" },
+    { "pt", "Portuguese", "pt,por,pt-pt,pt-PT" },
+    { "ru", "Russian", "ru,rus" },
+    { "ar", "Arabic", "ar,ara" },
     { "de", "German", "de,ger,deu" },
     { "it", "Italian", "it,ita" },
-    { "pt", "Portuguese", "pt,por" },
     { "nl", "Dutch", "nl,dut,nld" },
-    { "ru", "Russian", "ru,rus" },
     { "ja", "Japanese", "ja,jpn" },
     { "ko", "Korean", "ko,kor" },
     { "zh", "Chinese", "zh,chi,zho" },
@@ -128,19 +131,26 @@ Config& get() { return cfg; }
 std::string consoleLang()
 {
     // setGetSystemLanguage packs the code as chars in a u64 ("fr", "en-US"),
-    // NOT as a SetLanguage enum -- the first two bytes are the ISO-639-1 part,
-    // which is all we need. borealis already calls setInitialize().
+    // NOT as a SetLanguage enum.
     u64 code = 0;
     if (R_FAILED(setGetSystemLanguage(&code))) return "en";
     char buf[9] = { 0 };
     std::memcpy(buf, &code, 8);
     if (!buf[0] || !buf[1]) return "en";
+    if (std::strncmp(buf, "es-419", 6) == 0) return "es-419";
+    if (std::strncmp(buf, "es", 2) == 0) return "es-es";
+    if (std::strncmp(buf, "pt-BR", 5) == 0 || std::strncmp(buf, "pt-br", 5) == 0) return "pob";
+    if (std::strncmp(buf, "pt", 2) == 0) return "pt";
+    if (std::strncmp(buf, "ru", 2) == 0) return "ru";
+    if (std::strncmp(buf, "fr", 2) == 0) return "fr";
+    if (std::strncmp(buf, "ar", 2) == 0) return "ar";
     return std::string(buf, 2);
 }
 
 std::string mpvLangList(const std::string& code)
 {
     std::string c = code == "auto" ? consoleLang() : code;
+    if (c == "es") c = "es-419";
     for (const auto& l : kLangs)
         if (c == l.code) return l.mpv;
     // A console language we do not have a row for: hand mpv the bare code, it
@@ -153,6 +163,12 @@ std::string langLabelFor(const std::string& tag)
     if (tag.empty()) return "";
     std::string t;
     for (char c : tag) t += (char)std::tolower((unsigned char)c);
+
+    // Fast-path common variants
+    if (t == "pob" || t == "pt-br" || t == "pt_br" || t == "por-br") return "Portuguese (Brazil)";
+    if (t == "es-419" || t == "es-la" || t == "latino") return "Spanish (Latin America)";
+    if (t == "es-es" || t == "castellano" || t == "spa-es") return "Spanish (Spain)";
+    if (t == "ar" || t == "ara" || t == "arabic") return "Arabic";
 
     for (const auto& l : kLangs)
     {
@@ -185,6 +201,12 @@ std::string langCodeFor(const std::string& tag)
     std::string t;
     for (char c : tag) t += (char)std::tolower((unsigned char)c);
 
+    // Fast-path specific variants
+    if (t == "pob" || t == "pt-br" || t == "pt_br" || t == "por-br") return "pob";
+    if (t == "es-419" || t == "es-la" || t == "latino") return "es-419";
+    if (t == "es-es" || t == "castellano" || t == "spa-es") return "es-es";
+    if (t == "ar" || t == "ara" || t == "arabic") return "ar";
+
     for (const auto& l : kLangs)
     {
         if (!std::strcmp(l.code, "auto")) continue;
@@ -206,6 +228,18 @@ std::string langCodeFor(const std::string& tag)
     if (t.size() >= 2)
     {
         std::string prefix = t.substr(0, 2);
+        if (prefix == "es")
+        {
+            if (t.find("es") != std::string::npos && (t == "es-es" || t == "es-ES"))
+                return "es-es";
+            return "es-419";
+        }
+        if (prefix == "pt")
+        {
+            if (t.find("br") != std::string::npos)
+                return "pob";
+            return "pt";
+        }
         for (const auto& l : kLangs)
             if (prefix == l.code) return l.code;
     }
@@ -215,7 +249,11 @@ std::string langCodeFor(const std::string& tag)
 std::string preferredSubLang()
 {
     const std::string& s = cfg.subLang;
-    return s == "auto" || s.empty() ? consoleLang() : s;
+    if (s == "auto" || s.empty())
+        return consoleLang();
+    if (s == "es")
+        return "es-419";
+    return s;
 }
 
 const std::vector<std::string>& langCodes()
@@ -230,13 +268,10 @@ const std::vector<std::string>& langCodes()
 
 const std::vector<std::string>& langLabels()
 {
-    static std::vector<std::string> v = [] {
-        std::vector<std::string> o;
-        // Translated here, not in kLangs: that table is built before main(),
-        // where the language is not known yet. This runs on first use.
-        for (const auto& l : kLangs) o.push_back(tr(l.label));
-        return o;
-    }();
+    static std::vector<std::string> v;
+    v.clear();
+    for (const auto& l : kLangs)
+        v.push_back(tr(l.label));
     return v;
 }
 
@@ -312,7 +347,9 @@ void load()
     cfg.ramStream    = readBool(body, "ramStream", cfg.ramStream);
     cfg.checkUpdates = readBool(body, "checkUpdates", cfg.checkUpdates);
     cfg.audioLang    = readStr(body, "audioLang", cfg.audioLang);
+    if (cfg.audioLang == "es") cfg.audioLang = "es-419";
     cfg.subLang      = readStr(body, "subLang", cfg.subLang);
+    if (cfg.subLang == "es") cfg.subLang = "es-419";
     cfg.hwDecode     = readBool(body, "hwDecode", cfg.hwDecode);
     cfg.audioBoost   = readBool(body, "audioBoost", cfg.audioBoost);
 

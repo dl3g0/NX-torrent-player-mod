@@ -136,6 +136,11 @@ class Application
         TransitionAnimation animation = TransitionAnimation::FADE, std::function<void(void)> cb = [] {}, bool free = true);
 
     /**
+     * Clears all activities from the activity stack.
+     */
+    static void clear();
+
+    /**
      * Gives the focus to the given view
      * or clears the focus if given nullptr.
      */
@@ -434,7 +439,6 @@ class Application
     static void navigate(FocusDirection direction, bool repeating);
 
     static void frame();
-    static void clear();
     static void exit();
 
     /**

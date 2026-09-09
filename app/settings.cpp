@@ -130,7 +130,10 @@ int langIndex(const std::string& code)
 {
     const auto& codes = config::langCodes();
     for (size_t i = 0; i < codes.size(); i++)
+    {
         if (codes[i] == code) return (int)i;
+        if (code == "es" && codes[i] == "es-419") return (int)i;
+    }
     return 0;
 }
 
@@ -149,9 +152,7 @@ brls::View* generalPane()
                   });
     list->addView(startup);
 
-    // Same startup-only story as the theme below, for the same reason plus one
-    // of its own: a view reads its strings when it is built, and the header,
-    // the tab bar and the browser behind this screen were built once at launch.
+    std::string initialLang = config::get().language;
     auto* language = new brls::SelectorCell();
     language->init(
         tr("Language"), i18n::langLabels(),
@@ -161,12 +162,21 @@ brls::View* generalPane()
                 if (ids[i] == config::get().language) return (int)i;
             return 0;
         }(),
-        [](int sel) {
-            config::get().language = i18n::langIds()[(size_t)sel];
-            config::save();
+        [initialLang](int sel) {
+            const auto& ids = i18n::langIds();
+            if ((size_t)sel < ids.size() && config::get().language != ids[(size_t)sel])
+            {
+                config::get().language = ids[(size_t)sel];
+                config::save();
+            }
+        },
+        [initialLang](int sel) {
+            if (config::get().language != initialLang)
+            {
+                reloadAppUi();
+            }
         });
     list->addView(language);
-    list->addView(caption(tr("The language applies when you restart the app.")));
 
     // Startup-only, unlike every other cell here: borealis states the variant is
     // not expected to change while the app runs, and the views already on screen

@@ -334,6 +334,8 @@ void MpvView::retryStream()
         statusLabel->setText(isHttpStream ? tr("Connecting to stream...") : tr("Connecting to peers..."));
     }
     if (loadingOverlay) loadingOverlay->setVisibility(brls::Visibility::VISIBLE);
+    overlayHidden = false;
+    stremio::setBackgroundWorkersPaused(false);
 
     startEngine(streamSource, requestedFileIndex);
 }
@@ -345,7 +347,6 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
 {
     sys::setCpuBoost(true);
     cpuBoostActive = true;
-    stremio::setBackgroundWorkersPaused(true);
 
     if (isLocalFile)
     {
@@ -438,29 +439,8 @@ void MpvView::startEngine(const std::string& source, int fileIndex)
 // Brings mpv up against the now-open engine. False if anything failed.
 bool MpvView::startMpv()
 {
-#if defined(__SWITCH__)
-    {
-        static bool s_fontExported = false;
-        if (!s_fontExported)
-        {
-            PlFontData font;
-            if (R_SUCCEEDED(plGetSharedFontByType(&font, PlSharedFontType_Standard)))
-            {
-                std::string fontPath = std::string(APPDATA_DIR) + "/subfont.ttf";
-                FILE* f = std::fopen(fontPath.c_str(), "wb");
-                if (f)
-                {
-                    std::fwrite(font.address, 1, font.size, f);
-                    std::fclose(f);
-                    setenv("MPV_HOME", APPDATA_DIR, 1);
-                    brls::Logger::info("[player] exported Switch standard font ({} bytes) to {}",
-                                       font.size, fontPath);
-                    s_fontExported = true;
-                }
-            }
-        }
-    }
-#endif
+    ensureSubfont();
+
 
     mpv = mpv_create();
     if (!mpv)
@@ -1996,6 +1976,10 @@ void MpvView::buildLoadingOverlay(const std::string& title)
         {
             setBackgroundArt(cachedBg);
         }
+        else if (!art.posterPath.empty())
+        {
+            setBackgroundArt(art.posterPath);
+        }
 
         auto liveFlag = this->alive;
         stremio::fetchBackgroundAsync(art.bgId, art.bgUrl,
@@ -2029,6 +2013,17 @@ void MpvView::buildLoadingOverlay(const std::string& title)
         {
             logo->setImageFromFile(cachedLogo);
         }
+        else if (!art.posterPath.empty())
+        {
+            logo->setImageFromFile(art.posterPath);
+            logo->setDimensions(130.0f, 195.0f);
+            logo->setCornerRadius(8.0f);
+        }
+        else
+        {
+            logo->setImageFromRes("NX-torrent-player-bg-rounded.png");
+            logo->setDimensions(120.0f, 120.0f);
+        }
 
         auto liveFlag = this->alive;
         std::string pPath = art.posterPath;
@@ -2038,6 +2033,8 @@ void MpvView::buildLoadingOverlay(const std::string& title)
                                     if (!path.empty())
                                     {
                                         logo->setImageFromFile(path);
+                                        logo->setDimensions(280.0f, 120.0f);
+                                        logo->setCornerRadius(0.0f);
                                     }
                                     else if (!pPath.empty())
                                     {
@@ -2621,7 +2618,7 @@ void MpvView::updateLoadingOverlay()
                 std::snprintf(pb, sizeof(pb), "%d%%", pct);
                 percentLabel->setText(pb);
             }
-            if (secs >= target || elapsed >= 5.0)
+            if ((secs >= target || elapsed >= 5.0) && elapsed >= 0.8)
             {
                 ready = true;
                 shownPct = 100;
@@ -2699,10 +2696,12 @@ void MpvView::updateLoadingOverlay()
         // Async-observed values (pumpEvents): no sync mpv call on this thread.
         double secs = obsCacheSecs;
         double target = kBufferSecs;
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - streamStartTime).count();
         if (secs >= 0.0)
         {
             pct = (int)(secs / target * 100.0);
-            if (secs >= target)
+            if (secs >= target && elapsed >= 0.8)
                 ready = true;  // buffered enough -> unpause and show video
         }
 
@@ -2710,7 +2709,7 @@ void MpvView::updateLoadingOverlay()
         int64_t piecesDone = 0;
         if (tfs)
             torrentfs_stats(tfs, &piecesDone, nullptr, nullptr);
-        if (piecesDone >= 4 && secs >= 1.5)
+        if (piecesDone >= 4 && secs >= 1.5 && elapsed >= 0.8)
             ready = true;
     }
     if (pct > 100)
@@ -3637,6 +3636,7 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
             mpv_set_property_string(mpv, "pause", "no");
         loadingOverlay->setVisibility(brls::Visibility::GONE);
         overlayHidden = true;
+        stremio::setBackgroundWorkersPaused(true);
         playbackStartTime = std::chrono::steady_clock::now();
     }
     if (overlayHidden && cpuBoostActive)

@@ -452,10 +452,23 @@ void selectActiveView(int index)
     if (viewSelector) viewSelector(index);
 }
 
+static std::function<void()> languageChangeHook;
+
+void setLanguageChangeHook(std::function<void()> hook)
+{
+    languageChangeHook = std::move(hook);
+}
+
+void onLanguageChanged()
+{
+    if (languageChangeHook) languageChangeHook();
+}
+
 // Button labels, index-matched to the View enum / cycle order.
 const std::vector<std::string>& viewLabels()
 {
-    static const std::vector<std::string> labels = {
+    static std::vector<std::string> labels;
+    labels = {
         std::string(" ") + tr("Home"),
         std::string(" ") + tr("Continue"),
         std::string(" ") + tr("Library"),
@@ -1244,6 +1257,14 @@ std::string cachedBackgroundPath(const std::string& id)
         g_knownCachedPosters.insert(path);
         return path;
     }
+
+    // Fallback: if backdrop is not downloaded yet, check if the poster is cached
+    std::string posterPath = posterCachePath(id);
+    if (FILE* f = std::fopen(posterPath.c_str(), "rb"))
+    {
+        std::fclose(f);
+        return posterPath;
+    }
     return "";
 }
 
@@ -1332,13 +1353,16 @@ public:
         return paused;
     }
 
-    void push(ImageTask task)
+    void push(ImageTask task, bool highPriority = false)
     {
         {
             std::unique_lock<std::mutex> lock(mtx);
             if (inFlight.count(task.path)) return; // already queued or downloading
             inFlight.insert(task.path);
-            tasks.push_back(std::move(task));
+            if (highPriority)
+                tasks.push_front(std::move(task));
+            else
+                tasks.push_back(std::move(task));
         }
         cv.notify_one();
     }
@@ -1373,10 +1397,11 @@ private:
                     std::unique_lock<std::mutex> lock(mtx);
                     inFlight.erase(task.path);
                 }
-                std::string p = task.path;
-                auto done = task.done;
-                auto alive = task.alive;
+                if (task.done)
                 {
+                    std::string p = task.path;
+                    auto done = task.done;
+                    auto alive = task.alive;
                     std::lock_guard<std::mutex> lock(g_pacedMtx);
                     g_pacedCallbacks.push_back({ done, p, alive });
                 }
@@ -1436,12 +1461,18 @@ private:
             auto alive = task.alive;
             if (!res.empty())
             {
-                std::lock_guard<std::mutex> lock(g_pacedMtx);
-                g_pacedCallbacks.push_back({ done, res, alive });
+                if (done)
+                {
+                    std::lock_guard<std::mutex> lock(g_pacedMtx);
+                    g_pacedCallbacks.push_back({ done, res, alive });
+                }
             }
             else
             {
-                brls::sync([done]() { done(""); });
+                if (done)
+                {
+                    brls::sync([done]() { done(""); });
+                }
             }
         }
     }
@@ -1501,9 +1532,10 @@ void processPendingImageUploads(int maxPerFrame)
 static void downloadImageAsync(const std::string& id, const std::string& url,
                                const std::string& path,
                                std::function<void(std::string)> done,
-                               std::shared_ptr<bool> alive = nullptr)
+                               std::shared_ptr<bool> alive = nullptr,
+                               bool highPriority = false)
 {
-    imageQueue().push({ id, url, path, alive, done });
+    imageQueue().push({ id, url, path, alive, done }, highPriority);
 }
 
 // The artwork URL for `id`, or "" if there is none to be had. Not every library
@@ -1565,14 +1597,14 @@ void fetchPosterAsync(const std::string& id, const std::string& url,
 {
     if (id.empty())
     {
-        done("");
+        if (done) done("");
         return;
     }
 
     std::string src = artUrlOrMetahub(id, url);
     if (src.empty())
     {
-        done("");
+        if (done) done("");
         return;
     }
 
@@ -1589,7 +1621,15 @@ void fetchBackgroundAsync(const std::string& id, const std::string& url,
 {
     if (id.empty())
     {
-        done("");
+        if (done) done("");
+        return;
+    }
+
+    std::string path = posterCachePath(id) + ".bg.jpg";
+    if (FILE* f = std::fopen(path.c_str(), "rb"))
+    {
+        std::fclose(f);
+        if (done) done(path);
         return;
     }
 
@@ -1602,12 +1642,11 @@ void fetchBackgroundAsync(const std::string& id, const std::string& url,
     }
     if (src.empty())
     {
-        done("");
+        if (done) done("");
         return;
     }
 
-    std::string path = posterCachePath(id) + ".bg.jpg";
-    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive);
+    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive, true);
 }
 
 void fetchLogoAsync(const std::string& id, const std::string& url,
@@ -1616,7 +1655,15 @@ void fetchLogoAsync(const std::string& id, const std::string& url,
 {
     if (id.empty())
     {
-        done("");
+        if (done) done("");
+        return;
+    }
+
+    std::string path = posterCachePath(id) + ".logo.png";
+    if (FILE* f = std::fopen(path.c_str(), "rb"))
+    {
+        std::fclose(f);
+        if (done) done(path);
         return;
     }
 
@@ -1629,12 +1676,11 @@ void fetchLogoAsync(const std::string& id, const std::string& url,
     }
     if (src.empty())
     {
-        done("");
+        if (done) done("");
         return;
     }
 
-    std::string path = posterCachePath(id) + ".logo.png";
-    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive);
+    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive, true);
 }
 
 void fetchHqArtAsync(const std::string& id, const std::string& url,
@@ -2622,6 +2668,15 @@ StremioTab::StremioTab()
     // bar has no place on it.
     stremio::reportView(-1);
 
+    stremio::setLanguageChangeHook([this]() {
+        homeRenderedStrips.clear();
+        if (homeBox) homeBox->clearViews();
+        if (continueBox) continueBox->clearViews();
+        if (libraryBoxView) libraryBoxView->clearViews();
+        if (searchBox) searchBox->clearViews();
+        renderView();
+    });
+
     // Already signed in from a previous run: skip straight to the library.
     std::string saved = stremio::loadAuthKey();
     if (!saved.empty())
@@ -2630,6 +2685,7 @@ StremioTab::StremioTab()
 
 StremioTab::~StremioTab()
 {
+    stremio::setLanguageChangeHook(nullptr);
     // Switching tabs deletes us immediately, but the network requests we
     // started keep running and land on the UI thread afterwards. Tell them we
     // are gone -- otherwise a fast tab switch crashes on a freed `this` (or a

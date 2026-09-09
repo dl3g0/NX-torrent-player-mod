@@ -246,6 +246,8 @@ LocalMpvView::~LocalMpvView()
 
 bool LocalMpvView::startMpv()
 {
+    ensureSubfont();
+
     mpv = mpv_create();
     if (!mpv)
     {

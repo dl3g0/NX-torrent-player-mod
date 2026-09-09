@@ -20,7 +20,7 @@ include(${BOREALIS_LIBRARY}/cmake/toolchain.cmake)
 project(NX-torrent-player)
 set(VERSION_MAJOR "0")
 set(VERSION_MINOR "0")
-set(VERSION_ALTER "5")
+set(VERSION_ALTER "6")
 set(PROJECT_AUTHOR "dl3g0")
 # On-device app name shown in the Homebrew Menu.
 set(APP_TITLE "NX Torrent Player MOD")
@@ -113,6 +113,7 @@ if (PLATFORM_SWITCH)
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/SpaceGrotesk-Medium.ttf ${CMAKE_BINARY_DIR}/resources/SpaceGrotesk-Medium.ttf
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/resources/fonts
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/OpenMoji.ttf ${CMAKE_BINARY_DIR}/resources/fonts/OpenMoji.ttf
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts/subfont.ttf ${CMAKE_BINARY_DIR}/resources/fonts/subfont.ttf
         COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/assets/changelog.txt ${CMAKE_BINARY_DIR}/resources/changelog.txt
         # The CA store curl checks certificates against (Mozilla's roots, from
         # curl.se/ca). The console mounts none, so it has to ride in the romfs --

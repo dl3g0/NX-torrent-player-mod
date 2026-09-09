@@ -1029,6 +1029,8 @@ void Application::clear()
     }
 
     Application::activitiesStack.clear();
+    Application::focusStack.clear();
+    Application::currentFocus = nullptr;
 }
 
 Theme Application::getTheme()

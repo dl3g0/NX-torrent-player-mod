@@ -88,12 +88,12 @@ void fetchPosterAsync(const std::string& id, const std::string& url,
 
 // Full-size horizontal background backdrop for `id`
 void fetchBackgroundAsync(const std::string& id, const std::string& url,
-                          std::function<void(std::string)> done,
+                          std::function<void(std::string)> done = nullptr,
                           std::shared_ptr<bool> alive = nullptr);
 
 // Transparent title logo for `id`
 void fetchLogoAsync(const std::string& id, const std::string& url,
-                    std::function<void(std::string)> done,
+                    std::function<void(std::string)> done = nullptr,
                     std::shared_ptr<bool> alive = nullptr);
 
 // Full-size artwork for `id`, cached separately from the list thumbnail (which
@@ -382,6 +382,8 @@ void setViewTabSink(std::function<void(int)> sink);
 void setViewSelector(std::function<void(int)> selector);
 void selectActiveView(int index);
 void reportView(int index);
+void onLanguageChanged();
+void setLanguageChangeHook(std::function<void()> hook);
 
 // A blurred, screen-sized-friendly copy of a cached poster, made once and
 // cached next to it. "" if the poster cannot be read.

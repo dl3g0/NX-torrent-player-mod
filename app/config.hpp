@@ -35,9 +35,9 @@ struct Config
     // otherwise.
     bool logging = false;
 
-    // Preferred track languages, as ISO-639-1 ("es") or "auto".
-    std::string audioLang = "es";
-    std::string subLang   = "es";
+    // Preferred track languages, as ISO-639-1 / BCP-47 ("es-419", "es-es", "en", "fr", "pob", "ru", "ar") or "auto".
+    std::string audioLang = "es-419";
+    std::string subLang   = "es-419";
 
     // Show subtitles at all. Off means mpv loads none rather than picking one.
     bool subtitles = false;

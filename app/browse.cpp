@@ -631,6 +631,10 @@ void showStreams(const stremio::Addon& addon, const std::string& type,
                 epArt.bgId   = (*eps)[i].id;
                 epArt.bgUrl  = (*eps)[i].thumbnail;
             }
+            if (!epArt.bgId.empty() && !epArt.bgUrl.empty())
+                stremio::fetchBackgroundAsync(epArt.bgId, epArt.bgUrl);
+            if (!epArt.logoId.empty() && !epArt.logoUrl.empty())
+                stremio::fetchLogoAsync(epArt.logoId, epArt.logoUrl);
             WatchInfo watch;
             watch.authKey = authKey;
             watch.itemId  = item.id;
@@ -1381,6 +1385,16 @@ class MovieDetailActivity : public AddonSourcePicker
                 if (!line.empty()) metaLine->setText(line);
                 if (!r.description.empty())
                     descLabel->setText(clampText(r.description, 210));  // ~3 lines
+                if (!r.background.empty())
+                {
+                    art.bgUrl = r.background;
+                    stremio::fetchBackgroundAsync(art.bgId, art.bgUrl);
+                }
+                if (!r.logo.empty())
+                {
+                    art.logoUrl = r.logo;
+                    stremio::fetchLogoAsync(art.logoId, art.logoUrl);
+                }
             });
     }
 
@@ -1442,6 +1456,10 @@ class EpisodeDetailActivity : public AddonSourcePicker
                     if (*live && !p.empty()) still->setImageFromFile(p);
                 });
         }
+        if (!art.bgId.empty() && !art.bgUrl.empty())
+            stremio::fetchBackgroundAsync(art.bgId, art.bgUrl);
+        if (!art.logoId.empty() && !art.logoUrl.empty())
+            stremio::fetchLogoAsync(art.logoId, art.logoUrl);
         top->addView(still);
 
         auto* meta = new brls::Box();
@@ -1867,6 +1885,16 @@ class SeriesDetailActivity : public brls::Activity
                 if (!line.empty()) metaLine->setText(line);
                 if (!r.description.empty())
                     descLabel->setText(clampText(r.description, 150));
+                if (!r.background.empty())
+                {
+                    art.bgUrl = r.background;
+                    stremio::fetchBackgroundAsync(art.bgId, art.bgUrl);
+                }
+                if (!r.logo.empty())
+                {
+                    art.logoUrl = r.logo;
+                    stremio::fetchLogoAsync(art.logoId, art.logoUrl);
+                }
 
                 videos = std::make_shared<std::vector<stremio::Video>>(r.videos);
                 buildSeasonBar();
@@ -2092,6 +2120,10 @@ class SeriesDetailActivity : public brls::Activity
             epArt.bgId   = v.id;
             epArt.bgUrl  = v.thumbnail;
         }
+        if (!epArt.bgId.empty() && !epArt.bgUrl.empty())
+            stremio::fetchBackgroundAsync(epArt.bgId, epArt.bgUrl);
+        if (!epArt.logoId.empty() && !epArt.logoUrl.empty())
+            stremio::fetchLogoAsync(epArt.logoId, epArt.logoUrl);
         WatchInfo w;
         std::string prevId;
         w.authKey      = authKey;
@@ -2361,6 +2393,11 @@ void openLibraryItem(const std::string& authKey, const stremio::LibItem& item)
                       ? "https://images.metahub.space/logo/medium/" + imdb + "/img"
                       : "";
 
+    if (!art.bgId.empty() && !art.bgUrl.empty())
+        stremio::fetchBackgroundAsync(art.bgId, art.bgUrl);
+    if (!art.logoId.empty() && !art.logoUrl.empty())
+        stremio::fetchLogoAsync(art.logoId, art.logoUrl);
+
     // A film has no season/episode tree -- open its detail screen (poster,
     // synopsis, and the addons as source cards).
     if (item.type != "series")
@@ -2425,6 +2462,10 @@ void openEpisodeById(const std::string& authKey, const std::string& seriesId,
                 epArt.bgId   = v->id;
                 epArt.bgUrl  = v->thumbnail;
             }
+            if (!epArt.bgId.empty() && !epArt.bgUrl.empty())
+                stremio::fetchBackgroundAsync(epArt.bgId, epArt.bgUrl);
+            if (!epArt.logoId.empty() && !epArt.logoUrl.empty())
+                stremio::fetchLogoAsync(epArt.logoId, epArt.logoUrl);
 
             WatchInfo w;
             w.authKey = authKey;
