@@ -2,12 +2,33 @@
 
 #include <curl/curl.h>
 
+#include <atomic>
 #include <cstdio>
 
 #include <borealis.hpp>
 
 namespace http
 {
+
+static std::atomic<bool> g_abortAll{false};
+
+void abortAll()
+{
+    g_abortAll.store(true, std::memory_order_relaxed);
+}
+
+bool isAborted()
+{
+    return g_abortAll.load(std::memory_order_relaxed);
+}
+
+static int abortProgressCb(void* /*clientp*/, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/,
+                           curl_off_t /*ultotal*/, curl_off_t /*ulnow*/)
+{
+    if (g_abortAll.load(std::memory_order_relaxed))
+        return 1;
+    return 0;
+}
 
 static size_t writeCb(char* ptr, size_t size, size_t nmemb, void* userdata)
 {
@@ -53,6 +74,12 @@ static std::string tlsAwareErr(CURLcode rc, const char* errbuf)
 bool postJson(const char* url, const std::string& body, std::string& resp,
               std::string& err)
 {
+    if (isAborted())
+    {
+        err = "aborted";
+        return false;
+    }
+
     CURL* curl = curl_easy_init();
     if (!curl)
     {
@@ -73,7 +100,13 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 15L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, abortProgressCb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, nullptr);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     verifyTls(curl);  // the Stremio password goes through here
 
@@ -83,7 +116,10 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
 
     if (rc != CURLE_OK)
     {
-        err = tlsAwareErr(rc, errbuf);
+        if (rc == CURLE_ABORTED_BY_CALLBACK || isAborted())
+            err = "aborted";
+        else
+            err = tlsAwareErr(rc, errbuf);
         return false;
     }
     return true;
@@ -96,6 +132,12 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
 bool get(const std::string& url, std::string& resp, std::string& err,
          const char* accept)
 {
+    if (isAborted())
+    {
+        err = "aborted";
+        return false;
+    }
+
     CURL* curl = curl_easy_init();
     if (!curl)
     {
@@ -116,7 +158,13 @@ bool get(const std::string& url, std::string& resp, std::string& err,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeCb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &resp);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 100L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 15L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, abortProgressCb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, nullptr);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     verifyTls(curl);
     CURLcode rc = curl_easy_perform(curl);
@@ -124,7 +172,10 @@ bool get(const std::string& url, std::string& resp, std::string& err,
     curl_easy_cleanup(curl);
     if (rc != CURLE_OK)
     {
-        err = tlsAwareErr(rc, errbuf);
+        if (rc == CURLE_ABORTED_BY_CALLBACK || isAborted())
+            err = "aborted";
+        else
+            err = tlsAwareErr(rc, errbuf);
         return false;
     }
     return true;
@@ -151,6 +202,11 @@ static int progressCb(void* userdata, curl_off_t total, curl_off_t now,
                       curl_off_t, curl_off_t)
 {
     auto* c = (DlCtx*)userdata;
+    if (g_abortAll.load(std::memory_order_relaxed))
+    {
+        c->aborted = true;
+        return 1;
+    }
     if (!c->progress) return 0;
     if (!c->progress((int64_t)now, (int64_t)total))
     {
@@ -163,6 +219,12 @@ static int progressCb(void* userdata, curl_off_t total, curl_off_t now,
 bool download(const std::string& url, const std::string& path, std::string& err,
               std::function<bool(int64_t, int64_t)> progress)
 {
+    if (isAborted())
+    {
+        err = "aborted";
+        return false;
+    }
+
     DlCtx ctx;
     ctx.progress = std::move(progress);
     ctx.f        = std::fopen(path.c_str(), "wb");
@@ -189,6 +251,7 @@ bool download(const std::string& url, const std::string& path, std::string& err,
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fileWriteCb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, errbuf);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 15L);
     // No CURLOPT_TIMEOUT here, unlike the other calls: this transfer is tens of
     // MB over hotel wifi. LOW_SPEED_* kills it when it actually stalls instead.
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1024L);
@@ -242,6 +305,7 @@ std::string urlEncode(const std::string& s)
 
 std::string resolveRedirect(const std::string& url)
 {
+    if (isAborted()) return url;
     if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)
         return url;
 
@@ -254,7 +318,11 @@ std::string resolveRedirect(const std::string& url)
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 3L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, abortProgressCb);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, nullptr);
     curl_easy_setopt(curl, CURLOPT_USERAGENT,
                      "Mozilla/5.0 (Nintendo Switch; ShareApplet) AppleWebKit/537.36");
 

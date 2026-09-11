@@ -108,12 +108,29 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 
 ---
 
-### ⚡ 7. Rendimiento y Optimización del Sistema
+### ⚡ 7. Rendimiento, Estabilidad y Blindaje del Sistema
+* **Blindaje de Red y Cierre Seguro (Anti-Crash Shield)**: Protección total contra errores fatales de Atmosphère al cerrar la app o salir al menú HOME con conexiones lentas o congeladas. Se implementó cancelación inmediata de peticiones HTTP en vuelo (`http::abortAll()`), límites estrictos de conexión (`CURLOPT_CONNECTTIMEOUT`, 10s) y apagado coordinado de hilos de red (`stremio::shutdown()` y `download::shutdown()`) antes de desmantelar los sockets BSD de libnx (`socketExit()`).
 * **CPU FastLoad Boost (`1785 MHz` -> `1020 MHz`)**: Overclock seguro y dinámico que sube la CPU a 1785 MHz durante el arranque de búferes, handshakes TCP y hashes SHA-1 para iniciar la reproducción al instante, regresando a la frecuencia base (1020 MHz) para ahorrar batería.
 * **Decodificación HEVC 10-bit Blindada (`hwdec-extra-frames = 32`)**: 32 superficies de búfer en memoria NVDEC para erradicar el efecto fantasma y desincronizaciones de audio presentes en NXMP.
 * **Subida Pautada de Texturas (*Paced Texture Queue*)**: Limita la subida de imágenes a OpenGL (máximo 2 texturas por fotograma), evitando micro-congelamientos de la interfaz al desplazarse por catálogos densos.
 * **Eliminación de Recargas Innecesarias**: Caché en memoria para transiciones instantáneas y fluidas entre pestañas (`Home`, `Continuar`, `Biblioteca`, `Búsqueda`).
-* **Traducción Integral al Español**: Textos, menús, diálogos y descripciones adaptados al Español con configuraciones iniciales pensadas para la mejor experiencia.
+* **Barra de Pistas Limpia y Recarga Focalizada**: Botón `(Y) Recargar` visible y activo únicamente en las pestañas *Continuar viendo* y *Biblioteca* con feedback visual de progreso, y eliminación de indicaciones duplicadas en la barra inferior (`[L] [R] Vista`).
+
+---
+
+### 🌐 8. Internacionalización y Soporte Universal de Subtítulos
+* **Traducción Integral en Tiempo Real (6 Idiomas)**:
+  * **Español (Latino)**
+  * **Español (España / Castellano)**
+  * **English**
+  * **Français**
+  * **Português (Brasil)**
+  * **Русский (Ruso)**
+  * *¡El cambio de idioma se refleja al instante en pantalla sin reiniciar la consola ni la aplicación!*
+* **Fuente Universal Automática Integrada (`subfont.ttf`)**:
+  * Incluye de forma nativa cobertura tipográfica completa para alfabetos **Árabe**, **Cirílico (Ruso)** y **Latino extendido (acentos, tildes, cedillas)**.
+  * La app gestiona e instala la fuente automáticamente en la tarjeta microSD en el primer inicio sin requerir descargas externas ni configuración manual por parte del usuario.
+* **Detección y Mapeo Inteligente de Subtítulos y Audios**: Detección prioritaria de pistas multilingües internas y complementos online (OpenSubtitles / Stremio) adaptadas al idioma de preferencia del usuario.
 
 ---
 
@@ -130,11 +147,14 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 | **Salto Rápido Doble Toque Táctil y Gatillos `ZL` / `ZR`** | ✅ **Estilo Netflix/YouTube (+10s, +20s, +30s...)** |
 | **Streaming Torrent 1080p sin Deadlocks** | ✅ **Ventana de 64 MB + Pre-descarga de cola 16 MB** |
 | **Protección Anti-Crash al Salir y Reentrar** | ✅ **Exclusión mutua global de ciclo de vida** |
+| **Blindaje de Red y Salida Segura (Anti-Crash Shield)** | ✅ **Cero pantallazos negros al cerrar con internet lento** |
 | **Reintento Rápido de Streams (`Y`) y Anti-Timeout** | ✅ **Reconexión en 1 clic + Límite a los 15s** |
-| **Fondos Panorámicos 16:9 + Logos con Pulso** | ✅ **Renderizado nativo sin parpadeos** |
+| **Fondos Panorámicos 16:9 + Logos con Pulso** | ✅ **Renderizado nativo y prefetching sin pantallas negras** |
 | **CPU FastLoad Boost Inteligente** | ✅ **Dinámico: 1785 MHz carga -> 1020 MHz normal** |
 | **Subida de Texturas Pautada (*Paced Image Queue*)** | ✅ **UI a 60 FPS estables** |
 | **Soporte de Emojis / Banderas en Fuentes** | ✅ **Integración nativa de `OpenMoji.ttf`** |
+| **Multiidioma Dinámico en Tiempo Real** | ✅ **6 idiomas (Español Lat/ES, EN, FR, PT-BR, RU)** |
+| **Fuente Universal para Subtítulos en Árabe y Cirílico** | ✅ **Automática integrada sin configuración del usuario** |
 | **Filtro Automático de Fuentes 4K** | ✅ **Opción activa por defecto para estabilidad Switch** |
 
 ---
@@ -146,7 +166,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 * **`A`**: Seleccionar / Abrir contenido.
 * **`B`**: Volver atrás.
 * **`L` / `R`**: Cambiar entre pestañas (*Inicio*, *Continuar*, *Biblioteca*, *Búsqueda*, *Local*).
-* **`Y`**: En catálogos: recargar lista. En selector de fuentes: mandar a descargar a la MicroSD.
+* **`Y`**: En pestañas *Continuar* y *Biblioteca*: recargar catálogo. En selector de fuentes: mandar a descargar a la MicroSD.
 * **`X`**: En la pestaña *Continuar viendo*, elimina el título seleccionado del progreso en la nube.
 * **`+` / `-`**: Abrir Ajustes de la aplicación.
 

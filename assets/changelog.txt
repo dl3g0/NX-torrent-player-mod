@@ -2,6 +2,8 @@
 
 ¡Bienvenidos a la versión **v0.0.6** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
 
+Esta versión representa una de las actualizaciones más completas y pulidas hasta la fecha, introduciendo internacionalización total en 6 idiomas, soporte universal de subtítulos (incluyendo árabe y cirílico), prefetching gráfico sin pantallas negras, blindaje completo contra cierres inesperados por lentitud de red y una interfaz más limpia.
+
 ---
 
 ## 🌟 Novedades Principales en v0.0.6
@@ -47,6 +49,20 @@ Detección, mapeo y selección automática prioritaria para subtítulos internos
 
 ---
 
+### 🛡️ 5. Blindaje de Red y Apagado Seguro contra Cuelgues (Anti-Crash Shield)
+* **Solución al cierre forzado con internet lento**: Se resolvió el error fatal (pantalla negra con código de error de Atmosphère) que ocurría al cerrar la aplicación o presionar HOME + Cerrar cuando la conexión a internet estaba congelada o lenta.
+* **Mecanismo de cancelación inmediata (`http::abortAll()`)**: Al solicitar la salida del programa, todas las peticiones HTTP y transferencias activas se abortan en milisegundos.
+* **Timeouts de conexión inteligentes**: Se configuraron tiempos máximos de conexión (10s) y velocidad mínima (15s) en libcurl para impedir que peticiones queden esperando minutos en bucle.
+* **Cierre coordinado de trabajadores**: Los hilos en segundo plano (`stremio::shutdown()` y `download::shutdown()`) se detienen y unen de inmediato antes de que el sistema destruya los sockets BSD (`socketExit()`), garantizando una salida 100% limpia.
+
+---
+
+### 🎯 6. Barra de Pistas y Botón de Recarga (Y) Optimizados
+* **Recarga contextual inteligente**: La acción `(Y) Recargar` ahora solo está visible y disponible en las pestañas **Continuar viendo** y **Biblioteca**, donde renueva el catálogo en vivo con animación de progreso integrada. En Inicio, Búsqueda y Local se oculta automáticamente.
+* **Limpieza de indicadores duplicados**: Se eliminó el indicador duplicado de `Vista` en la barra inferior, consolidando la indicación limpia y elegante `[L] [R] Vista`.
+
+---
+
 ## 📥 Instalación
 
 1. Descarga el archivo `NX-torrent-player.nro` adjunto en este release.
@@ -60,6 +76,6 @@ Detección, mapeo y selección automática prioritaria para subtítulos internos
 
 ## 👏 Créditos y Agradecimientos
 
-* **dl3g0** — Desarrollo y optimización de este mod/fork.
+* **dl3g0** — Desarrollo, arquitectura y optimizaciones de este mod/fork.
 * **shodowlo** — Proyecto original [NX-torrent-player](https://github.com/shodowlo/NX-torrent-player).
 * [borealis](https://github.com/xfangfang/borealis), [mpv](https://mpv.io/), [libutp](https://github.com/bittorrent/libutp), [Stremio](https://www.stremio.com/), [OpenMoji](https://openmoji.org/) y devkitPro.

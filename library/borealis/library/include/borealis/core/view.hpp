@@ -1214,6 +1214,7 @@ class View
 
     void updateActionHint(enum ControllerButton button, const std::string& hintText);
     void setActionAvailable(enum ControllerButton button, bool available);
+    void setActionHidden(enum ControllerButton button, bool hidden);
     void setActionsAvailable(bool available) const;
 
     void resetClickAnimation();

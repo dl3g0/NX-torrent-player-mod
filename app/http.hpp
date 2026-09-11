@@ -36,4 +36,8 @@ std::string urlEncode(const std::string& s);
 // Resolves HTTP redirects (301/302/307/308) to retrieve the effective direct media URL.
 std::string resolveRedirect(const std::string& url);
 
+// Aborts all active and future HTTP requests immediately. Safe to call from any thread.
+void abortAll();
+bool isAborted();
+
 } // namespace http

@@ -840,6 +840,14 @@ void View::setActionAvailable(const enum ControllerButton button, const bool ava
     Application::getGlobalHintsUpdateEvent()->fire();
 }
 
+void View::setActionHidden(const enum ControllerButton button, const bool hidden)
+{
+    if (const auto it = getAction(button); it != this->actions.end())
+        (*it)->setHidden(hidden);
+
+    Application::getGlobalHintsUpdateEvent()->fire();
+}
+
 void View::setActionsAvailable(const bool available) const
 {
     for (const auto& action : this->actions)

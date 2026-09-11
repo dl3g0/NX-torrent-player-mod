@@ -176,13 +176,24 @@ void Threading::start()
 void Threading::stop()
 {
     task_loop_active = false;
+    {
+        std::lock_guard<std::mutex> guard(m_async_mutex);
+        m_async_tasks.clear();
+    }
 
 #ifdef BOREALIS_USE_STD_THREAD
-    task_loop_thread->join();
-    delete task_loop_thread;
-    task_loop_thread = nullptr;
+    if (task_loop_thread)
+    {
+        task_loop_thread->join();
+        delete task_loop_thread;
+        task_loop_thread = nullptr;
+    }
 #else
-    pthread_join(task_loop_thread, NULL);
+    if (task_loop_thread)
+    {
+        pthread_join(task_loop_thread, NULL);
+        task_loop_thread = pthread_t(0);
+    }
 #endif
 }
 void Threading::std_task_loop() {
@@ -201,10 +212,14 @@ void* Threading::task_loop(void* a)
 
         for (auto task : m_tasks_copy)
         {
+            if (!task_loop_active) break;
             task();
         }
 
-        retro_sleep(500);
+        for (int i = 0; i < 50 && task_loop_active; i++)
+        {
+            retro_sleep(10);
+        }
     }
     return NULL;
 }

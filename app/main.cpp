@@ -37,6 +37,7 @@
 #include "theme.hpp"
 #include "update.hpp"
 #include "stremio.hpp"
+#include "http.hpp"
 #include "download.hpp"
 #include "local_player.hpp"
 #include "sys.hpp"
@@ -1941,6 +1942,13 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
         bool stremioUp = tab == config::Tab::STREMIO;
         frame->setActionAvailable(brls::BUTTON_LB, stremioUp);
         frame->setActionAvailable(brls::BUTTON_RB, stremioUp);
+        frame->setActionHidden(brls::BUTTON_LB, !stremioUp);
+        frame->setActionHidden(brls::BUTTON_RB, true);
+        if (!stremioUp)
+        {
+            frame->setActionAvailable(brls::BUTTON_Y, false);
+            frame->setActionHidden(brls::BUTTON_Y, true);
+        }
 
         content->clearViews(false);
         content->addView(tab == config::Tab::LOCAL ? localView : stremioView);
@@ -2137,7 +2145,7 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
     auto curView      = std::make_shared<int>(-1);
     auto applyViewBar = [viewBar, viewBtns, viewIcons, stremioBtn, localBtn,
                          profileBtn, settingsBtn, searchIdx, curView,
-                         insetViewBar](int active) {
+                         insetViewBar, frame](int active) {
         *curView  = active;
         bool show = active >= 0;
         // Also here, not only on the window event: changing the UI size in
@@ -2186,6 +2194,10 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
         stremio::setLibraryUpTarget(show && active < (int)viewBtns.size()
                                         ? (brls::View*)viewBtns[active]
                                         : (brls::View*)stremioBtn);
+
+        bool canReload = (active == 1 || active == 2);
+        frame->setActionAvailable(brls::BUTTON_Y, canReload);
+        frame->setActionHidden(brls::BUTTON_Y, !canReload);
     };
     applyViewBar(-1);
     stremio::setViewTabSink(applyViewBar);
@@ -2234,7 +2246,7 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
         applyViewBar(*curView);
     });
 
-    s_browserLanguageHook = [localBtn, stremioBtn, viewBtns, searchIdx, frame, localView, stremioView]() {
+    s_browserLanguageHook = [localBtn, stremioBtn, viewBtns, searchIdx, frame, localView, stremioView, curView]() {
         localBtn->setText(tr("Local"));
         stremioBtn->setText(tr("Stremio"));
 
@@ -2256,6 +2268,15 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
             stremio::cycleActiveView(+1);
             return true;
         }, true, false, brls::SOUND_NONE);
+
+        frame->registerAction(tr("Reload"), brls::BUTTON_Y, [](brls::View*) {
+            stremio::reloadCurrentView();
+            return true;
+        }, true, false, brls::SOUND_CLICK);
+
+        bool canReload = (*curView == 1 || *curView == 2);
+        frame->setActionAvailable(brls::BUTTON_Y, canReload);
+        frame->setActionHidden(brls::BUTTON_Y, !canReload);
 
         localView->registerAction(
             tr("Back"), brls::BUTTON_B,
@@ -2315,12 +2336,22 @@ brls::View* buildBrowser()
         return true;
     }, true, false, brls::SOUND_NONE);
 
+    frame->registerAction(tr("Reload"), brls::BUTTON_Y, [](brls::View*) {
+        stremio::reloadCurrentView();
+        return true;
+    }, true, false, brls::SOUND_CLICK);
+
     // select() keeps these in step from here on, but its first call ran inside
     // attachTopTabBar -- i.e. before the actions existed, where setActionAvailable
     // finds nothing to set. Seed them for the startup tab.
     bool stremioUp = config::get().startupTab == config::Tab::STREMIO;
     frame->setActionAvailable(brls::BUTTON_LB, stremioUp);
     frame->setActionAvailable(brls::BUTTON_RB, stremioUp);
+    frame->setActionHidden(brls::BUTTON_LB, !stremioUp);
+    frame->setActionHidden(brls::BUTTON_RB, true);
+
+    frame->setActionAvailable(brls::BUTTON_Y, false);
+    frame->setActionHidden(brls::BUTTON_Y, true);
 
     return frame;
 }
@@ -2552,11 +2583,20 @@ int main(int argc, char* argv[])
             if (r.ok && r.installable()) update::promptInstall(r);
         });
 
+    brls::Application::getExitEvent()->subscribe([]() {
+        brls::Logger::info("[main] exitEvent received, aborting network and background workers");
+        http::abortAll();
+        stremio::shutdown();
+        download::shutdown();
+    });
+
     while (brls::Application::mainLoop())
     {
         stremio::processPendingImageUploads(2);
     }
 
+    http::abortAll();
+    stremio::shutdown();
     download::shutdown();
 
     // Only now: hbloader keeps the running .nro open and libnx reads our romfs

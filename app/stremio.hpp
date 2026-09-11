@@ -371,6 +371,11 @@ void setLibraryCountSink(std::function<void(const std::string&)> sink);
 void setViewCycler(std::function<void(int)> cycler);
 void cycleActiveView(int dir);
 
+void setReloadHook(std::function<void()> hook);
+void reloadCurrentView();
+
+void shutdown();
+
 // The header's Stremio view tab bar (top-right). main.cpp builds one button per
 // viewLabels() entry (index-matched to the view cycle order), registers
 // setViewTabSink to highlight the active view -- or hide the whole bar with
@@ -455,6 +460,7 @@ class StremioTab : public brls::Box
     void doLogin();
     void onAuthenticated(const std::string& key, bool announce);
     void loadLibrary();
+    void reload();
 
     // The Stremio tab cycles through these with R. Home is the
     // default landing view; it unifies Movies, Shows, and addon catalogs.

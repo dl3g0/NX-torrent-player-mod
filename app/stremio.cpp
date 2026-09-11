@@ -482,6 +482,18 @@ void cycleActiveView(int dir)
     if (viewCycler) viewCycler(dir);
 }
 
+static std::function<void()> reloadHook;
+
+void setReloadHook(std::function<void()> hook)
+{
+    reloadHook = std::move(hook);
+}
+
+void reloadCurrentView()
+{
+    if (reloadHook) reloadHook();
+}
+
 // A blurred copy of a cached poster, for use as a full-screen background.
 // Returns its path, or "" if the source could not be read.
 //
@@ -533,11 +545,15 @@ void pollDeviceLinkAsync(
     brls::async([code, cancel, done]() {
         int attempts = 0;
         constexpr int kMaxAttempts = 100;
-        while (cancel && !cancel->load() && attempts < kMaxAttempts)
+        while (cancel && !cancel->load() && !http::isAborted() && attempts < kMaxAttempts)
         {
             attempts++;
-            std::this_thread::sleep_for(std::chrono::seconds(3));
-            if (cancel && cancel->load())
+            for (int s = 0; s < 30 && !http::isAborted(); s++)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                if (cancel && cancel->load()) return;
+            }
+            if ((cancel && cancel->load()) || http::isAborted())
                 return;
 
             std::string resp, err;
@@ -563,7 +579,7 @@ void pollDeviceLinkAsync(
             }
         }
 
-        if (cancel && cancel->load())
+        if ((cancel && cancel->load()) || http::isAborted())
             return;
 
         brls::sync([done]() {
@@ -1327,15 +1343,22 @@ public:
 
     ~ImageQueue()
     {
+        stopWorkers();
+    }
+
+    void stopWorkers()
+    {
         {
             std::unique_lock<std::mutex> lock(mtx);
             stop = true;
-            cv.notify_all();
+            tasks.clear();
         }
+        cv.notify_all();
         for (auto& t : workers)
         {
             if (t.joinable()) t.join();
         }
+        workers.clear();
     }
 
     void setPaused(bool p)
@@ -1357,6 +1380,7 @@ public:
     {
         {
             std::unique_lock<std::mutex> lock(mtx);
+            if (stop || http::isAborted()) return;
             if (inFlight.count(task.path)) return; // already queued or downloading
             inFlight.insert(task.path);
             if (highPriority)
@@ -1375,12 +1399,14 @@ private:
             ImageTask task;
             {
                 std::unique_lock<std::mutex> lock(mtx);
-                cv.wait(lock, [this]() { return stop || (!paused && !tasks.empty()); });
-                if (stop && tasks.empty()) return;
+                cv.wait(lock, [this]() { return stop || http::isAborted() || (!paused && !tasks.empty()); });
+                if (stop || http::isAborted()) return;
                 if (paused) continue;
                 task = std::move(tasks.front());
                 tasks.pop_front();
             }
+
+            if (stop || http::isAborted()) return;
 
             if (task.alive && !*task.alive)
             {
@@ -1411,6 +1437,13 @@ private:
             std::string body, err;
             static const char* kAcceptImg = "Accept: image/jpeg,image/png;q=0.9";
             bool ok = http::get(task.url, body, err, kAcceptImg);
+
+            if (stop || http::isAborted())
+            {
+                std::unique_lock<std::mutex> lock(mtx);
+                inFlight.erase(task.path);
+                return;
+            }
 
             auto b = [&](size_t i) {
                 return i < body.size() ? (unsigned char)body[i] : 0u;
@@ -1505,6 +1538,11 @@ void setBackgroundWorkersPaused(bool paused)
 bool isBackgroundWorkersPaused()
 {
     return g_backgroundWorkersPaused.load(std::memory_order_relaxed);
+}
+
+void shutdown()
+{
+    imageQueue().stopWorkers();
 }
 
 void processPendingImageUploads(int maxPerFrame)
@@ -2600,14 +2638,15 @@ StremioTab::StremioTab()
         [this](brls::View* v) { onGlobalFocus(v); });
     focusSubbed = true;
 
-    // Y reloads the library on demand -- fires only while focus is on this tab.
+    // Y reloads the library on demand -- fires on Continue Watching and Library tabs.
     this->registerAction(
         tr("Reload"), brls::BUTTON_Y,
         [this](brls::View*) {
-            if (!authKey.empty()) loadLibrary();
+            reload();
             return true;
         },
-        false, false, brls::SOUND_NONE);
+        true, false, brls::SOUND_CLICK);
+    this->setActionAvailable(brls::BUTTON_Y, false);
 
     // Left/Right (d-pad and the analog stick, which borealis maps to them) also
     // cycle the view -- but on the tab, not the frame: the header tab bar uses
@@ -2659,6 +2698,10 @@ StremioTab::StremioTab()
         if (!authKey.empty()) cycleView(dir);
     });
 
+    stremio::setReloadHook([this]() {
+        reload();
+    });
+
     // A header view-bar button jumps straight to that view.
     stremio::setViewSelector([this](int idx) {
         if (!authKey.empty())
@@ -2674,6 +2717,7 @@ StremioTab::StremioTab()
         if (continueBox) continueBox->clearViews();
         if (libraryBoxView) libraryBoxView->clearViews();
         if (searchBox) searchBox->clearViews();
+        this->updateActionHint(brls::BUTTON_Y, tr("Reload"));
         renderView();
     });
 
@@ -2693,6 +2737,7 @@ StremioTab::~StremioTab()
     *alive     = false;
     *rowsAlive = false;
     stremio::setViewCycler(nullptr);   // no live tab for the frame's R/L to reach
+    stremio::setReloadHook(nullptr);
     stremio::setViewSelector(nullptr);
     stremio::reportView(-1);           // fold the header bar away with the tab
     if (focusSubbed)
@@ -3072,6 +3117,19 @@ void StremioTab::loadLibrary()
     });
 }
 
+void StremioTab::reload()
+{
+    if (authKey.empty()) return;
+    if (view == View::ContinueWatching || view == View::Library)
+    {
+        parkFocusOffList();
+        if (view == View::ContinueWatching && continueBox) continueBox->clearViews();
+        if (view == View::Library && libraryBoxView) libraryBoxView->clearViews();
+        showStatus(tr("Loading..."), true);
+        loadLibrary();
+    }
+}
+
 // R (dir +1) / L (dir -1) cycle the view; wraps around.
 void StremioTab::cycleView(int dir)
 {
@@ -3117,6 +3175,9 @@ void StremioTab::renderView()
     if (activeBox) libList->addView(activeBox);
 
     loadingBox->setVisibility(brls::Visibility::GONE);
+    bool canReload = !authKey.empty() && (view == View::ContinueWatching || view == View::Library);
+    this->setActionAvailable(brls::BUTTON_Y, canReload);
+    this->setActionHidden(brls::BUTTON_Y, !canReload);
 
     switch (view)
     {
@@ -3147,6 +3208,7 @@ void StremioTab::renderContinueWatching()
     *rowsAlive = false;
     rowsAlive  = std::make_shared<bool>(true);
     continueBox->clearViews();
+    loadingBox->setVisibility(brls::Visibility::GONE);
 
     stremio::LocalWatch lw = stremio::lastWatch();
     std::vector<stremio::LibItem> cw;
@@ -3213,6 +3275,7 @@ void StremioTab::renderLibrary()
     *rowsAlive = false;
     rowsAlive  = std::make_shared<bool>(true);
     libraryBoxView->clearViews();
+    loadingBox->setVisibility(brls::Visibility::GONE);
 
     std::vector<stremio::LibItem> lib;
     for (const auto& it : libItems)

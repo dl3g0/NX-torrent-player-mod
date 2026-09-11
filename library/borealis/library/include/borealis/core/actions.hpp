@@ -166,6 +166,11 @@ public:
         return this->hidden;
     }
 
+    void setHidden(const bool isHidden)
+    {
+        this->hidden = isHidden;
+    }
+
     [[nodiscard]] bool isAllowRepeating() const
     {
         return this->allowRepeating;
