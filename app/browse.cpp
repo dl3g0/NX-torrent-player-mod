@@ -1253,6 +1253,11 @@ class MovieDetailActivity : public AddonSourcePicker
         label   = item.name;
     }
 
+    ~MovieDetailActivity() override
+    {
+        stremio::resumeCatalogLoading();
+    }
+
     brls::View* createContentView() override
     {
         auto* root = new brls::Box();
@@ -1347,7 +1352,6 @@ class MovieDetailActivity : public AddonSourcePicker
 
         loadPoster();
         loadMeta();
-        startAddonSources();
         return frame;
     }
 
@@ -1371,30 +1375,38 @@ class MovieDetailActivity : public AddonSourcePicker
         stremio::fetchMetaAsync(
             "https://v3-cinemeta.strem.io", "movie", item.id,
             [this, live](stremio::MetaResult r) {
-                if (!*live || !r.ok) return;
-                std::string line;
-                auto add = [&](const std::string& s) {
-                    if (s.empty()) return;
-                    if (!line.empty()) line += "     ";
-                    line += s;
-                };
-                add(r.releaseInfo);
-                add(formatRuntime(r.runtime));
-                if (!r.imdbRating.empty())
-                    add(" " + r.imdbRating);  // Material "star" glyph
-                if (!line.empty()) metaLine->setText(line);
-                if (!r.description.empty())
-                    descLabel->setText(clampText(r.description, 210));  // ~3 lines
-                if (!r.background.empty())
+                if (!*live) return;
+                if (r.ok)
                 {
-                    art.bgUrl = r.background;
-                    stremio::fetchBackgroundAsync(art.bgId, art.bgUrl);
+                    std::string line;
+                    auto add = [&](const std::string& s) {
+                        if (s.empty()) return;
+                        if (!line.empty()) line += "     ";
+                        line += s;
+                    };
+                    add(r.releaseInfo);
+                    add(formatRuntime(r.runtime));
+                    if (!r.imdbRating.empty())
+                        add(" " + r.imdbRating);  // Material "star" glyph
+                    if (!line.empty()) metaLine->setText(line);
+                    if (!r.description.empty())
+                        descLabel->setText(clampText(r.description, 210));  // ~3 lines
+
+                    // Step 2: Load logo and background in the background
+                    if (!r.background.empty())
+                    {
+                        art.bgUrl = r.background;
+                        stremio::fetchBackgroundAsync(art.bgId, art.bgUrl, nullptr, live);
+                    }
+                    if (!r.logo.empty())
+                    {
+                        art.logoUrl = r.logo;
+                        stremio::fetchLogoAsync(art.logoId, art.logoUrl, nullptr, live);
+                    }
                 }
-                if (!r.logo.empty())
-                {
-                    art.logoUrl = r.logo;
-                    stremio::fetchLogoAsync(art.logoId, art.logoUrl);
-                }
+
+                // Step 3: Load addons and their stream links last
+                startAddonSources();
             });
     }
 
@@ -1454,12 +1466,8 @@ class EpisodeDetailActivity : public AddonSourcePicker
             stremio::fetchPosterAsync(
                 ep.id, ep.thumbnail, [still, live](std::string p) {
                     if (*live && !p.empty()) still->setImageFromFile(p);
-                });
+                }, live, true);
         }
-        if (!art.bgId.empty() && !art.bgUrl.empty())
-            stremio::fetchBackgroundAsync(art.bgId, art.bgUrl);
-        if (!art.logoId.empty() && !art.logoUrl.empty())
-            stremio::fetchLogoAsync(art.logoId, art.logoUrl);
         top->addView(still);
 
         auto* meta = new brls::Box();
@@ -1639,6 +1647,12 @@ class EpisodeDetailActivity : public AddonSourcePicker
         frame->pushContentView(root);
         frame->setHeaderVisibility(brls::Visibility::GONE);
 
+        auto live = alive;
+        if (!art.bgId.empty() && !art.bgUrl.empty())
+            stremio::fetchBackgroundAsync(art.bgId, art.bgUrl, nullptr, live);
+        if (!art.logoId.empty() && !art.logoUrl.empty())
+            stremio::fetchLogoAsync(art.logoId, art.logoUrl, nullptr, live);
+
         startAddonSources();
         return frame;
     }
@@ -1718,6 +1732,7 @@ class SeriesDetailActivity : public brls::Activity
 
     ~SeriesDetailActivity() override
     {
+        stremio::resumeCatalogLoading();
         *alive      = false;
         *cardsAlive = false;  // the cards go with us, not only with a season
         if (focusSubbed)
@@ -1885,19 +1900,21 @@ class SeriesDetailActivity : public brls::Activity
                 if (!line.empty()) metaLine->setText(line);
                 if (!r.description.empty())
                     descLabel->setText(clampText(r.description, 150));
+
+                videos = std::make_shared<std::vector<stremio::Video>>(r.videos);
+                buildSeasonBar();
+
+                // Step 2: Load logo and background in the background
                 if (!r.background.empty())
                 {
                     art.bgUrl = r.background;
-                    stremio::fetchBackgroundAsync(art.bgId, art.bgUrl);
+                    stremio::fetchBackgroundAsync(art.bgId, art.bgUrl, nullptr, live);
                 }
                 if (!r.logo.empty())
                 {
                     art.logoUrl = r.logo;
-                    stremio::fetchLogoAsync(art.logoId, art.logoUrl);
+                    stremio::fetchLogoAsync(art.logoId, art.logoUrl, nullptr, live);
                 }
-
-                videos = std::make_shared<std::vector<stremio::Video>>(r.videos);
-                buildSeasonBar();
             });
     }
 
@@ -2091,7 +2108,7 @@ class SeriesDetailActivity : public brls::Activity
             stremio::fetchPosterAsync(
                 v.id, v.thumbnail, [img, live](std::string p) {
                     if (*live && !p.empty()) img->setImageFromFile(p);
-                });
+                }, live, true);
         }
 
         col->addView(thumb);
@@ -2120,10 +2137,6 @@ class SeriesDetailActivity : public brls::Activity
             epArt.bgId   = v.id;
             epArt.bgUrl  = v.thumbnail;
         }
-        if (!epArt.bgId.empty() && !epArt.bgUrl.empty())
-            stremio::fetchBackgroundAsync(epArt.bgId, epArt.bgUrl);
-        if (!epArt.logoId.empty() && !epArt.logoUrl.empty())
-            stremio::fetchLogoAsync(epArt.logoId, epArt.logoUrl);
         WatchInfo w;
         std::string prevId;
         w.authKey      = authKey;
@@ -2378,6 +2391,8 @@ void ListActivity::onGlobalFocus(brls::View* focused)
 
 void openLibraryItem(const std::string& authKey, const stremio::LibItem& item)
 {
+    stremio::pauseCatalogLoading();
+
     // The library list already pulled this poster into the cache, so a hit is
     // the norm; on a miss the player just falls back to the app logo rather
     // than us blocking the tap on a download.
@@ -2392,11 +2407,6 @@ void openLibraryItem(const std::string& authKey, const stremio::LibItem& item)
     art.logoUrl = !imdb.empty()
                       ? "https://images.metahub.space/logo/medium/" + imdb + "/img"
                       : "";
-
-    if (!art.bgId.empty() && !art.bgUrl.empty())
-        stremio::fetchBackgroundAsync(art.bgId, art.bgUrl);
-    if (!art.logoId.empty() && !art.logoUrl.empty())
-        stremio::fetchLogoAsync(art.logoId, art.logoUrl);
 
     // A film has no season/episode tree -- open its detail screen (poster,
     // synopsis, and the addons as source cards).
@@ -2423,6 +2433,8 @@ void openEpisodeById(const std::string& authKey, const std::string& seriesId,
                      const std::string& videoId, const PlayerArt& art,
                      bool replaceCurrent, std::function<void()> onFail)
 {
+    stremio::pauseCatalogLoading();
+
     if (seriesId.empty() || videoId.empty())
     {
         if (onFail) onFail();
@@ -2462,10 +2474,6 @@ void openEpisodeById(const std::string& authKey, const std::string& seriesId,
                 epArt.bgId   = v->id;
                 epArt.bgUrl  = v->thumbnail;
             }
-            if (!epArt.bgId.empty() && !epArt.bgUrl.empty())
-                stremio::fetchBackgroundAsync(epArt.bgId, epArt.bgUrl);
-            if (!epArt.logoId.empty() && !epArt.logoUrl.empty())
-                stremio::fetchLogoAsync(epArt.logoId, epArt.logoUrl);
 
             WatchInfo w;
             w.authKey = authKey;

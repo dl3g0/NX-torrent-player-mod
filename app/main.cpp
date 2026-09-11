@@ -2399,7 +2399,7 @@ void ensureSubfont()
             currentVer.pop_back();
     }
 
-    bool needInstall = (access(fontDst.c_str(), F_OK) != 0) || (currentVer != "0.0.6" && !hasCustom);
+    bool needInstall = (access(fontDst.c_str(), F_OK) != 0) || (currentVer != "0.0.8" && !hasCustom);
 
     if (hasCustom)
     {
@@ -2436,7 +2436,7 @@ void ensureSubfont()
 
                 if (FILE* vf = std::fopen(verFile.c_str(), "w"))
                 {
-                    std::fprintf(vf, "0.0.6\n");
+                    std::fprintf(vf, "0.0.8\n");
                     std::fclose(vf);
                 }
             }

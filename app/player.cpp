@@ -495,6 +495,8 @@ bool MpvView::startMpv()
     mpv_set_option_string(mpv, "sub-auto", "auto");
 
     mpv_set_option_string(mpv, "sub-ass", "yes");
+    mpv_set_option_string(mpv, "sub-ass-shaper", "complex");
+    mpv_set_option_string(mpv, "sub-ass-force-style", "Encoding=-1");
     mpv_set_option_string(mpv, "sub-font-provider", "none");
     mpv_set_option_string(mpv, "sub-font", "sans-serif");
 
@@ -507,7 +509,6 @@ bool MpvView::startMpv()
     mpv_set_option_string(mpv, "sub-shadow-color", "#000000");
     mpv_set_option_string(mpv, "sub-shadow-offset", "1.4");
     mpv_set_option_string(mpv, "sub-blur", "0.35");
-    mpv_set_option_string(mpv, "sub-spacing", "0.4");
     mpv_set_option_string(mpv, "sub-margin-y", "50");
     mpv_set_option_string(mpv, "cache", "yes");
     // Never let mpv auto-pause playback to rebuffer -- once we start, we keep

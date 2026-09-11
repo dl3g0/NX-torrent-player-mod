@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <string>
 
@@ -17,11 +18,13 @@ namespace http
 // GET `url` into `resp`. False on failure, with a readable reason in `err`.
 // `accept` is an optional full header line ("Accept: image/jpeg").
 bool get(const std::string& url, std::string& resp, std::string& err,
-         const char* accept = nullptr);
+         const char* accept = nullptr,
+         const std::atomic<bool>* cancel = nullptr);
 
 // POST `body` as application/json.
 bool postJson(const char* url, const std::string& body, std::string& resp,
-              std::string& err);
+              std::string& err,
+              const std::atomic<bool>* cancel = nullptr);
 
 // GET `url` straight to `path`, so a large file never sits in RAM. `progress`
 // is called from the transfer thread with (bytes so far, total or 0 if the

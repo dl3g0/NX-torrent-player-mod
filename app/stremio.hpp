@@ -84,7 +84,8 @@ void pushWatchStateAsync(const std::string& authKey, const std::string& itemId,
 // file is returned immediately without touching the network.
 void fetchPosterAsync(const std::string& id, const std::string& url,
                       std::function<void(std::string)> done,
-                      std::shared_ptr<bool> alive = nullptr);
+                      std::shared_ptr<bool> alive = nullptr,
+                      bool highPriority = false);
 
 // Full-size horizontal background backdrop for `id`
 void fetchBackgroundAsync(const std::string& id, const std::string& url,
@@ -244,7 +245,8 @@ void loginAsync(const std::string& email, const std::string& password,
 void fetchLibraryAsync(const std::string& authKey,
                        std::function<void(LibraryResult)> done);
 void fetchAddonsAsync(const std::string& authKey,
-                      std::function<void(AddonsResult)> done);
+                      std::function<void(AddonsResult)> done,
+                      std::shared_ptr<std::atomic<bool>> cancelToken = nullptr);
 void removeAddonAsync(const std::string& authKey, const std::string& transportUrl,
                       std::function<void(bool ok, std::string err)> done);
 // Episode list for a series, from an addon that serves meta (Cinemeta usually).
@@ -287,12 +289,14 @@ struct CatalogQuery
 // Used for the Popular movies / series views.
 void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
                        const std::string& catalogId,
-                       std::function<void(LibraryResult)> done);
+                       std::function<void(LibraryResult)> done,
+                       std::shared_ptr<std::atomic<bool>> cancelToken = nullptr);
 // The same, filtered and/or paged. An addon that does not support an extra
 // simply ignores it, so this is never worse than the call above.
 void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
                        const std::string& catalogId, const CatalogQuery& query,
-                       std::function<void(LibraryResult)> done);
+                       std::function<void(LibraryResult)> done,
+                       std::shared_ptr<std::atomic<bool>> cancelToken = nullptr);
 
 // The genres an addon offers for one of its catalogs, read off its manifest
 // (catalogs[].extra where name is "genre"). Empty when the catalog does not
@@ -373,6 +377,11 @@ void cycleActiveView(int dir);
 
 void setReloadHook(std::function<void()> hook);
 void reloadCurrentView();
+
+void pauseCatalogLoading();
+void resumeCatalogLoading();
+void setCatalogPauseHook(std::function<void()> hook);
+void setCatalogResumeHook(std::function<void()> hook);
 
 void shutdown();
 
@@ -667,4 +676,10 @@ class StremioTab : public brls::Box
     // so clearViews() never frees the focused view (a use-after-free in the next
     // giveFocus()). Must run before every libList->clearViews().
     void parkFocusOffList();
+
+    // Cancellation token and pause state for Home/Catalog async loads.
+    std::shared_ptr<std::atomic<bool>> catalogCancelToken;
+    bool catalogLoadsPaused = false;
+    void pauseCatalogLoads();
+    void resumeCatalogLoads();
 };

@@ -1540,6 +1540,34 @@ bool isBackgroundWorkersPaused()
     return g_backgroundWorkersPaused.load(std::memory_order_relaxed);
 }
 
+static std::shared_ptr<std::atomic<bool>> s_catalogCancelToken;
+static std::function<void()> s_catalogPauseHook;
+static std::function<void()> s_catalogResumeHook;
+
+void setCatalogPauseHook(std::function<void()> hook)
+{
+    s_catalogPauseHook = std::move(hook);
+}
+
+void setCatalogResumeHook(std::function<void()> hook)
+{
+    s_catalogResumeHook = std::move(hook);
+}
+
+void pauseCatalogLoading()
+{
+    if (s_catalogCancelToken)
+        s_catalogCancelToken->store(true, std::memory_order_relaxed);
+    if (s_catalogPauseHook)
+        s_catalogPauseHook();
+}
+
+void resumeCatalogLoading()
+{
+    if (s_catalogResumeHook)
+        s_catalogResumeHook();
+}
+
 void shutdown()
 {
     imageQueue().stopWorkers();
@@ -1631,7 +1659,8 @@ static std::string metahubSize(std::string u, const char* want)
 
 void fetchPosterAsync(const std::string& id, const std::string& url,
                       std::function<void(std::string)> done,
-                      std::shared_ptr<bool> alive)
+                      std::shared_ptr<bool> alive,
+                      bool highPriority)
 {
     if (id.empty())
     {
@@ -1650,7 +1679,7 @@ void fetchPosterAsync(const std::string& id, const std::string& url,
     // and uploading textures is paced smoothly at 2 per frame, eliminating UI thread freezes
     // when populating catalog rows.
     downloadImageAsync(id, metahubSize(src, "/small/"), posterCachePath(id),
-                       done, alive);
+                       done, alive, highPriority);
 }
 
 void fetchBackgroundAsync(const std::string& id, const std::string& url,
@@ -1684,7 +1713,7 @@ void fetchBackgroundAsync(const std::string& id, const std::string& url,
         return;
     }
 
-    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive, true);
+    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive, false);
 }
 
 void fetchLogoAsync(const std::string& id, const std::string& url,
@@ -1718,7 +1747,7 @@ void fetchLogoAsync(const std::string& id, const std::string& url,
         return;
     }
 
-    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive, true);
+    downloadImageAsync(id, metahubSize(src, "/medium/"), path, done, alive, false);
 }
 
 void fetchHqArtAsync(const std::string& id, const std::string& url,
@@ -1748,7 +1777,7 @@ void fetchHqArtAsync(const std::string& id, const std::string& url,
         return;
     }
 
-    downloadImageAsync(id, metahubSize(src, "/large/"), path, done, alive);
+    downloadImageAsync(id, metahubSize(src, "/large/"), path, done, alive, true);
 }
 
 // The account's addon collection, fetched once. It only changes when the user
@@ -1759,7 +1788,8 @@ void fetchHqArtAsync(const std::string& id, const std::string& url,
 static AddonsResult addonCache;
 
 void fetchAddonsAsync(const std::string& authKey,
-                      std::function<void(AddonsResult)> done)
+                      std::function<void(AddonsResult)> done,
+                      std::shared_ptr<std::atomic<bool>> cancelToken)
 {
     if (addonCache.ok)
     {
@@ -1767,19 +1797,23 @@ void fetchAddonsAsync(const std::string& authKey,
         return;
     }
 
-    brls::async([authKey, done]() {
+    brls::async([authKey, done, cancelToken]() {
+        if (cancelToken && cancelToken->load(std::memory_order_relaxed))
+            return;
         AddonsResult r;
         std::string body =
             "{\"authKey\":\"" + json::escape(authKey) + "\",\"update\":true}";
         std::string resp, err;
 
         if (!http::postJson("https://api.strem.io/api/addonCollectionGet", body, resp,
-                      err))
+                      err, cancelToken ? cancelToken.get() : nullptr))
         {
             r.error = err;
         }
         else
         {
+            if (cancelToken && cancelToken->load(std::memory_order_relaxed))
+                return;
             r.ok = true;
             for (const auto& o : json::objects(resp, "addons"))
             {
@@ -1855,6 +1889,8 @@ void fetchAddonsAsync(const std::string& authKey,
                                    return n;
                                }());
         }
+        if (cancelToken && cancelToken->load(std::memory_order_relaxed))
+            return;
         brls::sync([done, r]() {
             // Only a good response is worth keeping: caching a failure would
             // pin the app to it for the rest of the session.
@@ -2363,25 +2399,33 @@ void fetchCatalogGenresAsync(const std::string& addonBase,
 
 void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
                        const std::string& catalogId,
-                       std::function<void(LibraryResult)> done)
+                       std::function<void(LibraryResult)> done,
+                       std::shared_ptr<std::atomic<bool>> cancelToken)
 {
-    fetchCatalogAsync(addonBase, type, catalogId, CatalogQuery(), done);
+    fetchCatalogAsync(addonBase, type, catalogId, CatalogQuery(), done, cancelToken);
 }
 
 void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
                        const std::string& catalogId, const CatalogQuery& query,
-                       std::function<void(LibraryResult)> done)
+                       std::function<void(LibraryResult)> done,
+                       std::shared_ptr<std::atomic<bool>> cancelToken)
 {
-    brls::async([addonBase, type, catalogId, query, done]() {
+    brls::async([addonBase, type, catalogId, query, done, cancelToken]() {
+        if (cancelToken && cancelToken->load(std::memory_order_relaxed))
+            return;
+
         LibraryResult r;
         std::string url = catalogUrl(addonBase, type, catalogId, query);
         std::string resp, err;
-        if (!http::get(url, resp, err))
+        if (!http::get(url, resp, err, nullptr, cancelToken ? cancelToken.get() : nullptr))
         {
             r.error = err;
         }
         else
         {
+            if (cancelToken && cancelToken->load(std::memory_order_relaxed))
+                return;
+
             r.ok = true;
             for (const auto& o : json::objects(resp, "metas"))
             {
@@ -2401,6 +2445,8 @@ void fetchCatalogAsync(const std::string& addonBase, const std::string& type,
             brls::Logger::info("[stremio] catalog {}/{} -> {} items", type,
                                catalogId, r.items.size());
         }
+        if (cancelToken && cancelToken->load(std::memory_order_relaxed))
+            return;
         brls::sync([done, r]() { done(r); });
     });
 }
@@ -2721,6 +2767,9 @@ StremioTab::StremioTab()
         renderView();
     });
 
+    stremio::setCatalogPauseHook([this]() { pauseCatalogLoads(); });
+    stremio::setCatalogResumeHook([this]() { resumeCatalogLoads(); });
+
     // Already signed in from a previous run: skip straight to the library.
     std::string saved = stremio::loadAuthKey();
     if (!saved.empty())
@@ -2729,6 +2778,11 @@ StremioTab::StremioTab()
 
 StremioTab::~StremioTab()
 {
+    stremio::setCatalogPauseHook(nullptr);
+    stremio::setCatalogResumeHook(nullptr);
+    if (catalogCancelToken)
+        catalogCancelToken->store(true, std::memory_order_relaxed);
+
     stremio::setLanguageChangeHook(nullptr);
     // Switching tabs deletes us immediately, but the network requests we
     // started keep running and land on the UI thread afterwards. Tell them we
@@ -2754,6 +2808,41 @@ StremioTab::~StremioTab()
     searchBox = nullptr;
 }
 
+void StremioTab::pauseCatalogLoads()
+{
+    catalogLoadsPaused = true;
+    if (catalogCancelToken)
+        catalogCancelToken->store(true, std::memory_order_relaxed);
+
+    if (featMovies.empty()) featMoviesAsked = false;
+    if (featSeries.empty()) featSeriesAsked = false;
+    if (addonMovieSections.empty()) addonMovieSectionsAsked = false;
+    else
+    {
+        for (const auto& s : addonMovieSections)
+            if (!s.loaded) { addonMovieSectionsAsked = false; break; }
+    }
+    if (addonSeriesSections.empty()) addonSeriesSectionsAsked = false;
+    else
+    {
+        for (const auto& s : addonSeriesSections)
+            if (!s.loaded) { addonSeriesSectionsAsked = false; break; }
+    }
+}
+
+void StremioTab::resumeCatalogLoads()
+{
+    if (!catalogLoadsPaused) return;
+    catalogLoadsPaused = false;
+    catalogCancelToken = std::make_shared<std::atomic<bool>>(false);
+    stremio::s_catalogCancelToken = catalogCancelToken;
+
+    if (view == View::Home)
+    {
+        renderHome();
+    }
+}
+
 void StremioTab::onGlobalFocus(brls::View* focused)
 {
     // Focus landing back anywhere in OUR activity after something marked the
@@ -2773,6 +2862,12 @@ void StremioTab::onGlobalFocus(brls::View* focused)
     brls::View* root = this;
     while (root->getParent()) root = root->getParent();
     if (!isUnder(focused, root)) return;
+
+    if (catalogLoadsPaused)
+    {
+        resumeCatalogLoads();
+    }
+
     if (stremio::libraryGen() == seenGen) return;
     seenGen = stremio::libraryGen();
     // Defer the actual reload: we are inside a focus-change dispatch (the
@@ -3133,11 +3228,17 @@ void StremioTab::reload()
 // R (dir +1) / L (dir -1) cycle the view; wraps around.
 void StremioTab::cycleView(int dir)
 {
+    View oldView = view;
     int n = static_cast<int>(View::COUNT);
     view  = static_cast<View>(((static_cast<int>(view) + dir) % n + n) % n);
+    if (oldView == View::Home && view != View::Home)
+        pauseCatalogLoads();
     resetOnShow  = true;              // land on the first row, scrolled to the top
     pendingSlide = dir > 0 ? 1 : -1;  // slide the new list in from that side
-    renderView();
+    if (view == View::Home && catalogLoadsPaused)
+        resumeCatalogLoads();
+    else
+        renderView();
 }
 
 // A header tab-bar pick: jump straight to `v`. Like cycleView, and it hands the
@@ -3147,10 +3248,15 @@ void StremioTab::cycleView(int dir)
 void StremioTab::selectView(View v)
 {
     if (v == view) return;
+    if (view == View::Home && v != View::Home)
+        pauseCatalogLoads();
     pendingSlide = static_cast<int>(v) > static_cast<int>(view) ? 1 : -1;
     view = v;
     resetOnShow = true;
-    renderView();
+    if (view == View::Home && catalogLoadsPaused)
+        resumeCatalogLoads();
+    else
+        renderView();
 }
 
 // Builds or toggles the list for the current view.
@@ -3483,28 +3589,36 @@ void StremioTab::renderHome()
 {
     if (!homeBox) return;
 
+    if (!catalogCancelToken || catalogCancelToken->load(std::memory_order_relaxed))
+    {
+        catalogCancelToken = std::make_shared<std::atomic<bool>>(false);
+        stremio::s_catalogCancelToken = catalogCancelToken;
+        catalogLoadsPaused = false;
+    }
+    auto cancelToken = catalogCancelToken;
+
     // Start background loads for Cinemeta top and year catalogs if not yet fetched
     if (!popMoviesLoaded)
     {
         stremio::fetchCatalogAsync(
             "https://v3-cinemeta.strem.io", "movie", "top",
-            [this, live = alive](stremio::LibraryResult r) {
-                if (!*live || !r.ok) return;
+            [this, live = alive, cancelToken](stremio::LibraryResult r) {
+                if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed)) || !r.ok) return;
                 popMovies = r.items;
                 popMoviesLoaded = true;
                 if (view == View::Home) scheduleRenderHome();
-            });
+            }, cancelToken);
     }
     if (!popSeriesLoaded)
     {
         stremio::fetchCatalogAsync(
             "https://v3-cinemeta.strem.io", "series", "top",
-            [this, live = alive](stremio::LibraryResult r) {
-                if (!*live || !r.ok) return;
+            [this, live = alive, cancelToken](stremio::LibraryResult r) {
+                if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed)) || !r.ok) return;
                 popSeries = r.items;
                 popSeriesLoaded = true;
                 if (view == View::Home) scheduleRenderHome();
-            });
+            }, cancelToken);
     }
     loadFeatured("movie");
     loadFeatured("series");
@@ -3647,13 +3761,21 @@ void StremioTab::loadCatalog(const char* type,
     showStatus(tr("Loading..."), true);
     stremio::setLibraryCount(header);
 
+    if (!catalogCancelToken || catalogCancelToken->load(std::memory_order_relaxed))
+    {
+        catalogCancelToken = std::make_shared<std::atomic<bool>>(false);
+        stremio::s_catalogCancelToken = catalogCancelToken;
+        catalogLoadsPaused = false;
+    }
+    auto cancelToken = catalogCancelToken;
+
     View want = view;  // if R moves on before this lands, drop it
     std::string t = type;
     stremio::fetchCatalogAsync(
         "https://v3-cinemeta.strem.io", type, "top",
-        [this, live = alive, want, t, &cache, &loaded, header](
+        [this, live = alive, want, t, &cache, &loaded, header, cancelToken](
             stremio::LibraryResult r) {
-            if (!*live || view != want) return;
+            if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed)) || view != want) return;
             if (!r.ok)
             {
                 showStatus(tr("Error"), false);
@@ -3665,7 +3787,7 @@ void StremioTab::loadCatalog(const char* type,
             showItems(cache, header,
                       t == "series" ? tr("No popular shows")
                                     : tr("No popular movies"));
-        });
+        }, cancelToken);
 }
 
 // The heading over the current view's strip. Plain words, unlike the header
@@ -3697,15 +3819,17 @@ void StremioTab::loadFeatured(const char* type)
     if (asked) return;
     asked = true;
 
+    auto cancelToken = catalogCancelToken;
     View want = view;
     stremio::fetchCatalogAsync(
         "https://v3-cinemeta.strem.io", type, "year",
-        [this, live = alive, want, &cache](stremio::LibraryResult r) {
-            if (!*live || !r.ok || r.items.empty()) return;
+        [this, live = alive, want, &cache, cancelToken](stremio::LibraryResult r) {
+            if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed))) return;
+            if (!r.ok || r.items.empty()) return;
             cache = r.items;
             if (view == View::Home) scheduleRenderHome();
             else if (view == want) renderView();
-        });
+        }, cancelToken);
 }
 
 void StremioTab::loadAddonCatalogs(const char* type)
@@ -3717,9 +3841,10 @@ void StremioTab::loadAddonCatalogs(const char* type)
     if (asked) return;
     asked = true;
 
+    auto cancelToken = catalogCancelToken;
     std::string catType = type;
-    stremio::fetchAddonsAsync(authKey, [this, live = alive, catType, series](stremio::AddonsResult r) {
-        if (!*live || !r.ok) return;
+    stremio::fetchAddonsAsync(authKey, [this, live = alive, catType, series, cancelToken](stremio::AddonsResult r) {
+        if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed)) || !r.ok) return;
 
         auto& sections = series ? addonSeriesSections : addonMovieSections;
         sections.clear();
@@ -3747,8 +3872,9 @@ void StremioTab::loadAddonCatalogs(const char* type)
             const auto& sec = sections[i];
             stremio::fetchCatalogAsync(
                 sec.addonBase, sec.catalogType, sec.catalogId,
-                [this, live, want, series, i](stremio::LibraryResult res) {
-                    if (!*live || !res.ok || res.items.empty()) return;
+                [this, live, want, series, i, cancelToken](stremio::LibraryResult res) {
+                    if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed))) return;
+                    if (!res.ok || res.items.empty()) return;
                     auto& secs = series ? addonSeriesSections : addonMovieSections;
                     if (i < secs.size())
                     {
@@ -3757,9 +3883,9 @@ void StremioTab::loadAddonCatalogs(const char* type)
                         if (view == View::Home) scheduleRenderHome();
                         else if (view == want) renderView();
                     }
-                });
+                }, cancelToken);
         }
-    });
+    }, cancelToken);
 }
 
 // A heading and the strip under it, both into libList. Returns the strip: the

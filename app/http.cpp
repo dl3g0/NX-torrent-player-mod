@@ -22,11 +22,17 @@ bool isAborted()
     return g_abortAll.load(std::memory_order_relaxed);
 }
 
-static int abortProgressCb(void* /*clientp*/, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/,
+static int abortProgressCb(void* clientp, curl_off_t /*dltotal*/, curl_off_t /*dlnow*/,
                            curl_off_t /*ultotal*/, curl_off_t /*ulnow*/)
 {
     if (g_abortAll.load(std::memory_order_relaxed))
         return 1;
+    if (clientp)
+    {
+        auto* cancel = static_cast<const std::atomic<bool>*>(clientp);
+        if (cancel->load(std::memory_order_relaxed))
+            return 1;
+    }
     return 0;
 }
 
@@ -72,9 +78,10 @@ static std::string tlsAwareErr(CURLcode rc, const char* errbuf)
 
 // Shared POST-JSON helper. Returns the body, or sets err.
 bool postJson(const char* url, const std::string& body, std::string& resp,
-              std::string& err)
+              std::string& err,
+              const std::atomic<bool>* cancel)
 {
-    if (isAborted())
+    if (isAborted() || (cancel && cancel->load(std::memory_order_relaxed)))
     {
         err = "aborted";
         return false;
@@ -106,7 +113,7 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 15L);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, abortProgressCb);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, nullptr);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)cancel);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     verifyTls(curl);  // the Stremio password goes through here
 
@@ -116,7 +123,8 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
 
     if (rc != CURLE_OK)
     {
-        if (rc == CURLE_ABORTED_BY_CALLBACK || isAborted())
+        if (rc == CURLE_ABORTED_BY_CALLBACK || isAborted() ||
+            (cancel && cancel->load(std::memory_order_relaxed)))
             err = "aborted";
         else
             err = tlsAwareErr(rc, errbuf);
@@ -130,9 +138,10 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
 // to answer with WebP -- which stb_image (nanovg's decoder) cannot read, so the
 // poster silently never appeared.
 bool get(const std::string& url, std::string& resp, std::string& err,
-         const char* accept)
+         const char* accept,
+         const std::atomic<bool>* cancel)
 {
-    if (isAborted())
+    if (isAborted() || (cancel && cancel->load(std::memory_order_relaxed)))
     {
         err = "aborted";
         return false;
@@ -164,7 +173,7 @@ bool get(const std::string& url, std::string& resp, std::string& err,
     curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 15L);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, abortProgressCb);
-    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, nullptr);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, (void*)cancel);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     verifyTls(curl);
     CURLcode rc = curl_easy_perform(curl);
@@ -172,7 +181,8 @@ bool get(const std::string& url, std::string& resp, std::string& err,
     curl_easy_cleanup(curl);
     if (rc != CURLE_OK)
     {
-        if (rc == CURLE_ABORTED_BY_CALLBACK || isAborted())
+        if (rc == CURLE_ABORTED_BY_CALLBACK || isAborted() ||
+            (cancel && cancel->load(std::memory_order_relaxed)))
             err = "aborted";
         else
             err = tlsAwareErr(rc, errbuf);
