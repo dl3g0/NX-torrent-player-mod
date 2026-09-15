@@ -124,6 +124,14 @@ namespace internal
 {
     std::string getRawStr(std::string stringName)
     {
+        // LOCAL PATCH (NX Torrent Player) -- check application translation hook
+        if (Application::getTranslationHook())
+        {
+            std::string hooked = Application::getTranslationHook()(stringName);
+            if (!hooked.empty() && hooked != stringName)
+                return hooked;
+        }
+
         nlohmann::json::json_pointer pointer;
 
         try

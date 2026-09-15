@@ -2484,10 +2484,85 @@ void fetchSearchAsync(const std::string& query,
     });
 }
 
+std::vector<CatalogItemMeta> getAvailableCatalogs()
+{
+    std::vector<CatalogItemMeta> all;
+    // Cinemeta defaults
+    all.push_back({ "cinemeta_pop_movies", tr("Popular Movies"), "Cinemeta", "movie", config::isCatalogHidden("cinemeta_pop_movies") });
+    all.push_back({ "cinemeta_pop_series", tr("Popular Shows"), "Cinemeta", "series", config::isCatalogHidden("cinemeta_pop_series") });
+    all.push_back({ "cinemeta_feat_movies", tr("Featured Movies"), "Cinemeta", "movie", config::isCatalogHidden("cinemeta_feat_movies") });
+    all.push_back({ "cinemeta_feat_series", tr("Featured Shows"), "Cinemeta", "series", config::isCatalogHidden("cinemeta_feat_series") });
+
+    // Installed addon catalogs (from addonCache)
+    if (addonCache.ok)
+    {
+        for (const auto& a : addonCache.addons)
+        {
+            if (a.base.find("cinemeta") != std::string::npos) continue;
+            for (const auto& cat : a.catalogs)
+            {
+                std::string k = "addon_" + cat.type + "_" + a.base + "_" + cat.id;
+                std::string catTitle = cat.name + " (" + (cat.type == "series" ? tr("Shows") : tr("Movies")) + ")";
+                all.push_back({ k, catTitle, a.name, cat.type, config::isCatalogHidden(k) });
+            }
+        }
+    }
+
+    // Arrange according to user's saved catalogOrder
+    std::vector<CatalogItemMeta> result;
+    std::set<std::string> placed;
+    const auto& order = config::get().catalogOrder;
+    for (const auto& k : order)
+    {
+        for (const auto& item : all)
+        {
+            if (item.key == k && !placed.count(k))
+            {
+                result.push_back(item);
+                placed.insert(k);
+                break;
+            }
+        }
+    }
+    for (const auto& item : all)
+    {
+        if (!placed.count(item.key))
+        {
+            result.push_back(item);
+            placed.insert(item.key);
+        }
+    }
+    return result;
+}
+
+static StremioTab* s_activeTab = nullptr;
+static bool s_homeCatalogsDirty = false;
+
+void markHomeCatalogsDirty()
+{
+    s_homeCatalogsDirty = true;
+}
+
+void refreshHomeCatalogs()
+{
+    if (s_activeTab)
+        s_activeTab->refreshHome();
+}
+
+void refreshHomeIfDirty()
+{
+    if (s_homeCatalogsDirty)
+    {
+        s_homeCatalogsDirty = false;
+        refreshHomeCatalogs();
+    }
+}
+
 } // namespace stremio
 
 StremioTab::StremioTab()
 {
+    stremio::s_activeTab = this;
     this->setAxis(brls::Axis::COLUMN);
     this->setGrow(1.0f);
 
@@ -2778,6 +2853,8 @@ StremioTab::StremioTab()
 
 StremioTab::~StremioTab()
 {
+    if (stremio::s_activeTab == this)
+        stremio::s_activeTab = nullptr;
     stremio::setCatalogPauseHook(nullptr);
     stremio::setCatalogResumeHook(nullptr);
     if (catalogCancelToken)
@@ -3657,6 +3734,72 @@ void StremioTab::renderHome()
     columnsShown = false;
     brls::View* last = nullptr;
 
+    struct HomeSectionCandidate
+    {
+        std::string key;
+        std::string title;
+        std::vector<stremio::LibItem> items;
+        std::string catType;
+        std::string catId;
+        std::string addonBase;
+    };
+
+    std::vector<HomeSectionCandidate> candidates;
+    if (!popMovies.empty()) candidates.push_back({ "cinemeta_pop_movies", tr("Popular Movies"), popMovies, "movie", "top", "" });
+    if (!popSeries.empty()) candidates.push_back({ "cinemeta_pop_series", tr("Popular Shows"), popSeries, "series", "top", "" });
+    if (!featMovies.empty()) candidates.push_back({ "cinemeta_feat_movies", tr("Featured Movies"), featMovies, "movie", "year", "" });
+    if (!featSeries.empty()) candidates.push_back({ "cinemeta_feat_series", tr("Featured Shows"), featSeries, "series", "year", "" });
+
+    for (const auto& sec : addonMovieSections)
+    {
+        if (sec.loaded && !sec.items.empty())
+        {
+            std::string secTitle = sec.catalogName + " (" + tr("Movies") + ")";
+            candidates.push_back({ "addon_movie_" + sec.addonBase + "_" + sec.catalogId,
+                                   secTitle, sec.items, sec.catalogType, sec.catalogId, sec.addonBase });
+        }
+    }
+    for (const auto& sec : addonSeriesSections)
+    {
+        if (sec.loaded && !sec.items.empty())
+        {
+            std::string secTitle = sec.catalogName + " (" + tr("Shows") + ")";
+            candidates.push_back({ "addon_series_" + sec.addonBase + "_" + sec.catalogId,
+                                   secTitle, sec.items, sec.catalogType, sec.catalogId, sec.addonBase });
+        }
+    }
+
+    std::vector<HomeSectionCandidate> orderedCandidates;
+    std::set<std::string> placed;
+
+    const auto& order = config::get().catalogOrder;
+    for (const auto& orderedKey : order)
+    {
+        if (config::isCatalogHidden(orderedKey))
+        {
+            placed.insert(orderedKey);
+            continue;
+        }
+        for (const auto& cand : candidates)
+        {
+            if (cand.key == orderedKey && !placed.count(cand.key))
+            {
+                orderedCandidates.push_back(cand);
+                placed.insert(cand.key);
+                break;
+            }
+        }
+    }
+    for (const auto& cand : candidates)
+    {
+        if (!placed.count(cand.key))
+        {
+            if (!config::isCatalogHidden(cand.key))
+                orderedCandidates.push_back(cand);
+            placed.insert(cand.key);
+        }
+    }
+
     if (posterStyle())
     {
         auto tryAddStrip = [&](const std::string& key, const std::string& title,
@@ -3674,30 +3817,8 @@ void StremioTab::renderHome()
             last = strip;
         };
 
-        tryAddStrip("cinemeta_pop_movies", tr("Popular Movies"), popMovies, "movie", "top");
-        tryAddStrip("cinemeta_pop_series", tr("Popular Shows"), popSeries, "series", "top");
-        tryAddStrip("cinemeta_feat_movies", tr("Featured Movies"), featMovies, "movie", "year");
-        tryAddStrip("cinemeta_feat_series", tr("Featured Shows"), featSeries, "series", "year");
-
-        for (const auto& sec : addonMovieSections)
-        {
-            if (sec.loaded && !sec.items.empty())
-            {
-                std::string secTitle = sec.catalogName + " (" + tr("Movies") + ")";
-                tryAddStrip("addon_movie_" + sec.addonBase + "_" + sec.catalogId,
-                            secTitle, sec.items, sec.catalogType, sec.catalogId, sec.addonBase);
-            }
-        }
-
-        for (const auto& sec : addonSeriesSections)
-        {
-            if (sec.loaded && !sec.items.empty())
-            {
-                std::string secTitle = sec.catalogName + " (" + tr("Shows") + ")";
-                tryAddStrip("addon_series_" + sec.addonBase + "_" + sec.catalogId,
-                            secTitle, sec.items, sec.catalogType, sec.catalogId, sec.addonBase);
-            }
-        }
+        for (const auto& c : orderedCandidates)
+            tryAddStrip(c.key, c.title, c.items, c.catType, c.catId, c.addonBase);
 
         if (last) finishList(last);
         return;
@@ -3725,27 +3846,18 @@ void StremioTab::renderHome()
         last = box;
     };
 
-    makeSection("cinemeta_pop_movies", tr("Popular Movies"), popMovies, "movie", "top");
-    makeSection("cinemeta_pop_series", tr("Popular Shows"), popSeries, "series", "top");
-    makeSection("cinemeta_feat_movies", tr("Featured Movies"), featMovies, "movie", "year");
-    makeSection("cinemeta_feat_series", tr("Featured Shows"), featSeries, "series", "year");
-
-    for (const auto& sec : addonMovieSections)
-    {
-        if (sec.loaded && !sec.items.empty())
-            makeSection("addon_movie_" + sec.addonBase + "_" + sec.catalogId,
-                        sec.catalogName + " (" + tr("Movies") + ")", sec.items,
-                        sec.catalogType, sec.catalogId, sec.addonBase);
-    }
-    for (const auto& sec : addonSeriesSections)
-    {
-        if (sec.loaded && !sec.items.empty())
-            makeSection("addon_series_" + sec.addonBase + "_" + sec.catalogId,
-                        sec.catalogName + " (" + tr("Shows") + ")", sec.items,
-                        sec.catalogType, sec.catalogId, sec.addonBase);
-    }
+    for (const auto& c : orderedCandidates)
+        makeSection(c.key, c.title, c.items, c.catType, c.catId, c.addonBase);
 
     if (last) finishList(last);
+}
+
+void StremioTab::refreshHome()
+{
+    homeRenderedStrips.clear();
+    if (homeBox) homeBox->clearViews();
+    if (view == View::Home)
+        renderHome();
 }
 
 // Fetches Cinemeta's "top" catalog for `type` into `cache`, then renders it if
@@ -4310,7 +4422,7 @@ void StremioTab::openSection(std::string title,
             if (g.empty()) return;  // no genres: the row stays at All
             st->genresList = g;
             std::vector<std::string> labels{ tr("All") };
-            for (const auto& x : g) labels.push_back(x);
+            for (const auto& x : g) labels.push_back(tr(x.c_str()));
             genreCell->setData(labels);
             genreCell->setSelection(0, true);  // silent: nothing has changed
         });

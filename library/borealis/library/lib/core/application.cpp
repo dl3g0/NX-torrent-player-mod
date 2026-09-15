@@ -1056,6 +1056,18 @@ std::string Application::getLocale()
     return Application::getPlatform()->getLocale();
 }
 
+// LOCAL PATCH (NX Torrent Player)
+static Application::TranslationHook s_translationHook = nullptr;
+void Application::setTranslationHook(Application::TranslationHook hook)
+{
+    s_translationHook = std::move(hook);
+}
+
+Application::TranslationHook Application::getTranslationHook()
+{
+    return s_translationHook;
+}
+
 void Application::addToFreeQueue(View* view)
 {
     if (std::binary_search(deletionPool.cbegin(), deletionPool.cend(), view))

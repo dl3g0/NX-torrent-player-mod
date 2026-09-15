@@ -7,6 +7,7 @@
 class SettingsActivity : public brls::Activity
 {
   public:
+    ~SettingsActivity() override;
     brls::View* createContentView() override;
 };
 

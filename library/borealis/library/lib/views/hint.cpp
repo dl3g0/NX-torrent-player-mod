@@ -68,7 +68,15 @@ Hint::Hint(std::shared_ptr<Action> action, bool allowAButtonTouch)
     this->setFocusable(false);
 
     icon->setText(getKeyIcon(static_cast<ControllerButton>(action->getButton())));
-    hint->setText(action->getHintText());
+    std::string hintText = action->getHintText();
+    // LOCAL PATCH (NX Torrent Player) -- translate hint text
+    if (Application::getTranslationHook())
+    {
+        std::string hooked = Application::getTranslationHook()(hintText);
+        if (!hooked.empty())
+            hintText = hooked;
+    }
+    hint->setText(hintText);
 
     if ((action->getButton() != BUTTON_A || allowAButtonTouch) && action->isAvailable() && !Application::isInputBlocks())
     {

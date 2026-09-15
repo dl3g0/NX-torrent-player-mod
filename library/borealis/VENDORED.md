@@ -106,6 +106,12 @@ invisible however they are sized, since they then match what they travel over.
 
 Both patches are marked with a `LOCAL PATCH` comment in the source.
 
+### 7. `library/include/borealis/core/application.hpp`, `application.cpp`, `i18n.cpp`, `views/hint.cpp` — translation hook for hints
+
+`Application::setTranslationHook` allows the host application to hook into Borealis' internal string lookup (`getRawStr`) and footer action hint text rendering (`Hint::Hint`), dynamically translating `"hints/ok"`, `"hints/back"`, `"hints/exit"`, `"hints/cancel"`, etc. directly via the app's own i18n layer (`i18n::tr`) regardless of console OS language setting.
+
+The patch is marked with a `LOCAL PATCH` comment in the source.
+
 ## Updating
 
 Re-cloning upstream **drops the patch** — re-apply it, and check this file's

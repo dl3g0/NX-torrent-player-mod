@@ -59,6 +59,7 @@ brls::View* generalPane();
 brls::View* playbackPane();
 brls::View* streamingPane();
 brls::View* stremioPane();
+brls::View* catalogsPane();
 brls::View* aboutPane();
 
 // ---------------------------------------------------------------------------
@@ -363,7 +364,7 @@ brls::View* streamingPane()
     list->addView(governor);
     list->addView(caption(
         tr("Once the buffer is comfortably ahead, cap the download speed instead "
-        "of bursting \xE2\x80\x94 the bursts can stutter the system. Off by default.")));
+        "of bursting — the bursts can stutter the system. Off by default.")));
 
     return pane;
 }
@@ -439,6 +440,230 @@ brls::View* stremioPane()
     return pane;
 }
 
+brls::View* catalogsPane()
+{
+    brls::Box* list = nullptr;
+    auto* pane = newPane(&list);
+
+    auto rebuildRef = std::make_shared<std::function<void(int)>>();
+    *rebuildRef = [list, rebuildRef](int focusIndex) {
+        list->clearViews();
+
+        list->addView(caption(
+            tr("Reorder and hide catalogs shown on the Home screen.\n"
+               "Gamepad: (A) Show/Hide, (X) Move Up, (Y) Move Down.\n"
+               "Touch: Tap [▲] / [▼] to reorder, tap row to show/hide.")));
+
+        auto catalogs = stremio::getAvailableCatalogs();
+        if (catalogs.empty())
+        {
+            auto* none = new brls::Label();
+            none->setText(tr("No catalogs available."));
+            none->setFontSize(16.0f);
+            none->setTextColor(theme::textMuted());
+            none->setMargins(16.0f, 0.0f, 0.0f, 0.0f);
+            list->addView(none);
+            return;
+        }
+
+        auto moveItem = [rebuildRef](size_t from, size_t to) {
+            auto& cfg = config::get();
+            auto cats = stremio::getAvailableCatalogs();
+            if (from < cats.size() && to < cats.size() && from != to)
+            {
+                std::vector<std::string> keys;
+                for (const auto& c : cats) keys.push_back(c.key);
+                std::swap(keys[from], keys[to]);
+                cfg.catalogOrder = keys;
+                config::save();
+                stremio::markHomeCatalogsDirty();
+
+                // Defer list rebuild to the next frame to avoid use-after-free while in action listener
+                brls::sync([rebuildRef, to]() {
+                    (*rebuildRef)(static_cast<int>(to));
+                });
+            }
+        };
+
+        std::vector<brls::Box*> rowBoxes;
+        for (size_t i = 0; i < catalogs.size(); i++)
+        {
+            const auto& cat = catalogs[i];
+            std::string key = cat.key;
+            bool isHidden = cat.isHidden;
+
+            auto* row = new brls::Box();
+            row->setAxis(brls::Axis::ROW);
+            row->setJustifyContent(brls::JustifyContent::SPACE_BETWEEN);
+            row->setAlignItems(brls::AlignItems::CENTER);
+            row->setPadding(10.0f, 16.0f, 10.0f, 16.0f);
+            row->setCornerRadius(8.0f);
+            row->setBackgroundColor(theme::surface());
+            row->setMargins(0.0f, 0.0f, 8.0f, 0.0f);
+            row->setFocusable(true);
+
+            auto* leftBox = new brls::Box();
+            leftBox->setAxis(brls::Axis::COLUMN);
+            leftBox->setGrow(1.0f);
+
+            auto* nameLabel = new brls::Label();
+            nameLabel->setText(cat.name);
+            nameLabel->setFontSize(17.0f);
+            nameLabel->setTextColor(isHidden ? theme::textDim() : theme::text());
+            leftBox->addView(nameLabel);
+
+            auto* sourceLabel = new brls::Label();
+            sourceLabel->setText(cat.source);
+            sourceLabel->setFontSize(13.0f);
+            sourceLabel->setTextColor(theme::textMuted());
+            sourceLabel->setMarginTop(2.0f);
+            leftBox->addView(sourceLabel);
+
+            row->addView(leftBox);
+
+            // Right side controls: Touch UP, Touch DOWN, Status badge
+            auto* rightControls = new brls::Box();
+            rightControls->setAxis(brls::Axis::ROW);
+            rightControls->setAlignItems(brls::AlignItems::CENTER);
+
+            // Touch UP button
+            auto* upBtn = new brls::Box();
+            upBtn->setPadding(6.0f, 12.0f, 6.0f, 12.0f);
+            upBtn->setCornerRadius(6.0f);
+            upBtn->setBackgroundColor(theme::scrim(i > 0 ? 30 : 10));
+            upBtn->setMarginRight(8.0f);
+            upBtn->setFocusable(false);
+
+            auto* upLabel = new brls::Label();
+            upLabel->setText("▲");
+            upLabel->setFontSize(16.0f);
+            upLabel->setTextColor(i > 0 ? theme::text() : theme::textDim());
+            upBtn->addView(upLabel);
+
+            if (i > 0)
+            {
+                upBtn->addGestureRecognizer(new brls::TapGestureRecognizer(upBtn, [i, moveItem]() {
+                    moveItem(i, i - 1);
+                }));
+            }
+            rightControls->addView(upBtn);
+
+            // Touch DOWN button
+            auto* downBtn = new brls::Box();
+            downBtn->setPadding(6.0f, 12.0f, 6.0f, 12.0f);
+            downBtn->setCornerRadius(6.0f);
+            downBtn->setBackgroundColor(theme::scrim(i + 1 < catalogs.size() ? 30 : 10));
+            downBtn->setMarginRight(12.0f);
+            downBtn->setFocusable(false);
+
+            auto* downLabel = new brls::Label();
+            downLabel->setText("▼");
+            downLabel->setFontSize(16.0f);
+            downLabel->setTextColor(i + 1 < catalogs.size() ? theme::text() : theme::textDim());
+            downBtn->addView(downLabel);
+
+            if (i + 1 < catalogs.size())
+            {
+                downBtn->addGestureRecognizer(new brls::TapGestureRecognizer(downBtn, [i, moveItem]() {
+                    moveItem(i, i + 1);
+                }));
+            }
+            rightControls->addView(downBtn);
+
+            // Status badge (can be tapped directly as well)
+            auto* statusBox = new brls::Box();
+            statusBox->setPadding(6.0f, 14.0f, 6.0f, 14.0f);
+            statusBox->setCornerRadius(6.0f);
+            statusBox->setBackgroundColor(theme::scrim(isHidden ? 15 : 35));
+            statusBox->setFocusable(false);
+
+            auto* statusLabel = new brls::Label();
+            statusLabel->setText(isHidden ? tr("Hidden") : tr("Visible"));
+            statusLabel->setFontSize(15.0f);
+            statusLabel->setTextColor(isHidden ? theme::textDim() : theme::accent());
+            statusBox->addView(statusLabel);
+            rightControls->addView(statusBox);
+
+            row->addView(rightControls);
+
+            auto toggleVis = [key, statusLabel, statusBox, nameLabel]() {
+                bool newHidden = !config::isCatalogHidden(key);
+                config::setCatalogHidden(key, newHidden);
+                config::save();
+                stremio::markHomeCatalogsDirty();
+
+                statusLabel->setText(newHidden ? tr("Hidden") : tr("Visible"));
+                statusLabel->setTextColor(newHidden ? theme::textDim() : theme::accent());
+                statusBox->setBackgroundColor(theme::scrim(newHidden ? 15 : 35));
+                nameLabel->setTextColor(newHidden ? theme::textDim() : theme::text());
+            };
+
+            // Touch on row toggles visibility
+            row->addGestureRecognizer(new brls::TapGestureRecognizer(row, [toggleVis]() {
+                toggleVis();
+            }));
+
+            // Gamepad A: Toggle visibility
+            row->registerAction(
+                tr("Toggle Visibility"), brls::BUTTON_A,
+                [toggleVis](brls::View*) {
+                    toggleVis();
+                    return true;
+                },
+                false, false, brls::SOUND_CLICK);
+
+            // Gamepad X: Move up
+            if (i > 0)
+            {
+                row->registerAction(
+                    tr("Move Up"), brls::BUTTON_X,
+                    [i, moveItem](brls::View*) {
+                        moveItem(i, i - 1);
+                        return true;
+                    },
+                    false, false, brls::SOUND_CLICK);
+            }
+
+            // Gamepad Y: Move down
+            if (i + 1 < catalogs.size())
+            {
+                row->registerAction(
+                    tr("Move Down"), brls::BUTTON_Y,
+                    [i, moveItem](brls::View*) {
+                        moveItem(i, i + 1);
+                        return true;
+                    },
+                    false, false, brls::SOUND_CLICK);
+            }
+
+            rowBoxes.push_back(row);
+            list->addView(row);
+        }
+
+        auto* resetBtn = new brls::Button();
+        resetBtn->setText(tr("Reset order and visibility"));
+        resetBtn->setMargins(14.0f, 60.0f, 24.0f, 60.0f);
+        resetBtn->registerClickAction([rebuildRef](brls::View*) {
+            auto& cfg = config::get();
+            cfg.catalogOrder.clear();
+            cfg.hiddenCatalogs.clear();
+            config::save();
+            stremio::markHomeCatalogsDirty();
+            brls::sync([rebuildRef]() {
+                (*rebuildRef)(0);
+            });
+            return true;
+        });
+        list->addView(resetBtn);
+
+        if (focusIndex >= 0 && focusIndex < static_cast<int>(rowBoxes.size()))
+            brls::Application::giveFocus(rowBoxes[focusIndex]);
+    };
+
+    (*rebuildRef)(-1);
+    return pane;
+}
+
 brls::View* aboutPane()
 {
     brls::Box* list = nullptr;
@@ -449,7 +674,7 @@ brls::View* aboutPane()
     version->setText(
         update::hasPending()
             ? tr("Version ") + std::string(APP_VERSION) +
-                  tr(" \xE2\x80\x94 an update is installed, restart to use it")
+                  tr(" — an update is installed, restart to use it")
             : tr("Version ") + std::string(APP_VERSION));
     version->setFontSize(20.0f);
     version->setTextColor(theme::text());
@@ -458,10 +683,10 @@ brls::View* aboutPane()
 
     auto* modCredits = new brls::Label();
     modCredits->setText(
-        "NX Torrent Player (MOD)\n"
-        "Modificaciones y optimizaciones por dl3g0.\n"
-        "Créditos al proyecto original por shodowlo.\n"
-        "GitHub: https://github.com/dl3g0/NX-torrent-player-mod");
+        tr("NX Torrent Player (MOD)\n"
+           "Modifications and optimizations by dl3g0.\n"
+           "Credits to the original project by shodowlo.\n"
+           "GitHub: https://github.com/dl3g0/NX-torrent-player-mod"));
     modCredits->setFontSize(15.0f);
     modCredits->setTextColor(theme::textMuted());
     modCredits->setLineHeight(1.35f);
@@ -568,6 +793,11 @@ void applyUiScale()
     if (uiScaleHook) uiScaleHook();
 }
 
+SettingsActivity::~SettingsActivity()
+{
+    stremio::refreshHomeIfDirty();
+}
+
 brls::View* SettingsActivity::createContentView()
 {
     // A sidebar with a pane per category, rather than the one long scroll this
@@ -586,6 +816,7 @@ brls::View* SettingsActivity::createContentView()
     tabs->addTab(tr("Playback"), [] { return playbackPane(); });
     tabs->addTab(tr("Streaming"), [] { return streamingPane(); });
     tabs->addTab("Stremio", [] { return stremioPane(); });
+    tabs->addTab(tr("Catalogs"), [] { return catalogsPane(); });
     tabs->addTab(tr("About"), [] { return aboutPane(); });
 
     auto* frame = new brls::AppletFrame();
@@ -744,168 +975,208 @@ brls::View* AccountActivity::createContentView()
     scroll->setContentView(addonList);
     root->addView(scroll);
 
-    auto* pending = new brls::Label();
-    pending->setText(tr("Reading the account's addons..."));
-    pending->setFontSize(16.0f);
-    pending->setTextColor(theme::textMuted());
-    pending->setMarginTop(8.0f);
-    addonList->addView(pending);
+    auto loadAddons = std::make_shared<std::function<void(std::function<void(bool ok)>)>>();
+    *loadAddons = [key, addonList, addonCount, loadAddons](std::function<void(bool ok)> onDone) {
+        addonList->clearViews();
+        auto* pending = new brls::Label();
+        pending->setText(tr("Reading the account's addons..."));
+        pending->setFontSize(16.0f);
+        pending->setTextColor(theme::textMuted());
+        pending->setMarginTop(8.0f);
+        addonList->addView(pending);
 
-    // Free after the first call of the session, so this is normally instant.
-    auto live = addonList->alive;
-    stremio::fetchAddonsAsync(key, [key, addonList, live, addonCount,
-                                    pending](stremio::AddonsResult r) {
-        if (!*live) return;
-        pending->setVisibility(brls::Visibility::GONE);
-        if (!r.ok)
-        {
-            auto* err = new brls::Label();
-            err->setText(tr("Could not read them: ") + r.error);
-            err->setFontSize(16.0f);
-            err->setTextColor(theme::textWarn());
-            addonList->addView(err);
-            return;
-        }
-        addonCount->setText(std::to_string(r.addons.size()));
+        auto live = addonList->alive;
+        stremio::fetchAddonsAsync(key, [key, addonList, live, addonCount, pending, onDone](stremio::AddonsResult r) {
+            if (!*live) {
+                if (onDone) onDone(false);
+                return;
+            }
+            pending->setVisibility(brls::Visibility::GONE);
+            if (!r.ok)
+            {
+                auto* err = new brls::Label();
+                err->setText(tr("Could not read them: ") + r.error);
+                err->setFontSize(16.0f);
+                err->setTextColor(theme::textWarn());
+                addonList->addView(err);
+                if (onDone) onDone(false);
+                return;
+            }
+            addonCount->setText(std::to_string(r.addons.size()));
 
-        for (const auto& a : r.addons)
-        {
-            // Focusable, with nothing to activate: this is a list to read,
-            // and a ScrollingFrame scrolls by moving focus through its children
-            // -- with none of them focusable there was nothing for the stick to
-            // move to and the list could only be dragged by touch.
-            auto* row = new brls::Box();
-            row->setAxis(brls::Axis::ROW);
-            row->setAlignItems(brls::AlignItems::CENTER);
-            row->setPadding(14.0f, 20.0f, 14.0f, 20.0f);
-            row->setMarginBottom(8.0f);
-            row->setCornerRadius(8.0f);
-            row->setBackgroundColor(theme::scrim(14));
-            row->setFocusable(true);
-            row->setHighlightCornerRadius(8.0f);
+            for (const auto& a : r.addons)
+            {
+                // Focusable, with nothing to activate: this is a list to read,
+                // and a ScrollingFrame scrolls by moving focus through its children
+                // -- with none of them focusable there was nothing for the stick to
+                // move to and the list could only be dragged by touch.
+                auto* row = new brls::Box();
+                row->setAxis(brls::Axis::ROW);
+                row->setAlignItems(brls::AlignItems::CENTER);
+                row->setPadding(14.0f, 20.0f, 14.0f, 20.0f);
+                row->setMarginBottom(8.0f);
+                row->setCornerRadius(8.0f);
+                row->setBackgroundColor(theme::scrim(14));
+                row->setFocusable(true);
+                row->setHighlightCornerRadius(8.0f);
 
-            auto* name = new brls::Label();
-            name->setText(a.name);
-            name->setFontSize(19.0f);
-            name->setTextColor(theme::text());
-            name->setSingleLine(true);
-            name->setGrow(1.0f);
-            name->setMarginRight(20.0f);
-            row->addView(name);
+                auto* name = new brls::Label();
+                name->setText(a.name);
+                name->setFontSize(19.0f);
+                name->setTextColor(theme::text());
+                name->setSingleLine(true);
+                name->setGrow(1.0f);
+                name->setMarginRight(20.0f);
+                row->addView(name);
 
-            // What it actually serves, which is the only thing about an addon
-            // that changes what the app can do with it. An addon on the
-            // blocklist keeps whatever else it provides -- only its streams are
-            // ignored -- so that is said of the streams, not of the addon.
-            bool streamsOff = a.hasStream && stremio::isStreamAddonHidden(a.name);
-            std::string what;
-            auto add = [&](const char* s) {
-                if (!what.empty()) what += "  \xC2\xB7  ";
-                what += s;
-            };
-            if (a.hasMeta) add(tr("Metadata"));
-            if (a.hasStream) add(streamsOff ? tr("Streams (disabled)") : tr("Streams"));
-            if (a.hasSubtitles) add(tr("Subtitles"));
-            if (what.empty()) what = tr("Nothing this app uses");
+                // What it actually serves, which is the only thing about an addon
+                // that changes what the app can do with it. An addon on the
+                // blocklist keeps whatever else it provides -- only its streams are
+                // ignored -- so that is said of the streams, not of the addon.
+                bool streamsOff = a.hasStream && stremio::isStreamAddonHidden(a.name);
+                std::string what;
+                auto add = [&](const char* s) {
+                    if (!what.empty()) what += "  \xC2\xB7  ";
+                    what += s;
+                };
+                if (a.hasMeta) add(tr("Metadata"));
+                if (a.hasStream) add(streamsOff ? tr("Streams (disabled)") : tr("Streams"));
+                if (a.hasSubtitles) add(tr("Subtitles"));
+                if (what.empty()) what = tr("Nothing this app uses");
 
-            bool anyUsable =
-                a.hasMeta || a.hasSubtitles || (a.hasStream && !streamsOff);
-            if (!anyUsable) name->setTextColor(theme::textDim());
+                bool anyUsable =
+                    a.hasMeta || a.hasSubtitles || (a.hasStream && !streamsOff);
+                if (!anyUsable) name->setTextColor(theme::textDim());
 
-            auto* kind = new brls::Label();
-            kind->setText(what);
-            kind->setFontSize(16.0f);
-            kind->setTextColor(anyUsable ? theme::textDim()
-                                         : theme::textFaint());
-            kind->setSingleLine(true);
-            kind->setShrink(0.0f);
-            row->addView(kind);
+                auto* kind = new brls::Label();
+                kind->setText(what);
+                kind->setFontSize(16.0f);
+                kind->setTextColor(anyUsable ? theme::textDim()
+                                             : theme::textFaint());
+                kind->setSingleLine(true);
+                kind->setShrink(0.0f);
+                row->addView(kind);
 
-            auto promptUninstall = [key, a, row, addonList, addonCount]() {
-                auto* diag = new brls::Dialog(
-                    std::string(tr("Uninstall addon from your account?")) + "\n\n" + a.name);
-                diag->addButton(tr("Cancel"), []() {});
-                diag->addButton(tr("Uninstall"), [key, a, row, addonList, addonCount]() {
-                    stremio::removeAddonAsync(key, a.transportUrl,
-                        [row, addonList, addonCount, a](bool ok, std::string err) {
-                            if (ok)
-                            {
-                                auto& kids = addonList->getChildren();
-                                int idx = -1;
-                                for (size_t i = 0; i < kids.size(); i++)
-                                    if (kids[i] == row) { idx = (int)i; break; }
-                                brls::View* neighbour = nullptr;
-                                if (idx >= 0)
+                auto promptUninstall = [key, a, row, addonList, addonCount]() {
+                    auto* diag = new brls::Dialog(
+                        std::string(tr("Uninstall addon from your account?")) + "\n\n" + a.name);
+                    diag->addButton(tr("Cancel"), []() {});
+                    diag->addButton(tr("Uninstall"), [key, a, row, addonList, addonCount]() {
+                        stremio::removeAddonAsync(key, a.transportUrl,
+                            [row, addonList, addonCount, a](bool ok, std::string err) {
+                                if (ok)
                                 {
-                                    if (idx + 1 < (int)kids.size()) neighbour = kids[idx + 1];
-                                    else if (idx - 1 >= 0) neighbour = kids[idx - 1];
+                                    auto& kids = addonList->getChildren();
+                                    int idx = -1;
+                                    for (size_t i = 0; i < kids.size(); i++)
+                                        if (kids[i] == row) { idx = (int)i; break; }
+                                    brls::View* neighbour = nullptr;
+                                    if (idx >= 0)
+                                    {
+                                        if (idx + 1 < (int)kids.size()) neighbour = kids[idx + 1];
+                                        else if (idx - 1 >= 0) neighbour = kids[idx - 1];
+                                    }
+                                    if (neighbour) brls::Application::giveFocus(neighbour);
+
+                                    addonList->removeView(row);
+                                    int curCount = std::atoi(addonCount->getFullText().c_str());
+                                    if (curCount > 0)
+                                        addonCount->setText(std::to_string(curCount - 1));
+
+                                    stremio::markHomeCatalogsDirty();
+
+                                    brls::Dialog* d = new brls::Dialog(
+                                        std::string(tr("Addon uninstalled: ")) + a.name);
+                                    d->addButton(tr("OK"), []() {});
+                                    d->open();
                                 }
-                                if (neighbour) brls::Application::giveFocus(neighbour);
+                                else
+                                {
+                                    brls::Dialog* d = new brls::Dialog(
+                                        std::string(tr("Failed to uninstall addon: ")) + err);
+                                    d->addButton(tr("OK"), []() {});
+                                    d->open();
+                                }
+                            });
+                    });
+                    diag->open();
+                };
 
-                                addonList->removeView(row);
-                                int curCount = std::atoi(addonCount->getFullText().c_str());
-                                if (curCount > 0)
-                                    addonCount->setText(std::to_string(curCount - 1));
-
-                                brls::Dialog* d = new brls::Dialog(
-                                    std::string(tr("Addon uninstalled: ")) + a.name);
-                                d->addButton(tr("OK"), []() {});
-                                d->open();
-                            }
-                            else
-                            {
-                                brls::Dialog* d = new brls::Dialog(
-                                    std::string(tr("Failed to uninstall addon: ")) + err);
-                                d->addButton(tr("OK"), []() {});
-                                d->open();
-                            }
-                        });
-                });
-                diag->open();
-            };
-
-            row->registerClickAction([promptUninstall](brls::View*) {
-                promptUninstall();
-                return true;
-            });
-
-            row->registerAction(
-                tr("Uninstall"), brls::BUTTON_Y,
-                [promptUninstall](brls::View*) {
+                row->registerClickAction([promptUninstall](brls::View*) {
                     promptUninstall();
                     return true;
-                },
-                false, false, brls::SOUND_NONE);
+                });
 
-            addonList->addView(row);
-        }
+                row->registerAction(
+                    tr("Uninstall"), brls::BUTTON_Y,
+                    [promptUninstall](brls::View*) {
+                        promptUninstall();
+                        return true;
+                    },
+                    false, false, brls::SOUND_NONE);
 
-        if (r.addons.empty())
-        {
-            auto* none = new brls::Label();
-            none->setText(tr("None. Install them from Stremio on another device."));
-            none->setFontSize(16.0f);
-            none->setTextColor(theme::textMuted());
-            addonList->addView(none);
-        }
-    });
+                addonList->addView(row);
+            }
 
-    // ---- sign out ---------------------------------------------------------
+            if (r.addons.empty())
+            {
+                auto* none = new brls::Label();
+                none->setText(tr("None. Install them from Stremio on another device."));
+                none->setFontSize(16.0f);
+                none->setTextColor(theme::textMuted());
+                addonList->addView(none);
+            }
+
+            if (onDone) onDone(true);
+        });
+    };
+
+    (*loadAddons)(nullptr);
+
+    // ---- action buttons ---------------------------------------------------
+    auto* btnRow = new brls::Box();
+    btnRow->setAxis(brls::Axis::ROW);
+    btnRow->setMargins(4.0f, 60.0f, 24.0f, 60.0f);
+
+    auto* syncBtn = new brls::Button();
+    syncBtn->setText(tr("Sync addons"));
+    syncBtn->setGrow(1.0f);
+    syncBtn->setMarginRight(20.0f);
+
     auto* logout = new brls::Button();
     logout->setText(tr("Sign out of Stremio"));
-    logout->setMargins(4.0f, 60.0f, 24.0f, 60.0f);
+    logout->setGrow(1.0f);
+
+    syncBtn->registerClickAction([syncBtn, loadAddons](brls::View*) {
+        syncBtn->setState(brls::ButtonState::DISABLED);
+        stremio::clearAddonCache();
+        stremio::markHomeCatalogsDirty();
+        (*loadAddons)([syncBtn](bool ok) {
+            syncBtn->setState(brls::ButtonState::ENABLED);
+            if (ok)
+                note(tr("Addons synced"));
+            else
+                note(tr("Failed to sync addons"));
+        });
+        return true;
+    });
+
     logout->registerClickAction([logout](brls::View*) {
         stremio::clearAuthKey();
         // The addon collection -- and every meta answer cached behind it --
         // belongs to that account.
         stremio::clearAddonCache();
+        stremio::markHomeCatalogsDirty();
         // The tab holds the key in memory and is only rebuilt when it is
         // re-entered, so say what actually has to happen.
         note(tr("Signed out. Restart the app to get back to the sign-in screen."));
         logout->setState(brls::ButtonState::DISABLED);
         return true;
     });
-    root->addView(logout);
+
+    btnRow->addView(syncBtn);
+    btnRow->addView(logout);
+    root->addView(btnRow);
 
     auto* frame = new brls::AppletFrame();
     frame->pushContentView(root);

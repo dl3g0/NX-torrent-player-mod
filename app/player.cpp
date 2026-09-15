@@ -3517,7 +3517,7 @@ void MpvView::updateSpeedIndicator()
         }
         else if (isHttpStream && obsCacheSecs > 1.0)
         {
-            speedLabel->setText(fmt::format("📥 Búfer: {:.0f}s", obsCacheSecs));
+            speedLabel->setText(fmt::format(tr("📥 Buffer: {:.0f}s"), obsCacheSecs));
         }
         else
         {

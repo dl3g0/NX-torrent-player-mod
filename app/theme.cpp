@@ -138,12 +138,9 @@ const std::vector<std::string>& schemeIds()
 
 const std::vector<std::string>& schemeLabels()
 {
-    static std::vector<std::string> v = [] {
-        std::vector<std::string> o;
-        // See langLabels(): kSchemes is a pre-main table, this is not.
-        for (const auto& s : kSchemes) o.push_back(tr(s.label));
-        return o;
-    }();
+    static std::vector<std::string> v;
+    v.clear();
+    for (const auto& s : kSchemes) v.push_back(tr(s.label));
     return v;
 }
 

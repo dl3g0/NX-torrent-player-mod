@@ -992,7 +992,7 @@ void LocalMpvView::nudgeSpeed(int dir)
         std::snprintf(buf, sizeof(buf), "%.2f", playSpeed);
         mpv_set_property_string(mpv, "speed", buf);
     }
-    flashPill(fmt::format("Speed {:.2f}x", playSpeed));
+    flashPill(fmt::format(tr("Speed {:.2f}x"), playSpeed));
 }
 
 void LocalMpvView::flashPill(const std::string& text)

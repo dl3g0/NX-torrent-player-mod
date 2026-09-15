@@ -65,6 +65,32 @@ std::string readStr(const std::string& body, const char* key,
     return body.substr(q1 + 1, q2 - q1 - 1);
 }
 
+std::vector<std::string> readStringList(const std::string& body, const char* key)
+{
+    std::vector<std::string> list;
+    std::string pat = std::string("\"") + key + "\"";
+    size_t k = body.find(pat);
+    if (k == std::string::npos) return list;
+    size_t colon = body.find(':', k + pat.size());
+    if (colon == std::string::npos) return list;
+    size_t openBracket = body.find('[', colon);
+    if (openBracket == std::string::npos) return list;
+    size_t closeBracket = body.find(']', openBracket);
+    if (closeBracket == std::string::npos) return list;
+
+    size_t pos = openBracket + 1;
+    while (pos < closeBracket)
+    {
+        size_t q1 = body.find('"', pos);
+        if (q1 == std::string::npos || q1 >= closeBracket) break;
+        size_t q2 = body.find('"', q1 + 1);
+        if (q2 == std::string::npos || q2 >= closeBracket) break;
+        list.push_back(body.substr(q1 + 1, q2 - q1 - 1));
+        pos = q2 + 1;
+    }
+    return list;
+}
+
 // The languages offered, and what each maps to for mpv. Both 639-2 spellings
 // are listed because a track tag can carry either: "fre" (bibliographic) or
 // "fra" (terminological) for French, and mpv matches the tag as written.
@@ -363,11 +389,30 @@ void load()
         knownWidth(readInt(body, "handheldUiWidth", cfg.handheldUiWidth),
                    cfg.handheldUiWidth);
 
+    cfg.catalogOrder = readStringList(body, "catalogOrder");
+    cfg.hiddenCatalogs = readStringList(body, "hiddenCatalogs");
+
     brls::Logger::info(
         "[config] version={} startupTab={} logging={} hide4k={} checkUpdates={}",
         cfg.configVersion,
         cfg.startupTab == Tab::STREMIO ? "stremio" : "local", cfg.logging,
         cfg.hide4k, cfg.checkUpdates);
+}
+
+bool isCatalogHidden(const std::string& key)
+{
+    for (const auto& k : cfg.hiddenCatalogs)
+        if (k == key) return true;
+    return false;
+}
+
+void setCatalogHidden(const std::string& key, bool hidden)
+{
+    auto it = std::find(cfg.hiddenCatalogs.begin(), cfg.hiddenCatalogs.end(), key);
+    if (hidden && it == cfg.hiddenCatalogs.end())
+        cfg.hiddenCatalogs.push_back(key);
+    else if (!hidden && it != cfg.hiddenCatalogs.end())
+        cfg.hiddenCatalogs.erase(it);
 }
 
 bool save()
@@ -397,8 +442,7 @@ bool save()
                  "  \"language\": \"%s\",\n"
                  "  \"accent\": \"%s\",\n"
                  "  \"themeVariant\": \"%s\",\n"
-                 "  \"listStyle\": \"%s\"\n"
-                 "}\n",
+                 "  \"listStyle\": \"%s\",\n",
                  cfg.configVersion,
                  cfg.startupTab == Tab::STREMIO ? "stremio" : "local",
                  cfg.logging ? "true" : "false", cfg.hide4k ? "true" : "false",
@@ -410,6 +454,18 @@ bool save()
                  cfg.audioBoost ? "true" : "false", cfg.dockedUiWidth,
                  cfg.handheldUiWidth, cfg.language.c_str(), cfg.accent.c_str(),
                  cfg.themeVariant.c_str(), cfg.listStyle.c_str());
+
+    std::fprintf(f, "  \"catalogOrder\": [");
+    for (size_t i = 0; i < cfg.catalogOrder.size(); i++)
+        std::fprintf(f, "\"%s\"%s", cfg.catalogOrder[i].c_str(), (i + 1 < cfg.catalogOrder.size() ? ", " : ""));
+    std::fprintf(f, "],\n");
+
+    std::fprintf(f, "  \"hiddenCatalogs\": [");
+    for (size_t i = 0; i < cfg.hiddenCatalogs.size(); i++)
+        std::fprintf(f, "\"%s\"%s", cfg.hiddenCatalogs[i].c_str(), (i + 1 < cfg.hiddenCatalogs.size() ? ", " : ""));
+    std::fprintf(f, "]\n");
+
+    std::fprintf(f, "}\n");
     std::fclose(f);
     return true;
 }

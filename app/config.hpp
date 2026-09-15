@@ -99,7 +99,15 @@ struct Config
     // app shipped with). Anything unrecognised behaves as "cards" -- the style
     // is compared against the other two, never validated at read time.
     std::string listStyle = "posters";
+
+    // Catalog order and visibility on Home screen
+    std::vector<std::string> catalogOrder;
+    std::vector<std::string> hiddenCatalogs;
 };
+
+// Helper checks if a catalog key is hidden
+bool isCatalogHidden(const std::string& key);
+void setCatalogHidden(const std::string& key, bool hidden);
 
 // The live settings. Mutate, then call save().
 Config& get();

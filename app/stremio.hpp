@@ -383,6 +383,20 @@ void resumeCatalogLoading();
 void setCatalogPauseHook(std::function<void()> hook);
 void setCatalogResumeHook(std::function<void()> hook);
 
+struct CatalogItemMeta
+{
+    std::string key;
+    std::string name;
+    std::string source;
+    std::string type;
+    bool isHidden = false;
+};
+
+std::vector<CatalogItemMeta> getAvailableCatalogs();
+void refreshHomeCatalogs();
+void markHomeCatalogsDirty();
+void refreshHomeIfDirty();
+
 void shutdown();
 
 // The header's Stremio view tab bar (top-right). main.cpp builds one button per
@@ -457,6 +471,8 @@ class StremioTab : public brls::Box
     // Animates the indeterminate loading bar while it is shown.
     void draw(NVGcontext* vg, float x, float y, float width, float height,
               brls::Style style, brls::FrameContext* ctx) override;
+
+    void refreshHome(); // clears and re-renders home strips with updated order/visibility
 
   private:
     void promptEmail();

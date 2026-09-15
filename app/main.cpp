@@ -2482,6 +2482,21 @@ int main(int argc, char* argv[])
     // tr() is resolved when a string is handed to a view, and the header, the
     // tab bar and the browser are built once and never again.
     i18n::load();
+    brls::Application::setTranslationHook([](const std::string& str) -> std::string {
+        if (str == "hints/ok" || str == "OK" || str == "ok") return tr("OK");
+        if (str == "hints/back" || str == "Back" || str == "back") return tr("Back");
+        if (str == "hints/exit" || str == "Exit" || str == "exit") return tr("Exit");
+        if (str == "hints/cancel" || str == "Cancel" || str == "cancel") return tr("Cancel");
+        if (str == "hints/delete" || str == "Delete" || str == "delete") return tr("Delete");
+        if (str == "hints/open" || str == "Open" || str == "open") return tr("Open");
+        if (str == "hints/save" || str == "Save" || str == "save") return tr("Save");
+        if (str == "hints/submit" || str == "Submit" || str == "submit") return tr("Submit");
+        if (str == "hints/exit_hint") return tr("You will exit this app");
+        if (str == "hints/on") return tr("On");
+        if (str == "hints/off") return tr("Off");
+        const char* t = tr(str.c_str());
+        return (t && t != str.c_str()) ? std::string(t) : str;
+    });
     // The engine default already matches the config default, but the config
     // may say otherwise: hand it over before any torrentfs can be opened.
     torrentfs_set_governor(config::get().rateGovernor ? 1 : 0);

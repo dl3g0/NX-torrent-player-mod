@@ -42,6 +42,8 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
   * Películas y Series Populares / Destacadas vía Cinemeta.
   * Secciones dinámicas para cada addon instalado en tu cuenta (Cyberflix, Anime, Netflix, HBO Max, Disney+, Apple TV+, etc.).
   * Modo *"Ver Más"* con cuadrícula infinita y filtrado por categorías.
+  * **Gestión y Reordenamiento de Catálogos**: Pestaña dedicada en Opciones para ordenar y ocultar catálogos con mando (`X`/`Y`, `A`) o pantalla táctil (`▲`/`▼`).
+  * **Sincronización Manual de Addons**: Botón directo en la vista de Cuenta para refrescar addons y catálogos en tiempo real desde Stremio.
 * **Búsqueda Global Integrada**: Encuentra cualquier título utilizando el teclado nativo en pantalla de la consola.
 
 ---
@@ -119,14 +121,14 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 ---
 
 ### 🌐 8. Internacionalización y Soporte Universal de Subtítulos
-* **Traducción Integral en Tiempo Real (6 Idiomas)**:
+* **Traducción Integral al 100% en Tiempo Real (6 Idiomas)**:
   * **Español (Latino)**
   * **Español (España / Castellano)**
   * **English**
   * **Français**
   * **Português (Brasil)**
   * **Русский (Ruso)**
-  * *¡El cambio de idioma se refleja al instante en pantalla sin reiniciar la consola ni la aplicación!*
+  * *Traducción completa de toda la interfaz, menús, pantallas y barra inferior de botones (`hints` como Aceptar, Atrás, Salir), actualizándose al instante sin reiniciar la consola.*
 * **Fuente Universal Automática Integrada (`subfont.ttf`)**:
   * Incluye de forma nativa cobertura tipográfica completa para alfabetos **Árabe**, **Cirílico (Ruso)** y **Latino extendido (acentos, tildes, cedillas)**.
   * La app gestiona e instala la fuente automáticamente en la tarjeta microSD en el primer inicio sin requerir descargas externas ni configuración manual por parte del usuario.
@@ -153,7 +155,9 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 | **CPU FastLoad Boost Inteligente** | ✅ **Dinámico: 1785 MHz carga -> 1020 MHz normal** |
 | **Subida de Texturas Pautada (*Paced Image Queue*)** | ✅ **UI a 60 FPS estables** |
 | **Soporte de Emojis / Banderas en Fuentes** | ✅ **Integración nativa de `OpenMoji.ttf`** |
-| **Multiidioma Dinámico en Tiempo Real** | ✅ **6 idiomas (Español Lat/ES, EN, FR, PT-BR, RU)** |
+| **Pestaña "Catálogos" en Opciones** | ✅ **Reordenar con mando (X)/(Y) y táctil (▲/▼), ocultar con (A) y actualización diferida sin cuelgues** |
+| **Sincronización Manual de Addons en la Vista de Cuenta** | ✅ **Sincronización instantánea de addons y catálogos en vivo desde Stremio** |
+| **Internacionalización y Traducción Completa al 100%** | ✅ **Traducción total de la UI, botones de la barra inferior (footer hints) y 6 idiomas dinámicos** |
 | **Fuente Universal para Subtítulos en Árabe y Cirílico** | ✅ **Automática integrada sin configuración del usuario** |
 | **Filtro Automático de Fuentes 4K** | ✅ **Opción activa por defecto para estabilidad Switch** |
 

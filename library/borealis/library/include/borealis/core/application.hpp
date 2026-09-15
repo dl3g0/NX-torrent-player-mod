@@ -207,6 +207,11 @@ class Application
     static void setCommonFooter(std::string footer);
     static std::string* getCommonFooter();
 
+    // LOCAL PATCH (NX Torrent Player) -- translate hints and internal strings
+    typedef std::function<std::string(const std::string&)> TranslationHook;
+    static void setTranslationHook(TranslationHook hook);
+    static TranslationHook getTranslationHook();
+
     inline static float windowScale;
 
     /**
