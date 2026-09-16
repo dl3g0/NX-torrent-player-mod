@@ -17,6 +17,7 @@ class SettingsActivity : public brls::Activity
 class AccountActivity : public brls::Activity
 {
   public:
+    ~AccountActivity() override;
     brls::View* createContentView() override;
 };
 

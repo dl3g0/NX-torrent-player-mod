@@ -1157,6 +1157,20 @@ class DownloadsView : public brls::Box
 
     void rebuildList()
     {
+        brls::View* cur = brls::Application::getCurrentFocus();
+        if (cur)
+        {
+            for (brls::View* p = cur; p; p = p->getParent())
+            {
+                if (p == list)
+                {
+                    list->setFocusable(true);
+                    list->setHideHighlight(true);
+                    brls::Application::giveFocus(list);
+                    break;
+                }
+            }
+        }
         list->clearViews();
         rowWidgets.clear();
 
@@ -1395,6 +1409,20 @@ class FileBrowserView : public brls::Box
 
     void rebuildList()
     {
+        brls::View* cur = brls::Application::getCurrentFocus();
+        if (cur)
+        {
+            for (brls::View* p = cur; p; p = p->getParent())
+            {
+                if (p == list)
+                {
+                    list->setFocusable(true);
+                    list->setHideHighlight(true);
+                    brls::Application::giveFocus(list);
+                    break;
+                }
+            }
+        }
         list->clearViews();
 
         std::string dirPath = currentPath;
@@ -2399,7 +2427,7 @@ void ensureSubfont()
             currentVer.pop_back();
     }
 
-    bool needInstall = (access(fontDst.c_str(), F_OK) != 0) || (currentVer != "0.0.8" && !hasCustom);
+    bool needInstall = (access(fontDst.c_str(), F_OK) != 0) || (currentVer != "0.0.9" && !hasCustom);
 
     if (hasCustom)
     {
@@ -2436,7 +2464,7 @@ void ensureSubfont()
 
                 if (FILE* vf = std::fopen(verFile.c_str(), "w"))
                 {
-                    std::fprintf(vf, "0.0.8\n");
+                    std::fprintf(vf, "0.0.9\n");
                     std::fclose(vf);
                 }
             }

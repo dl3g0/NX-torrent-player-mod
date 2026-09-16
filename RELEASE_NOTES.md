@@ -1,61 +1,35 @@
-# 🚀 NX Torrent Player MOD v0.0.8 — Release Notes
+# 🚀 NX Torrent Player MOD v0.0.9 — Release Notes
 
-¡Bienvenidos a la versión **v0.0.8** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
+¡Bienvenidos a la versión **v0.0.9** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
+
+Esta versión está dedicada por completo al **Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)**, tras una auditoría exhaustiva en la consola Nintendo Switch para erradicar cualquier vector de falla y garantizar un rendimiento 100% sólido.
 
 ---
 
-## 🌟 Novedades Principales en v0.0.8
+## 🌟 Novedades en v0.0.9
 
-### ⚡ 1. Cancelación Inteligente y Reanudación de Catálogos (Apertura Instantánea)
-* **Apertura Inmediata de Detalles**: Al entrar a la ficha técnica de una película o serie, se cancelan al instante las solicitudes y descargas de carátulas en segundo plano del catálogo principal. De esta forma, el ancho de banda y los núcleos del CPU se dedican 100% a la vista de detalle:
-  * Prioridad 1: Renderizado inmediato del póster, título, sinopsis y metadatos.
-  * Prioridad 2: Carga en segundo plano del logo y fondo de cabecera.
-  * Prioridad 3: Consulta y listado de addons/streams de reproducción.
-* **Reanudación Automática al Volver**: Al regresar del detalle de una serie o película hacia el catálogo, la carga del catálogo se reanuda o actualiza automáticamente sin bloqueos ni recargas innecesarias.
-
-### 🖼️ 2. Corrección y Priorización en Miniaturas de Capítulos de Series
-* **Solución a Miniaturas en Blanco**: Corregido el problema por el cual las imágenes de los episodios de las series no cargaban.
-* **Carga Prioritaria de Episodios**: El gestor de miniaturas ahora prioriza las capturas de la temporada activa y los episodios visibles en pantalla, cancelando peticiones obsoletas al cambiar de temporada.
-
-### 📑 3. Nueva Pestaña "Catálogos" en Opciones (Reordenar, Ocultar y Soporte Táctil)
-* **Personalización Total de la Pantalla de Inicio**: Se agregó una nueva pestaña dedicada llamada **Catálogos** en la pantalla de Opciones (`X`):
-  * **Lista Completa de Catálogos**: Visualiza todos los catálogos de Cinemeta (Películas Populares, Series Populares, Películas Destacadas, Series Destacadas) y los catálogos provistos por tus addons de Stremio.
-  * **Soporte Táctil Nativo**:
-    * Botones táctiles dedicados **▲** y **▼** en cada fila para subir y bajar catálogos directamente con los dedos en modo portátil.
-    * Toca la etiqueta de estado (`Visible` / `Oculto`) para alternar la visibilidad de inmediato.
-  * **Controles Tradicionales con Mando**:
-    * **(A)**: Ocultar / Mostrar el catálogo enfocado.
-    * **(X)**: Mover el catálogo hacia arriba.
-    * **(Y)**: Mover el catálogo hacia abajo.
-  * **Rendimiento Óptimo y Cero Bloqueos (Lazy Update)**:
-    * Los cambios de visibilidad y orden se realizan de forma segura y diferida, evitando cierres inesperados (*crash*) al reordenar o cambiar estados en tiempo real.
-    * Las modificaciones se aplican en lote de manera ultra rápida al salir del menú de Opciones, sin ralentizar la interfaz ni congelar la pantalla.
-  * **Restablecer Orden y Visibilidad**: Botón al final de la lista para volver a la disposición por defecto en un solo toque o clic.
-  * **Guardado Automático y Persistente**: Las preferencias se guardan en `config.json` y se conservan de forma permanente entre reinicios de la consola.
-
-### 🔄 4. Sincronización Manual de Addons en la Vista de Cuenta
-* **Nuevo Botón "Sincronizar Addons"**:
-  * Ubicado en la pantalla de Cuenta junto al botón de cerrar sesión.
-  * Permite actualizar al instante la colección de addons instalados desde los servidores de Stremio sin tener que reiniciar la aplicación ni cerrar sesión si se instalaron o modificaron addons desde otro dispositivo (PC, móvil o web).
-  * Limpia la caché local de addons, actualiza el conteo, refresca la lista visual en pantalla y marca los catálogos para sincronizarse con la pantalla de inicio.
-
-### 🌐 5. Internacionalización y Traducción Completa al 100%
-* **Traducción de Botones en la Barra Inferior (Footer Hints)**:
-  * Solucionado el problema por el cual botones como `OK` (Aceptar), `Back` (Atrás) o `Exit` (Salir) permanecían en inglés.
-  * Se corrigió la sintaxis de recursos de Borealis (`hints.json`) y se integró un puente de traducción dinámico conectado directamente a `i18n::tr(...)`, garantizando que todos los botones de la barra inferior respeten siempre el idioma elegido en la aplicación sin importar el idioma del sistema operativo de la Switch.
-* **Revisión Exhaustiva de Código**: Se auditó todo el código fuente de la aplicación para traducir cualquier texto restante en los 5 idiomas soportados:
-  * 🇪🇸 **Español (Latinoamérica)** (`es`)
-  * 🇪🇸 **Español (España)** (`es-es`)
-  * 🇧🇷 **Português (Brasil)** (`pt-br`)
-  * 🇷🇺 **Русский** (`ru`)
-  * 🇫🇷 **Français** (`fr`)
-  * 🇬🇧 **English** (Base)
-* **Textos y Pantallas Traducidos**:
-  * **Configuración y Ajustes**: Opciones de escalado de interfaz, límite de descarga en búfer (governor), notas de versión y actualización, créditos y enlaces oficiales del MOD.
-  * **Temas y Colores**: Nombres de las paletas y esquemas de color (`Púrpura`, `Azul`, `Turquesa`, `Verde`, `Naranja`, `Rojo`, `Rosa`) traducidos y actualizados dinámicamente al cambiar de idioma.
-  * **Catálogos y Géneros de Stremio**: Filtros de género traducidos en la interfaz (`Acción`, `Aventura`, `Animación`, `Comedia`, `Ciencia Ficción`, etc.) manteniendo la compatibilidad exacta con la API de Stremio.
-  * **Reproductores Online y Offline**: Mensajes de velocidad en pantalla (`Speed 1.25x`), estados del búfer (`📥 Buffer: Xs`), botones de capítulos y selección de pistas.
-  * **Pestaña de Descargas y Torrents**: Estados detallados de los archivos (`Descargado`, `Requerido`, `Descargando`, `Verificando`), etiquetas de progreso, errores de red y diálogos de confirmación.
+### 🛡️ Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)
+* **Eliminación de Abortos en Peticiones Multihilo (`CURLOPT_NOSIGNAL`)**:
+  * Se implementó estrictamente `CURLOPT_NOSIGNAL = 1L` en todas las transferencias de red (`app/http.cpp` y `app/download.cpp`).
+  * En Nintendo Switch, `libcurl` sin esta bandera enviaba señales de sistema (`SIGALRM`) en timeouts DNS que colisionaban con los hilos secundarios de descarga y carátulas, provocando el cierre forzado del programa por Horizon OS (*"se cerró el programa a causa de un error"*).
+* **Protección de Foco y Prevención de Fallos por Memoria Liberada (*Use-After-Free*)**:
+  * Corregido el fallo crítico al refrescar el catálogo principal o reordenar catálogos en Opciones: se implementó un mecanismo de aparcado de foco (`parkFocusOffList()`) que traslada el foco fuera del contenedor antes de vaciar las vistas (`clearViews()`), evitando desreferenciaciones a vistas destruidas en `onFocusLost()`.
+  * Los tokens de ciclo de vida (`rowsAlive`) ahora se cancelan de inmediato al invalidar vistas, asegurando que tareas en cola no intenten dibujar sobre elementos que ya no existen.
+* **Seguridad Asíncrona en Pantalla de Cuenta**:
+  * Si el usuario sale de la vista de Cuenta mientras se realiza una petición de sincronización de addons, los callbacks asíncronos se descartan limpiamente de inmediato sin intentar modificar componentes destruidos.
+* **Manejo Seguro de Pantallas y Estados Vacíos**:
+  * Soporte robusto en caso de que todos los catálogos estén ocultos o no haya conexión a Internet: se muestra un estado informativo enfocado sin provocar punteros nulos en el sistema de navegación.
+* **Seguridad en Caché Local e Imágenes**:
+  * Protegido el ciclo de vida en `ImageQueue` y comprobaciones locales de caché en microSD (`fetchBackgroundAsync`, `fetchLogoAsync`, `fetchHqArtAsync`) para evitar callbacks sobre vistas que ya salieron de pantalla.
+* **Comprobaciones de Límites de Episodios**:
+  * Se añadieron comprobaciones estrictas de límites de vector en la selección de temporadas y episodios de series para proteger la aplicación frente a metadatos mal formados.
+* **Aparcado de Foco en Descargas y Explorador de Archivos**:
+  * Foco resguardado antes de vaciar y reconstruir listas en las actividades de descargas y explorador de archivos local.
+* **Corrección de Carga y Persistencia en Pantalla de Inicio**:
+  * Solucionado el problema por el cual la animación de carga terminaba prematuramente mostrando "No hay catálogos disponibles" mientras la red aún descargaba los catálogos, y el mensaje persistía en pantalla una vez cargados.
+  * Ahora el indicador de carga se mantiene activo de manera fluida hasta que los datos están listos, y cualquier etiqueta de estado vacío se remueve automáticamente antes de dibujar los catálogos.
+* **Cola de Imágenes con Suscripción Multicanal (Pósters al Ocultar/Mostrar Catálogos)**:
+  * Resuelto el fallo donde, tras ocultar y volver a mostrar un catálogo o cambiar su orden, los pósters de varios títulos dejaban de cargar. La cola de descargas ahora suscribe múltiples oyentes activos a una misma imagen en vuelo y entrega el resultado a todas las vistas que sigan vivas.
 
 ---
 
@@ -66,7 +40,7 @@
    ```text
    sdmc:/switch/NX-torrent-player/NX-torrent-player.nro
    ```
-3. Inicia la aplicación desde el **Homebrew Menu** en tu Nintendo Switch (se recomienda ejecutarlo en modo Title Override / manteniendo `R` sobre cualquier juego para disponer de toda la memoria RAM).
+3. Inicia la aplicación desde el **Homebrew Menu** en tu Nintendo Switch (modo Title Override / manteniendo presionado `R` sobre cualquier juego).
 
 ---
 

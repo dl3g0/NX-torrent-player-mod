@@ -208,7 +208,7 @@ class RowCell : public brls::Box
                                       [art, live = alive](std::string path) {
                                           if (!*live || path.empty()) return;
                                           art->setImageFromFile(path);
-                                      });
+                                      }, alive);
         }
 
         // Label over sub-label, so a source can show what it is *and* which
@@ -1443,6 +1443,11 @@ class EpisodeDetailActivity : public AddonSourcePicker
                                     : ep.title;
     }
 
+    ~EpisodeDetailActivity() override
+    {
+        stremio::resumeCatalogLoading();
+    }
+
     brls::View* createContentView() override
     {
         auto* root = new brls::Box();
@@ -1850,7 +1855,7 @@ class SeriesDetailActivity : public brls::Activity
                 if (seasons[i] == tgtSeason) { idx = (int)i; break; }
             if (idx != activeSeason)
                 selectSeason(idx, false);
-            else
+            else if (activeSeason >= 0 && activeSeason < (int)seasons.size())
                 buildEpisodeCards(seasons[activeSeason]);
             if (refocus && firstEpisode)
             {

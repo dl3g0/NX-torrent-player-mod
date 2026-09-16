@@ -1,24 +1,35 @@
-# 🚀 NX Torrent Player MOD v0.0.8 — Release Notes
+# 🚀 NX Torrent Player MOD v0.0.9 — Release Notes
 
-¡Bienvenidos a la versión **v0.0.8** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
+¡Bienvenidos a la versión **v0.0.9** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
 
-Esta actualización optimiza significativamente la fluidez y velocidad de respuesta al navegar por la aplicación, incorporando cancelación y reanudación inteligente de peticiones de red para catálogos y resolviendo la carga de miniaturas de capítulos en series de televisión.
-
----
-
-## 🌟 Novedades Principales en v0.0.8
-
-### 🛑 1. Cancelación Inteligente y Reanudación de Carga de Catálogos (Apertura Instantánea)
-* **Apertura Inmediata**: Al seleccionar cualquier película o serie desde la pestaña de Inicio (o catálogo), las peticiones de catálogo que aún se estén descargando en segundo plano se cancelan y abortan de inmediato en milisegundos mediante tokens de cancelación atómicos en libcurl y tareas asíncronas.
-* **Prioridad Total al Detalle**: La cola de red y los hilos de trabajo se liberan instantáneamente para que la información del contenido seleccionado (sinopsis, capítulos y enlaces) se descargue sin tener que esperar a que terminen de cargar las demás filas del catálogo.
-* **Reanudación Automática y Fluida**: Al salir del detalle (presionar `B` o volver a la pestaña de Inicio), la descarga de los catálogos restantes se reanuda automáticamente donde se quedó, sin duplicar elementos ni perder la posición del foco ni el desplazamiento del usuario.
+Esta versión está dedicada por completo al **Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)**, auditando a fondo el código fuente para eliminar cualquier causa de cuelgues o cierres abruptos en Nintendo Switch.
 
 ---
 
-### 🖼️ 2. Corrección y Priorización en Miniaturas de Capítulos de Series
-* **El Problema**: En las series, las imágenes y miniaturas de cada capítulo no cargaban en pantalla.
-* **Causa Técnica**: La pausa del catálogo suspendía indebidamente la cola global de imágenes (`ImageQueue`) y el ciclo de subida de texturas a GPU (`processPendingImageUploads`), dejando congeladas las imágenes de los episodios.
-* **Solución**: Se independizó la cola de imágenes del ciclo de pausa de catálogos y se implementó prioridad alta (`highPriority`) para las miniaturas de los episodios y el póster HD en las vistas de detalle, procesándolos inmediatamente al frente de la cola de descarga.
+## 🌟 Novedades en v0.0.9
+
+### 🛡️ Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)
+* **Eliminación de Abortos en Peticiones Multihilo (`CURLOPT_NOSIGNAL`)**:
+  * Se configuró estrictamente `CURLOPT_NOSIGNAL = 1L` en todas las transferencias de red (`app/http.cpp` y `app/download.cpp`).
+  * En Nintendo Switch, `libcurl` sin esta bandera enviaba señales de sistema (`SIGALRM`) en timeouts DNS que colisionaban con los hilos secundarios de descarga y carátulas, provocando el cierre repentino del programa (*"se cerró el programa a causa de un error"*).
+* **Protección de Foco y Prevención de Fallos por Memoria Liberada (*Use-After-Free*)**:
+  * Corregido el fallo crítico al refrescar el catálogo principal o reordenar catálogos en Opciones: se implementó un mecanismo de aparcado de foco (`parkFocusOffList()`) que traslada el foco fuera del contenedor antes de vaciar las vistas (`clearViews()`), evitando desreferenciaciones a vistas destruidas en `onFocusLost()`.
+  * Los tokens de ciclo de vida (`rowsAlive`) ahora se cancelan de inmediato al invalidar vistas, asegurando que tareas en segundo plano no intenten dibujar sobre elementos que ya no existen.
+* **Seguridad Asíncrona en Pantalla de Cuenta**:
+  * Si el usuario sale de la pantalla de Cuenta mientras se realiza una petición de sincronización de addons, los callbacks asíncronos se descartan limpiamente sin intentar modificar componentes destruidos.
+* **Manejo Seguro de Pantallas y Estados Vacíos**:
+  * Soporte robusto en caso de que todos los catálogos estén ocultos o no haya conexión a Internet: se muestra un estado informativo enfocado sin provocar punteros nulos en el sistema de navegación.
+* **Seguridad en Caché Local e Imágenes**:
+  * Protegido el ciclo de vida en `ImageQueue` y comprobaciones locales de caché en microSD (`fetchBackgroundAsync`, `fetchLogoAsync`, `fetchHqArtAsync`) para evitar callbacks sobre vistas que ya salieron de pantalla.
+* **Comprobaciones de Límites de Episodios**:
+  * Se añadieron comprobaciones estrictas de límites de vector en la selección de temporadas y episodios de series para proteger la aplicación frente a metadatos mal formados.
+* **Aparcado de Foco en Descargas y Explorador de Archivos**:
+  * Foco resguardado antes de vaciar y reconstruir listas en las actividades de descargas y explorador de archivos local.
+* **Corrección de Carga y Persistencia en Pantalla de Inicio**:
+  * Solucionado el problema por el cual la animación de carga terminaba prematuramente mostrando "No hay catálogos disponibles" mientras la red aún descargaba los catálogos, y el mensaje persistía en pantalla una vez cargados.
+  * Ahora el indicador de carga se mantiene activo de manera fluida hasta que los datos están listos, y cualquier etiqueta de estado vacío se remueve automáticamente antes de dibujar los catálogos.
+* **Cola de Imágenes con Suscripción Multicanal (Pósters al Ocultar/Mostrar Catálogos)**:
+  * Resuelto el fallo donde, tras ocultar y volver a mostrar un catálogo o cambiar su orden, los pósters de varios títulos dejaban de cargar. La cola de descargas ahora suscribe múltiples oyentes activos a una misma imagen en vuelo y entrega el resultado a todas las vistas que sigan vivas.
 
 ---
 
@@ -29,12 +40,12 @@ Esta actualización optimiza significativamente la fluidez y velocidad de respue
    ```text
    sdmc:/switch/NX-torrent-player/NX-torrent-player.nro
    ```
-3. Inicia la aplicación desde el **Homebrew Menu** en tu Nintendo Switch en modo **Title Override** (mantén presionado `R` sobre cualquier juego oficial instalado).
+3. Inicia la aplicación desde el **Homebrew Menu** en tu Nintendo Switch (modo Title Override / manteniendo presionado `R` sobre cualquier juego).
 
 ---
 
 ## 👏 Créditos y Agradecimientos
 
-* **dl3g0** — Desarrollo, optimizaciones y arquitectura de este mod.
+* **dl3g0** — Desarrollo, modificaciones, correcciones y optimizaciones de este mod.
 * **shodowlo** — Proyecto original [NX-torrent-player](https://github.com/shodowlo/NX-torrent-player).
-* [borealis](https://github.com/xfangfang/borealis), [mpv](https://mpv.io/), [HarfBuzz](https://harfbuzz.github.io/), [FriBidi](https://github.com/fribidi/fribidi), [libass](https://github.com/libass/libass), [libutp](https://github.com/bittorrent/libutp), [Stremio](https://www.stremio.com/), [OpenMoji](https://openmoji.org/) y devkitPro.
+* [borealis](https://github.com/xfangfang/borealis), [mpv](https://mpv.io/), [libutp](https://github.com/bittorrent/libutp), [Stremio](https://www.stremio.com/), [OpenMoji](https://openmoji.org/) y devkitPro.

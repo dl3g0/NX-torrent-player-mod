@@ -253,6 +253,7 @@ void runHttpDownload(Task& task)
     pctx.lastTime = std::chrono::steady_clock::now();
 
     curl_easy_setopt(curl, CURLOPT_URL, task.source.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writeDataCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);

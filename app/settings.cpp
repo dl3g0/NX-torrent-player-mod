@@ -34,6 +34,13 @@ void note(const std::string& msg)
     d->open();
 }
 
+bool isUnder(brls::View* v, brls::View* ancestor)
+{
+    for (brls::View* p = v; p; p = p->getParent())
+        if (p == ancestor) return true;
+    return false;
+}
+
 std::function<void()> uiScaleHook;
 
 // A Label an outstanding background job can safely give up on: the Options
@@ -442,11 +449,28 @@ brls::View* stremioPane()
 
 brls::View* catalogsPane()
 {
-    brls::Box* list = nullptr;
-    auto* pane = newPane(&list);
+    auto* scroll = new brls::ScrollingFrame();
+    scroll->setGrow(1.0f);
+    scroll->setScrollingBehavior(brls::ScrollingBehavior::CENTERED);
 
+    auto* list = new AsyncBox();
+    list->setAxis(brls::Axis::COLUMN);
+    list->setPadding(16.0f, 40.0f, 40.0f, 40.0f);
+    scroll->setContentView(list);
+
+    auto live = list->alive;
     auto rebuildRef = std::make_shared<std::function<void(int)>>();
-    *rebuildRef = [list, rebuildRef](int focusIndex) {
+    *rebuildRef = [list, live, rebuildRef](int focusIndex) {
+        if (!*live) return;
+
+        brls::View* cur = brls::Application::getCurrentFocus();
+        if (cur && isUnder(cur, list))
+        {
+            list->setFocusable(true);
+            list->setHideHighlight(true);
+            brls::Application::giveFocus(list);
+        }
+
         list->clearViews();
 
         list->addView(caption(
@@ -466,7 +490,8 @@ brls::View* catalogsPane()
             return;
         }
 
-        auto moveItem = [rebuildRef](size_t from, size_t to) {
+        auto moveItem = [rebuildRef, live](size_t from, size_t to) {
+            if (!*live) return;
             auto& cfg = config::get();
             auto cats = stremio::getAvailableCatalogs();
             if (from < cats.size() && to < cats.size() && from != to)
@@ -479,7 +504,8 @@ brls::View* catalogsPane()
                 stremio::markHomeCatalogsDirty();
 
                 // Defer list rebuild to the next frame to avoid use-after-free while in action listener
-                brls::sync([rebuildRef, to]() {
+                brls::sync([rebuildRef, live, to]() {
+                    if (!*live) return;
                     (*rebuildRef)(static_cast<int>(to));
                 });
             }
@@ -643,25 +669,29 @@ brls::View* catalogsPane()
         auto* resetBtn = new brls::Button();
         resetBtn->setText(tr("Reset order and visibility"));
         resetBtn->setMargins(14.0f, 60.0f, 24.0f, 60.0f);
-        resetBtn->registerClickAction([rebuildRef](brls::View*) {
+        resetBtn->registerClickAction([rebuildRef, live](brls::View*) {
+            if (!*live) return true;
             auto& cfg = config::get();
             cfg.catalogOrder.clear();
             cfg.hiddenCatalogs.clear();
             config::save();
             stremio::markHomeCatalogsDirty();
-            brls::sync([rebuildRef]() {
+            brls::sync([rebuildRef, live]() {
+                if (!*live) return;
                 (*rebuildRef)(0);
             });
             return true;
         });
         list->addView(resetBtn);
 
+        if (!*live) return;
         if (focusIndex >= 0 && focusIndex < static_cast<int>(rowBoxes.size()))
             brls::Application::giveFocus(rowBoxes[focusIndex]);
+        list->setFocusable(false);
     };
 
     (*rebuildRef)(-1);
-    return pane;
+    return scroll;
 }
 
 brls::View* aboutPane()
@@ -987,10 +1017,7 @@ brls::View* AccountActivity::createContentView()
 
         auto live = addonList->alive;
         stremio::fetchAddonsAsync(key, [key, addonList, live, addonCount, pending, onDone](stremio::AddonsResult r) {
-            if (!*live) {
-                if (onDone) onDone(false);
-                return;
-            }
+            if (!*live) return;
             pending->setVisibility(brls::Visibility::GONE);
             if (!r.ok)
             {
@@ -999,7 +1026,7 @@ brls::View* AccountActivity::createContentView()
                 err->setFontSize(16.0f);
                 err->setTextColor(theme::textWarn());
                 addonList->addView(err);
-                if (onDone) onDone(false);
+                if (onDone && *live) onDone(false);
                 return;
             }
             addonCount->setText(std::to_string(r.addons.size()));
@@ -1127,7 +1154,7 @@ brls::View* AccountActivity::createContentView()
                 addonList->addView(none);
             }
 
-            if (onDone) onDone(true);
+            if (onDone && *live) onDone(true);
         });
     };
 
@@ -1147,11 +1174,12 @@ brls::View* AccountActivity::createContentView()
     logout->setText(tr("Sign out of Stremio"));
     logout->setGrow(1.0f);
 
-    syncBtn->registerClickAction([syncBtn, loadAddons](brls::View*) {
+    syncBtn->registerClickAction([syncBtn, loadAddons, live = addonList->alive](brls::View*) {
         syncBtn->setState(brls::ButtonState::DISABLED);
         stremio::clearAddonCache();
         stremio::markHomeCatalogsDirty();
-        (*loadAddons)([syncBtn](bool ok) {
+        (*loadAddons)([syncBtn, live](bool ok) {
+            if (!*live) return;
             syncBtn->setState(brls::ButtonState::ENABLED);
             if (ok)
                 note(tr("Addons synced"));
@@ -1182,4 +1210,9 @@ brls::View* AccountActivity::createContentView()
     frame->pushContentView(root);
     frame->setTitle(tr("Account"));
     return frame;
+}
+
+AccountActivity::~AccountActivity()
+{
+    stremio::refreshHomeIfDirty();
 }

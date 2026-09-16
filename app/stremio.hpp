@@ -592,6 +592,7 @@ class StremioTab : public brls::Box
     // failing addon costs one request rather than one per visit.
     std::vector<stremio::LibItem> featMovies, featSeries;
     bool featMoviesAsked = false, featSeriesAsked = false;
+    bool featMoviesLoaded = false, featSeriesLoaded = false;
 
     struct AddonCatalogSection
     {
@@ -607,6 +608,8 @@ class StremioTab : public brls::Box
     std::vector<AddonCatalogSection> addonSeriesSections;
     bool addonMovieSectionsAsked = false;
     bool addonSeriesSectionsAsked = false;
+    bool addonMovieManifestLoaded = false;
+    bool addonSeriesManifestLoaded = false;
     std::set<std::string> homeRenderedStrips;
 
     std::string email;
@@ -623,6 +626,7 @@ class StremioTab : public brls::Box
     brls::Label* libStatus   = nullptr;
     brls::Box* libList       = nullptr;
     brls::Box* homeBox       = nullptr;
+    brls::Label* emptyHomeLabel = nullptr;
     brls::Box* continueBox   = nullptr;
     brls::Box* libraryBoxView = nullptr;
     brls::Box* searchBox     = nullptr;

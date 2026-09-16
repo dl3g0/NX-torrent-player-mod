@@ -99,6 +99,7 @@ bool postJson(const char* url, const std::string& body, std::string& resp,
     hdrs = curl_slist_append(hdrs, "Content-Type: application/json");
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // GitHub answers 403 to a request with no User-Agent.
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NX-torrent-player");
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
@@ -161,6 +162,7 @@ bool get(const std::string& url, std::string& resp, std::string& err,
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, hdrs);
     }
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // GitHub answers 403 to a request with no User-Agent.
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NX-torrent-player");
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
@@ -255,6 +257,7 @@ bool download(const std::string& url, const std::string& path, std::string& err,
 
     char errbuf[CURL_ERROR_SIZE] = { 0 };
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     // GitHub answers 403 to a request with no User-Agent.
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "NX-torrent-player");
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
@@ -323,6 +326,7 @@ std::string resolveRedirect(const std::string& url)
     if (!curl) return url;
 
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);

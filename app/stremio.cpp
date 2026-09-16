@@ -1311,13 +1311,17 @@ std::string cachedLogoPath(const std::string& id)
 // have to survive a host that answers WebP, or an HTML error page.
 namespace
 {
+struct ImageListener
+{
+    std::function<void(std::string)> done;
+    std::shared_ptr<bool> alive;
+};
+
 struct ImageTask
 {
     std::string id;
     std::string url;
     std::string path;
-    std::shared_ptr<bool> alive;
-    std::function<void(std::string)> done;
 };
 
 struct PacedImageCallback
@@ -1352,6 +1356,7 @@ public:
             std::unique_lock<std::mutex> lock(mtx);
             stop = true;
             tasks.clear();
+            inFlight.clear();
         }
         cv.notify_all();
         for (auto& t : workers)
@@ -1376,17 +1381,32 @@ public:
         return paused;
     }
 
-    void push(ImageTask task, bool highPriority = false)
+    void push(const std::string& id, const std::string& url, const std::string& path,
+              std::shared_ptr<bool> alive, std::function<void(std::string)> done,
+              bool highPriority = false)
     {
         {
             std::unique_lock<std::mutex> lock(mtx);
             if (stop || http::isAborted()) return;
-            if (inFlight.count(task.path)) return; // already queued or downloading
-            inFlight.insert(task.path);
+
+            auto it = inFlight.find(path);
+            if (it != inFlight.end())
+            {
+                // Already in flight or queued! Add this listener so it gets notified too
+                if (done)
+                    it->second.push_back({ std::move(done), alive });
+                return;
+            }
+
+            std::vector<ImageListener> listeners;
+            if (done)
+                listeners.push_back({ std::move(done), alive });
+            inFlight.emplace(path, std::move(listeners));
+
             if (highPriority)
-                tasks.push_front(std::move(task));
+                tasks.push_front({ id, url, path });
             else
-                tasks.push_back(std::move(task));
+                tasks.push_back({ id, url, path });
         }
         cv.notify_one();
     }
@@ -1408,8 +1428,23 @@ private:
 
             if (stop || http::isAborted()) return;
 
-            if (task.alive && !*task.alive)
+            // Check if any listener for this task.path is still alive
+            std::vector<ImageListener> currentListeners;
             {
+                std::unique_lock<std::mutex> lock(mtx);
+                auto it = inFlight.find(task.path);
+                if (it != inFlight.end())
+                    currentListeners = it->second;
+            }
+
+            bool anyAlive = false;
+            for (const auto& l : currentListeners)
+            {
+                if (!l.alive || *l.alive) { anyAlive = true; break; }
+            }
+            if (!anyAlive && !currentListeners.empty())
+            {
+                // All listeners for this path are dead; skip downloading
                 std::unique_lock<std::mutex> lock(mtx);
                 inFlight.erase(task.path);
                 continue;
@@ -1419,17 +1454,23 @@ private:
             if (FILE* f = std::fopen(task.path.c_str(), "rb"))
             {
                 std::fclose(f);
+                std::vector<ImageListener> listenersToNotify;
                 {
                     std::unique_lock<std::mutex> lock(mtx);
-                    inFlight.erase(task.path);
+                    auto it = inFlight.find(task.path);
+                    if (it != inFlight.end())
+                    {
+                        listenersToNotify = std::move(it->second);
+                        inFlight.erase(it);
+                    }
                 }
-                if (task.done)
+                std::string p = task.path;
+                std::lock_guard<std::mutex> lock(g_pacedMtx);
+                for (auto& l : listenersToNotify)
                 {
-                    std::string p = task.path;
-                    auto done = task.done;
-                    auto alive = task.alive;
-                    std::lock_guard<std::mutex> lock(g_pacedMtx);
-                    g_pacedCallbacks.push_back({ done, p, alive });
+                    if (l.alive && !*l.alive) continue;
+                    if (l.done)
+                        g_pacedCallbacks.push_back({ std::move(l.done), p, l.alive });
                 }
                 continue;
             }
@@ -1482,29 +1523,41 @@ private:
             }
             else ok = false;
 
+            std::vector<ImageListener> listenersToNotify;
             {
                 std::unique_lock<std::mutex> lock(mtx);
-                inFlight.erase(task.path);
+                auto it = inFlight.find(task.path);
+                if (it != inFlight.end())
+                {
+                    listenersToNotify = std::move(it->second);
+                    inFlight.erase(it);
+                }
             }
 
-            if (task.alive && !*task.alive) continue;
-
             std::string res = ok ? task.path : std::string();
-            auto done = task.done;
-            auto alive = task.alive;
             if (!res.empty())
             {
-                if (done)
+                std::lock_guard<std::mutex> lock(g_pacedMtx);
+                for (auto& l : listenersToNotify)
                 {
-                    std::lock_guard<std::mutex> lock(g_pacedMtx);
-                    g_pacedCallbacks.push_back({ done, res, alive });
+                    if (l.alive && !*l.alive) continue;
+                    if (l.done)
+                        g_pacedCallbacks.push_back({ std::move(l.done), res, l.alive });
                 }
             }
             else
             {
-                if (done)
+                for (auto& l : listenersToNotify)
                 {
-                    brls::sync([done]() { done(""); });
+                    auto done = std::move(l.done);
+                    auto alive = l.alive;
+                    if (done)
+                    {
+                        brls::sync([done, alive]() {
+                            if (alive && !*alive) return;
+                            done("");
+                        });
+                    }
                 }
             }
         }
@@ -1513,7 +1566,7 @@ private:
     std::mutex mtx;
     std::condition_variable cv;
     std::deque<ImageTask> tasks;
-    std::set<std::string> inFlight;
+    std::map<std::string, std::vector<ImageListener>> inFlight;
     std::vector<std::thread> workers;
     bool stop;
     bool paused;
@@ -1601,7 +1654,7 @@ static void downloadImageAsync(const std::string& id, const std::string& url,
                                std::shared_ptr<bool> alive = nullptr,
                                bool highPriority = false)
 {
-    imageQueue().push({ id, url, path, alive, done }, highPriority);
+    imageQueue().push(id, url, path, alive, done, highPriority);
 }
 
 // The artwork URL for `id`, or "" if there is none to be had. Not every library
@@ -1696,6 +1749,7 @@ void fetchBackgroundAsync(const std::string& id, const std::string& url,
     if (FILE* f = std::fopen(path.c_str(), "rb"))
     {
         std::fclose(f);
+        if (alive && !*alive) return;
         if (done) done(path);
         return;
     }
@@ -1709,6 +1763,7 @@ void fetchBackgroundAsync(const std::string& id, const std::string& url,
     }
     if (src.empty())
     {
+        if (alive && !*alive) return;
         if (done) done("");
         return;
     }
@@ -1722,6 +1777,7 @@ void fetchLogoAsync(const std::string& id, const std::string& url,
 {
     if (id.empty())
     {
+        if (alive && !*alive) return;
         if (done) done("");
         return;
     }
@@ -1730,6 +1786,7 @@ void fetchLogoAsync(const std::string& id, const std::string& url,
     if (FILE* f = std::fopen(path.c_str(), "rb"))
     {
         std::fclose(f);
+        if (alive && !*alive) return;
         if (done) done(path);
         return;
     }
@@ -1743,6 +1800,7 @@ void fetchLogoAsync(const std::string& id, const std::string& url,
     }
     if (src.empty())
     {
+        if (alive && !*alive) return;
         if (done) done("");
         return;
     }
@@ -1756,14 +1814,16 @@ void fetchHqArtAsync(const std::string& id, const std::string& url,
 {
     if (id.empty())
     {
-        done("");
+        if (alive && !*alive) return;
+        if (done) done("");
         return;
     }
 
     std::string src = artUrlOrMetahub(id, url);
     if (src.empty())
     {
-        done("");
+        if (alive && !*alive) return;
+        if (done) done("");
         return;
     }
 
@@ -1773,7 +1833,8 @@ void fetchHqArtAsync(const std::string& id, const std::string& url,
     if (FILE* f = std::fopen(path.c_str(), "rb"))
     {
         std::fclose(f);
-        done(path);
+        if (alive && !*alive) return;
+        if (done) done(path);
         return;
     }
 
@@ -2834,6 +2895,7 @@ StremioTab::StremioTab()
 
     stremio::setLanguageChangeHook([this]() {
         homeRenderedStrips.clear();
+        emptyHomeLabel = nullptr;
         if (homeBox) homeBox->clearViews();
         if (continueBox) continueBox->clearViews();
         if (libraryBoxView) libraryBoxView->clearViews();
@@ -3680,9 +3742,9 @@ void StremioTab::renderHome()
         stremio::fetchCatalogAsync(
             "https://v3-cinemeta.strem.io", "movie", "top",
             [this, live = alive, cancelToken](stremio::LibraryResult r) {
-                if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed)) || !r.ok) return;
-                popMovies = r.items;
+                if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed))) return;
                 popMoviesLoaded = true;
+                if (r.ok) popMovies = r.items;
                 if (view == View::Home) scheduleRenderHome();
             }, cancelToken);
     }
@@ -3691,9 +3753,9 @@ void StremioTab::renderHome()
         stremio::fetchCatalogAsync(
             "https://v3-cinemeta.strem.io", "series", "top",
             [this, live = alive, cancelToken](stremio::LibraryResult r) {
-                if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed)) || !r.ok) return;
-                popSeries = r.items;
+                if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed))) return;
                 popSeriesLoaded = true;
+                if (r.ok) popSeries = r.items;
                 if (view == View::Home) scheduleRenderHome();
             }, cancelToken);
     }
@@ -3701,25 +3763,6 @@ void StremioTab::renderHome()
     loadFeatured("series");
     loadAddonCatalogs("movie");
     loadAddonCatalogs("series");
-
-    if (homeBox->getChildren().empty())
-    {
-        if (!popMoviesLoaded && !popSeriesLoaded && featMovies.empty() && featSeries.empty() &&
-            addonMovieSections.empty() && addonSeriesSections.empty())
-        {
-            showStatus(tr("Loading..."), true);
-            stremio::setLibraryCount(std::string("  ") + tr("Home"));
-            return;
-        }
-
-        loadingBox->setVisibility(brls::Visibility::GONE);
-        stremio::setLibraryCount(std::string("  ") + tr("Home"));
-    }
-    else
-    {
-        loadingBox->setVisibility(brls::Visibility::GONE);
-        stremio::setLibraryCount(std::string("  ") + tr("Home"));
-    }
 
     const size_t cap = 12; // 12 items per strip keeps memory low and scrolling at 60 FPS
     auto head = [cap](const std::vector<stremio::LibItem>& v) {
@@ -3800,6 +3843,87 @@ void StremioTab::renderHome()
         }
     }
 
+    // Check if initial catalogs are still in flight
+    bool popMoviesWanted  = !config::isCatalogHidden("cinemeta_pop_movies");
+    bool popSeriesWanted  = !config::isCatalogHidden("cinemeta_pop_series");
+    bool featMoviesWanted = !config::isCatalogHidden("cinemeta_feat_movies");
+    bool featSeriesWanted = !config::isCatalogHidden("cinemeta_feat_series");
+
+    bool stillLoading = false;
+    if (popMoviesWanted && !popMoviesLoaded)   stillLoading = true;
+    if (popSeriesWanted && !popSeriesLoaded)   stillLoading = true;
+    if (featMoviesWanted && !featMoviesLoaded) stillLoading = true;
+    if (featSeriesWanted && !featSeriesLoaded) stillLoading = true;
+
+    if (!authKey.empty())
+    {
+        if (!addonMovieManifestLoaded || !addonSeriesManifestLoaded)
+        {
+            stillLoading = true;
+        }
+        else
+        {
+            for (const auto& s : addonMovieSections)
+            {
+                std::string k = "addon_movie_" + s.addonBase + "_" + s.catalogId;
+                if (!config::isCatalogHidden(k) && !s.loaded)
+                {
+                    stillLoading = true;
+                    break;
+                }
+            }
+            for (const auto& s : addonSeriesSections)
+            {
+                std::string k = "addon_series_" + s.addonBase + "_" + s.catalogId;
+                if (!config::isCatalogHidden(k) && !s.loaded)
+                {
+                    stillLoading = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (orderedCandidates.empty())
+    {
+        if (stillLoading)
+        {
+            showStatus(tr("Loading..."), true);
+            stremio::setLibraryCount(std::string("  ") + tr("Home"));
+            return;
+        }
+
+        // All initial loads finished and no catalogs to show
+        loadingBox->setVisibility(brls::Visibility::GONE);
+        stremio::setLibraryCount(std::string("  ") + tr("Home"));
+        if (homeBox->getChildren().empty() || emptyHomeLabel)
+        {
+            if (!emptyHomeLabel)
+            {
+                emptyHomeLabel = new brls::Label();
+                emptyHomeLabel->setText(tr("No catalogs available."));
+                emptyHomeLabel->setFontSize(22.0f);
+                emptyHomeLabel->setTextColor(theme::textMuted());
+                emptyHomeLabel->setMargins(40.0f, 0.0f, 0.0f, headingInset());
+                homeBox->addView(emptyHomeLabel);
+            }
+            finishList(emptyHomeLabel);
+        }
+        return;
+    }
+
+    // At least one candidate is ready to display! Hide loading box
+    loadingBox->setVisibility(brls::Visibility::GONE);
+    stremio::setLibraryCount(std::string("  ") + tr("Home"));
+
+    // If empty label was previously added, remove it now before adding real content
+    if (emptyHomeLabel)
+    {
+        parkFocusOffList();
+        homeBox->removeView(emptyHomeLabel);
+        emptyHomeLabel = nullptr;
+    }
+
     if (posterStyle())
     {
         auto tryAddStrip = [&](const std::string& key, const std::string& title,
@@ -3854,7 +3978,11 @@ void StremioTab::renderHome()
 
 void StremioTab::refreshHome()
 {
+    parkFocusOffList();
+    *rowsAlive = false;
+    rowsAlive  = std::make_shared<bool>(true);
     homeRenderedStrips.clear();
+    emptyHomeLabel = nullptr;
     if (homeBox) homeBox->clearViews();
     if (view == View::Home)
         renderHome();
@@ -3928,6 +4056,7 @@ void StremioTab::loadFeatured(const char* type)
     bool series   = std::string(type) == "series";
     auto& cache   = series ? featSeries : featMovies;
     bool& asked   = series ? featSeriesAsked : featMoviesAsked;
+    bool& loaded  = series ? featSeriesLoaded : featMoviesLoaded;
     if (asked) return;
     asked = true;
 
@@ -3935,10 +4064,10 @@ void StremioTab::loadFeatured(const char* type)
     View want = view;
     stremio::fetchCatalogAsync(
         "https://v3-cinemeta.strem.io", type, "year",
-        [this, live = alive, want, &cache, cancelToken](stremio::LibraryResult r) {
+        [this, live = alive, want, &cache, &loaded, cancelToken](stremio::LibraryResult r) {
             if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed))) return;
-            if (!r.ok || r.items.empty()) return;
-            cache = r.items;
+            loaded = true;
+            if (r.ok && !r.items.empty()) cache = r.items;
             if (view == View::Home) scheduleRenderHome();
             else if (view == want) renderView();
         }, cancelToken);
@@ -3950,13 +4079,20 @@ void StremioTab::loadAddonCatalogs(const char* type)
 
     bool series = std::string(type) == "series";
     bool& asked = series ? addonSeriesSectionsAsked : addonMovieSectionsAsked;
+    bool& manifestLoaded = series ? addonSeriesManifestLoaded : addonMovieManifestLoaded;
     if (asked) return;
     asked = true;
 
     auto cancelToken = catalogCancelToken;
     std::string catType = type;
-    stremio::fetchAddonsAsync(authKey, [this, live = alive, catType, series, cancelToken](stremio::AddonsResult r) {
-        if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed)) || !r.ok) return;
+    stremio::fetchAddonsAsync(authKey, [this, live = alive, catType, series, &manifestLoaded, cancelToken](stremio::AddonsResult r) {
+        if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed))) return;
+        manifestLoaded = true;
+        if (!r.ok)
+        {
+            if (view == View::Home) scheduleRenderHome();
+            return;
+        }
 
         auto& sections = series ? addonSeriesSections : addonMovieSections;
         sections.clear();
@@ -3978,6 +4114,12 @@ void StremioTab::loadAddonCatalogs(const char* type)
             }
         }
 
+        if (sections.empty())
+        {
+            if (view == View::Home) scheduleRenderHome();
+            return;
+        }
+
         View want = View::Home;
         for (size_t i = 0; i < sections.size(); i++)
         {
@@ -3986,12 +4128,11 @@ void StremioTab::loadAddonCatalogs(const char* type)
                 sec.addonBase, sec.catalogType, sec.catalogId,
                 [this, live, want, series, i, cancelToken](stremio::LibraryResult res) {
                     if (!*live || (cancelToken && cancelToken->load(std::memory_order_relaxed))) return;
-                    if (!res.ok || res.items.empty()) return;
                     auto& secs = series ? addonSeriesSections : addonMovieSections;
                     if (i < secs.size())
                     {
-                        secs[i].items = res.items;
                         secs[i].loaded = true;
+                        if (res.ok) secs[i].items = res.items;
                         if (view == View::Home) scheduleRenderHome();
                         else if (view == want) renderView();
                     }
