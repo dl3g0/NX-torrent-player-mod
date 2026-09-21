@@ -122,6 +122,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 * **CPU FastLoad Boost (`1785 MHz` -> `1020 MHz`)**: Overclock seguro y dinámico que sube la CPU a 1785 MHz durante el arranque de búferes, handshakes TCP y hashes SHA-1 para iniciar la reproducción al instante, regresando a la frecuencia base (1020 MHz) para ahorrar batería.
 * **Decodificación HEVC 10-bit Blindada (`hwdec-extra-frames = 32`)**: 32 superficies de búfer en memoria NVDEC para erradicar el efecto fantasma y desincronizaciones de audio presentes en NXMP.
 * **Subida Pautada de Texturas (*Paced Texture Queue*)**: Limita la subida de imágenes a OpenGL (máximo 2 texturas por fotograma), evitando micro-congelamientos de la interfaz al desplazarse por catálogos densos.
+* **Cola de Imágenes con Suscripción Multicanal (*Multicast Image Queue*)**: Reingeniería completa de la cola de carátulas (`ImageQueue`) con soporte multicanal de oyentes. Soluciona el problema donde, al ocultar y volver a mostrar catálogos o cambiar su orden en Opciones, las nuevas tarjetas creadas en la interfaz quedaban sin cargar sus pósters al descartarse indebidamente los callbacks en vuelo.
 * **Eliminación de Recargas Innecesarias**: Caché en memoria para transiciones instantáneas y fluidas entre pestañas (`Home`, `Continuar`, `Biblioteca`, `Búsqueda`).
 * **Barra de Pistas Limpia y Recarga Focalizada**: Botón `(Y) Recargar` visible y activo únicamente en las pestañas *Continuar viendo* y *Biblioteca* con feedback visual de progreso, y eliminación de indicaciones duplicadas en la barra inferior (`[L] [R] Vista`).
 
@@ -163,6 +164,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 | **Subida de Texturas Pautada (*Paced Image Queue*)** | ✅ **UI a 60 FPS estables** |
 | **Soporte de Emojis / Banderas en Fuentes** | ✅ **Integración nativa de `OpenMoji.ttf`** |
 | **Pestaña "Catálogos" en Opciones** | ✅ **Reordenar con mando (X)/(Y) y táctil (▲/▼), ocultar con (A) y actualización diferida sin cuelgues** |
+| **Cola Multicanal de Pósters (Anti-Póster Vacío)** | ✅ **Suscripción dinámica de oyentes que garantiza la carga al reordenar u ocultar/mostrar catálogos** |
 | **Sincronización Manual de Addons en la Vista de Cuenta** | ✅ **Sincronización instantánea de addons y catálogos en vivo desde Stremio** |
 | **Internacionalización y Traducción Completa al 100%** | ✅ **Traducción total de la UI, botones de la barra inferior (footer hints) y 6 idiomas dinámicos** |
 | **Integración con IntroDB (Saltar Intros y Créditos)** | ✅ **Detección comunitaria de intros, recaps y créditos con botón (A), táctil y auto-skip** |

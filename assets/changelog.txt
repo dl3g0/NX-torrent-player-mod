@@ -2,13 +2,30 @@
 
 ¡Bienvenidos a la versión **v0.0.9** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
 
-Esta versión está dedicada por completo al **Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)**, auditando a fondo el código fuente para eliminar cualquier causa de cuelgues o cierres abruptos en Nintendo Switch.
+Esta versión introduce la esperada **Integración con IntroDB (Saltar Intros y Créditos)** para una experiencia de visualización moderna estilo streaming, junto a un **Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)** tras una auditoría exhaustiva en la consola Nintendo Switch para erradicar cualquier vector de falla y garantizar un rendimiento 100% sólido.
 
 ---
 
 ## 🌟 Novedades en v0.0.9
 
-### 🛡️ Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)
+### ⏭️ 1. Integración con IntroDB (Saltar Intros, Resúmenes y Créditos)
+* **Sincronización con la API de [IntroDB](https://introdb.app/)**:
+  * Detección comunitaria y abierta de marcas de tiempo de inicio y fin para intros, recaps (resúmenes previos) y outros (créditos finales) en series y películas.
+  * Peticiones HTTP asíncronas en segundo plano sin ralentizar el arranque ni la fluidez del reproductor.
+  * Caché en memoria protegida contra peticiones concurrentes para no repetir llamadas si se reanuda el contenido.
+* **Tarjeta Flotante Contextual en Pantalla (`skipCard`)**:
+  * **Con Mando**: Al entrar en el lapso del intro o resumen, aparece el indicador **`(A) Saltar intro`** o **`(A) Saltar resumen`**. Presionar **`(A)`** realiza un salto instantáneo al segundo exacto donde finaliza la intro.
+  * **Con Pantalla Táctil**: Puedes pulsar directamente sobre la tarjeta en pantalla para omitir el segmento sin usar los botones físicos.
+  * **Notificación Flotante**: Al saltar, se muestra un mensaje informativo en pantalla (*"Intro omitida"* o *"Resumen omitido"*).
+* **Detección Quirúrgica de Créditos (*Outro*)**:
+  * El botón **"Siguiente episodio"** ahora se activa en el segundo exacto en que comienzan los créditos finales del capítulo según los datos de IntroDB, en lugar de depender de un temporizador fijo.
+* **Opciones en Ajustes de Reproducción**:
+  * **IntroDB (Saltar intros y créditos)**: Permite habilitar o deshabilitar la consulta de marcas de tiempo.
+  * **Saltar intros automáticamente (*Auto-skip*)**: Opcional para omitir las intros de forma totalmente automática al iniciar cada episodio.
+
+---
+
+### 🛡️ 2. Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)
 * **Eliminación de Abortos en Peticiones Multihilo (`CURLOPT_NOSIGNAL`)**:
   * Se configuró estrictamente `CURLOPT_NOSIGNAL = 1L` en todas las transferencias de red (`app/http.cpp` y `app/download.cpp`).
   * En Nintendo Switch, `libcurl` sin esta bandera enviaba señales de sistema (`SIGALRM`) en timeouts DNS que colisionaban con los hilos secundarios de descarga y carátulas, provocando el cierre repentino del programa (*"se cerró el programa a causa de un error"*).
@@ -21,20 +38,17 @@ Esta versión está dedicada por completo al **Blindaje de Estabilidad Integral 
   * Soporte robusto en caso de que todos los catálogos estén ocultos o no haya conexión a Internet: se muestra un estado informativo enfocado sin provocar punteros nulos en el sistema de navegación.
 * **Seguridad en Caché Local e Imágenes**:
   * Protegido el ciclo de vida en `ImageQueue` y comprobaciones locales de caché en microSD (`fetchBackgroundAsync`, `fetchLogoAsync`, `fetchHqArtAsync`) para evitar callbacks sobre vistas que ya salieron de pantalla.
+* **Carga Garantizada de Pósters al Ocultar/Mostrar o Reordenar Catálogos (Cola Multicanal)**:
+  * Solucionado el problema donde, al alternar la visibilidad de un catálogo en Opciones (ocultar y luego volver a marcarlo visible) o al cambiar su orden, las carátulas de varias películas y series dejaban de cargar y quedaban vacías.
+  * **Causa**: La cola de imágenes descartaba silenciosamente las peticiones de las nuevas tarjetas si la descarga ya estaba en vuelo para una vista previa, y al finalizar se perdía la notificación al haber expirado el token anterior.
+  * **Solución**: Reingeniería con un sistema multicanal (`std::map<std::string, std::vector<ImageListener>>`) que suscribe todas las vistas activas a la misma imagen en vuelo y despacha el póster a todas las tarjetas que sigan en pantalla.
+* **Corrección de Carga y Persistencia en Pantalla de Inicio**:
+  * Solucionado el problema por el cual la animación de carga terminaba prematuramente mostrando "No hay catálogos disponibles" mientras la red aún descargaba los catálogos, y el mensaje persistía en pantalla una vez cargados.
+  * Ahora el indicador de carga se mantiene activo de manera fluida hasta que los datos están listos, y cualquier etiqueta de estado vacío se remueve automáticamente antes de dibujar los catálogos.
 * **Comprobaciones de Límites de Episodios**:
   * Se añadieron comprobaciones estrictas de límites de vector en la selección de temporadas y episodios de series para proteger la aplicación frente a metadatos mal formados.
 * **Aparcado de Foco en Descargas y Explorador de Archivos**:
   * Foco resguardado antes de vaciar y reconstruir listas en las actividades de descargas y explorador de archivos local.
-* **Corrección de Carga y Persistencia en Pantalla de Inicio**:
-  * Solucionado el problema por el cual la animación de carga terminaba prematuramente mostrando "No hay catálogos disponibles" mientras la red aún descargaba los catálogos, y el mensaje persistía en pantalla una vez cargados.
-  * Ahora el indicador de carga se mantiene activo de manera fluida hasta que los datos están listos, y cualquier etiqueta de estado vacío se remueve automáticamente antes de dibujar los catálogos.
-* **Cola de Imágenes con Suscripción Multicanal (Pósters al Ocultar/Mostrar Catálogos)**:
-  * Resuelto el fallo donde, tras ocultar y volver a mostrar un catálogo o cambiar su orden, los pósters de varios títulos dejaban de cargar. La cola de descargas ahora suscribe múltiples oyentes activos a una misma imagen en vuelo y entrega el resultado a todas las vistas que sigan vivas.
-* **Integración con IntroDB (Saltar Intros y Créditos)**:
-  * Integración con la API comunitaria de [IntroDB](https://introdb.app/) para consultar marcas de tiempo de intros, resúmenes y créditos en series y películas.
-  * Botón contextual interactivo en pantalla: presionar **(A)** en el mando o tocar la pantalla permite saltar intros y resúmenes al instante.
-  * Detección precisa de créditos finales (*outro*) para mostrar el botón "Siguiente episodio" exactamente al comenzar los créditos.
-  * Opciones en Ajustes de Reproducción para activar/desactivar IntroDB y opción para saltar intros de forma automática (Auto-skip).
 
 ---
 
@@ -53,4 +67,5 @@ Esta versión está dedicada por completo al **Blindaje de Estabilidad Integral 
 
 * **dl3g0** — Desarrollo, modificaciones, correcciones y optimizaciones de este mod.
 * **shodowlo** — Proyecto original [NX-torrent-player](https://github.com/shodowlo/NX-torrent-player).
+* [IntroDB](https://introdb.app/) — Base de datos comunitaria de marcas de tiempo de intros, recaps y créditos.
 * [borealis](https://github.com/xfangfang/borealis), [mpv](https://mpv.io/), [libutp](https://github.com/bittorrent/libutp), [Stremio](https://www.stremio.com/), [OpenMoji](https://openmoji.org/) y devkitPro.
