@@ -372,6 +372,8 @@ void load()
     cfg.rateGovernor = readBool(body, "rateGovernor", cfg.rateGovernor);
     cfg.ramStream    = readBool(body, "ramStream", cfg.ramStream);
     cfg.checkUpdates = readBool(body, "checkUpdates", cfg.checkUpdates);
+    cfg.introDb      = readBool(body, "introDb", cfg.introDb);
+    cfg.autoSkipIntro = readBool(body, "autoSkipIntro", cfg.autoSkipIntro);
     cfg.audioLang    = readStr(body, "audioLang", cfg.audioLang);
     if (cfg.audioLang == "es") cfg.audioLang = "es-419";
     cfg.subLang      = readStr(body, "subLang", cfg.subLang);
@@ -432,6 +434,8 @@ bool save()
                  "  \"rateGovernor\": %s,\n"
                  "  \"ramStream\": %s,\n"
                  "  \"checkUpdates\": %s,\n"
+                 "  \"introDb\": %s,\n"
+                 "  \"autoSkipIntro\": %s,\n"
                  "  \"audioLang\": \"%s\",\n"
                  "  \"subLang\": \"%s\",\n"
                  "  \"subtitles\": %s,\n"
@@ -448,7 +452,10 @@ bool save()
                  cfg.logging ? "true" : "false", cfg.hide4k ? "true" : "false",
                  cfg.rateGovernor ? "true" : "false",
                  cfg.ramStream ? "true" : "false",
-                 cfg.checkUpdates ? "true" : "false", cfg.audioLang.c_str(),
+                 cfg.checkUpdates ? "true" : "false",
+                 cfg.introDb ? "true" : "false",
+                 cfg.autoSkipIntro ? "true" : "false",
+                 cfg.audioLang.c_str(),
                  cfg.subLang.c_str(), cfg.subtitles ? "true" : "false",
                  cfg.hwDecode ? "true" : "false",
                  cfg.audioBoost ? "true" : "false", cfg.dockedUiWidth,

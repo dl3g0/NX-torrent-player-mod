@@ -73,6 +73,12 @@ struct Config
     // (the request simply fails and the app carries on), non-blocking.
     bool checkUpdates = true;
 
+    // IntroDB integration: query introdb.app for intro, recap, and outro timestamps.
+    bool introDb = true;
+
+    // Automatically skip intros without waiting for manual button confirmation.
+    bool autoSkipIntro = false;
+
     // Logical UI width to lay out in, for docked and handheld separately. One
     // of kUiScales (1280 to 1920). 1280 is 100% (the stock size).
     int dockedUiWidth   = kDefaultDockedUiWidth;

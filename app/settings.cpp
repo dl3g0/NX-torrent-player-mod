@@ -330,6 +330,28 @@ brls::View* playbackPane()
     list->addView(caption(
         tr("On by default. Off decodes in software: slower, may stutter on 1080p.")));
 
+    auto* introHdr = new brls::Header();
+    introHdr->setTitle(tr("IntroDB"));
+    list->addView(introHdr);
+
+    auto* introDbCell = new brls::BooleanCell();
+    introDbCell->init(tr("IntroDB (Skip intros & credits)"), cfg.introDb, [](bool on) {
+        config::get().introDb = on;
+        config::save();
+    });
+    list->addView(introDbCell);
+    list->addView(caption(
+        tr("Crowdsourced intro, recap, and outro timestamps via introdb.app.")));
+
+    auto* autoSkipCell = new brls::BooleanCell();
+    autoSkipCell->init(tr("Auto-skip intros"), cfg.autoSkipIntro, [](bool on) {
+        config::get().autoSkipIntro = on;
+        config::save();
+    });
+    list->addView(autoSkipCell);
+    list->addView(caption(
+        tr("Automatically skip intros without waiting for manual confirmation.")));
+
     return pane;
 }
 

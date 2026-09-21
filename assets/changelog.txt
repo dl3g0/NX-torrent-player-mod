@@ -30,6 +30,11 @@ Esta versión está dedicada por completo al **Blindaje de Estabilidad Integral 
   * Ahora el indicador de carga se mantiene activo de manera fluida hasta que los datos están listos, y cualquier etiqueta de estado vacío se remueve automáticamente antes de dibujar los catálogos.
 * **Cola de Imágenes con Suscripción Multicanal (Pósters al Ocultar/Mostrar Catálogos)**:
   * Resuelto el fallo donde, tras ocultar y volver a mostrar un catálogo o cambiar su orden, los pósters de varios títulos dejaban de cargar. La cola de descargas ahora suscribe múltiples oyentes activos a una misma imagen en vuelo y entrega el resultado a todas las vistas que sigan vivas.
+* **Integración con IntroDB (Saltar Intros y Créditos)**:
+  * Integración con la API comunitaria de [IntroDB](https://introdb.app/) para consultar marcas de tiempo de intros, resúmenes y créditos en series y películas.
+  * Botón contextual interactivo en pantalla: presionar **(A)** en el mando o tocar la pantalla permite saltar intros y resúmenes al instante.
+  * Detección precisa de créditos finales (*outro*) para mostrar el botón "Siguiente episodio" exactamente al comenzar los créditos.
+  * Opciones en Ajustes de Reproducción para activar/desactivar IntroDB y opción para saltar intros de forma automática (Auto-skip).
 
 ---
 

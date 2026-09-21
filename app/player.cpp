@@ -653,6 +653,13 @@ void MpvView::registerPlayerActions()
         tr("Pause"), brls::BUTTON_A,
         [this](brls::View*) {
             if (controlsLocked) { flashLock(); return true; }
+            // While the skip-intro card is up and the video is running, A
+            // skips the intro/recap.
+            if (skipCardShown && !userPaused && !seeking)
+            {
+                skipCurrentSegment();
+                return true;
+            }
             // While the next-episode card is up and the video is running, A
             // takes it -- that is what the card is asking for and what every
             // other player does. Paused, A still resumes: the card stays put
@@ -1198,8 +1205,9 @@ void MpvView::updateNextCard()
     if (!nextCard) return;
 
     double left = obsDur - obsPos;
+    bool inOutro = (introSegments.hasOutro && obsDur > 0.0 && obsPos >= introSegments.outro.startSec);
     bool want   = ready && !ended && !settingsOpen && !watch.nextVideoId.empty()
-                && obsDur > 0.0 && left > 0.0 && left <= kNextCardSecs;
+                && obsDur > 0.0 && ((inOutro && left > 0.0) || (left > 0.0 && left <= kNextCardSecs));
     if (want == nextCardShown) return;
 
     nextCardShown = want;
@@ -1212,6 +1220,157 @@ void MpvView::updateNextCard()
                                  : brls::Visibility::GONE);
 }
 
+void MpvView::fetchIntroDbSegments()
+{
+    if (introSegmentsFetched) return;
+    if (!config::get().introDb) return;
+    if (watch.itemId.empty()) return;
+
+    introSegmentsFetched = true;
+    std::string imdbId;
+    int season = 0, episode = 0;
+    bool isMovie = (watch.type == "movie");
+
+    if (isMovie)
+    {
+        imdbId = watch.itemId;
+    }
+    else
+    {
+        if (!introdb::parseEpisodeVideoId(watch.videoId, imdbId, season, episode))
+        {
+            imdbId = watch.itemId;
+            size_t c = watch.videoId.find(':');
+            if (c != std::string::npos)
+            {
+                try
+                {
+                    season  = std::stoi(watch.videoId.substr(0, c));
+                    episode = std::stoi(watch.videoId.substr(c + 1));
+                }
+                catch (...) {}
+            }
+        }
+    }
+
+    if (imdbId.empty()) return;
+
+    auto live = this->alive;
+    introdb::fetchSegmentsAsync(
+        imdbId, season, episode, isMovie, live,
+        [this, live](introdb::IntroSegments segs) {
+            if (!*live) return;
+            introSegments = segs;
+            brls::Logger::info("[player] IntroDB segments loaded: intro={} ({}-{}) outro={} ({}-{})",
+                               segs.hasIntro, segs.intro.startSec, segs.intro.endSec,
+                               segs.hasOutro, segs.outro.startSec, segs.outro.endSec);
+        });
+}
+
+void MpvView::updateSkipCard()
+{
+    if (!skipCard || !config::get().introDb || !ready || ended || settingsOpen)
+    {
+        if (skipCard && skipCardShown)
+        {
+            skipCardShown = false;
+            activeSegment = ActiveSegment::None;
+            skipCard->setVisibility(brls::Visibility::GONE);
+        }
+        return;
+    }
+
+    if (nextCardShown)
+    {
+        if (skipCardShown)
+        {
+            skipCardShown = false;
+            activeSegment = ActiveSegment::None;
+            skipCard->setVisibility(brls::Visibility::GONE);
+        }
+        return;
+    }
+
+    ActiveSegment currentSeg = ActiveSegment::None;
+
+    if (introSegments.hasRecap && obsPos >= introSegments.recap.startSec &&
+        obsPos < introSegments.recap.endSec - 0.5)
+    {
+        currentSeg = ActiveSegment::Recap;
+    }
+    else if (introSegments.hasIntro && obsPos >= introSegments.intro.startSec &&
+             obsPos < introSegments.intro.endSec - 0.5)
+    {
+        currentSeg = ActiveSegment::Intro;
+    }
+
+    // Auto-skip if enabled
+    if (config::get().autoSkipIntro && currentSeg != ActiveSegment::None && !userPaused && !seeking)
+    {
+        if (currentSeg == ActiveSegment::Intro && !introAutoSkipped)
+        {
+            activeSegment = currentSeg;
+            skipCurrentSegment();
+            return;
+        }
+        if (currentSeg == ActiveSegment::Recap && !recapAutoSkipped)
+        {
+            activeSegment = currentSeg;
+            skipCurrentSegment();
+            return;
+        }
+    }
+
+    bool want = (currentSeg != ActiveSegment::None);
+    if (want == skipCardShown && currentSeg == activeSegment) return;
+
+    skipCardShown = want;
+    activeSegment = currentSeg;
+
+    if (want && skipCardLabel)
+    {
+        if (currentSeg == ActiveSegment::Recap)
+            skipCardLabel->setText(tr("Skip recap"));
+        else
+            skipCardLabel->setText(tr("Skip intro"));
+    }
+    skipCard->setVisibility(want ? brls::Visibility::VISIBLE : brls::Visibility::GONE);
+}
+
+void MpvView::skipCurrentSegment()
+{
+    if (!ready || !mpv) return;
+
+    double targetSec = 0.0;
+    std::string pillText;
+
+    if (activeSegment == ActiveSegment::Recap && introSegments.hasRecap)
+    {
+        targetSec = introSegments.recap.endSec + 0.5;
+        pillText  = tr("Recap skipped");
+        recapAutoSkipped = true;
+    }
+    else if (introSegments.hasIntro)
+    {
+        targetSec = introSegments.intro.endSec + 0.5;
+        pillText  = tr("Intro skipped");
+        introAutoSkipped = true;
+    }
+
+    if (targetSec > 0.0)
+    {
+        char v[32];
+        std::snprintf(v, sizeof(v), "%.1f", targetSec);
+        const char* cmd[] = { "seek", v, "absolute", nullptr };
+        mpv_command_async(mpv, 0, cmd);
+        if (!pillText.empty()) flashPill(pillText);
+    }
+
+    skipCardShown = false;
+    activeSegment = ActiveSegment::None;
+    if (skipCard) skipCard->setVisibility(brls::Visibility::GONE);
+}
+
 // Leaves the player and opens the next episode's sources. Everything it needs
 // is copied out first: popping frees this view long before the push happens.
 void MpvView::goToNextEpisode()
@@ -1222,6 +1381,8 @@ void MpvView::goToNextEpisode()
     ended = true;
     nextCardShown = false;
     if (nextCard) nextCard->setVisibility(brls::Visibility::GONE);
+    skipCardShown = false;
+    if (skipCard) skipCard->setVisibility(brls::Visibility::GONE);
 
     std::string authKey = watch.authKey;
     std::string series  = watch.itemId;
@@ -1841,6 +2002,7 @@ void MpvView::pumpEvents()
                     ready = true;
                 brls::Logger::info("[mpv event] file loaded");
                 fetchOnlineSubs();
+                fetchIntroDbSegments();
                 break;
             case MPV_EVENT_PLAYBACK_RESTART:
                 fileLoaded = true;
@@ -2406,6 +2568,38 @@ void MpvView::buildLoadingOverlay(const std::string& title)
             goToNextEpisode();
         }));
     this->addView(nextCard);
+
+    // IntroDB: Skip Intro / Recap card (bottom-right, same slot as next-episode)
+    skipCard = new brls::Box();
+    skipCard->setAxis(brls::Axis::ROW);
+    skipCard->setAlignItems(brls::AlignItems::CENTER);
+    skipCard->setPositionType(brls::PositionType::ABSOLUTE);
+    skipCard->setPositionBottom(132.0f);
+    skipCard->setPositionRight(70.0f);
+    skipCard->setPadding(14.0f, 22.0f, 16.0f, 22.0f);
+    skipCard->setCornerRadius(10.0f);
+    skipCard->setBackgroundColor(nvgRGBA(0, 0, 0, 170));
+    skipCard->setVisibility(brls::Visibility::GONE);
+    {
+        auto* glyph = new brls::Label();
+        glyph->setText("\xEE\x83\xA0");  // U+E0E0, the A button
+        glyph->setFontSize(26.0f);
+        glyph->setTextColor(nvgRGB(255, 255, 255));
+        glyph->setMarginRight(10.0f);
+        skipCard->addView(glyph);
+
+        skipCardLabel = new brls::Label();
+        skipCardLabel->setText(tr("Skip intro"));
+        skipCardLabel->setFontSize(23.0f);
+        skipCardLabel->setTextColor(nvgRGB(255, 255, 255));
+        skipCard->addView(skipCardLabel);
+    }
+    skipCard->addGestureRecognizer(
+        new brls::TapGestureRecognizer(skipCard, [this]() {
+            if (controlsLocked) { flashLock(); return; }
+            skipCurrentSegment();
+        }));
+    this->addView(skipCard);
 
     // Seek bar at the bottom while paused: elapsed | progress | total.
     seekOverlay = new brls::Box();
@@ -3661,6 +3855,7 @@ void MpvView::draw(NVGcontext* vg, float x, float y, float width, float height,
     updatePill();          // ... and the L/R readout after its own
     updateDoubleTapSeek();
     updateNextCard();      // "next episode", over the last seconds
+    updateSkipCard();      // IntroDB: "skip intro / recap"
     updateInfoOverlay();
     logStats();  // always, even with the ZR panel closed
 

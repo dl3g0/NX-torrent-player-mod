@@ -570,6 +570,15 @@ const Entry kEs[] = {
     { "📥  Downloads", "📥  Descargas" },
     { "📥  Downloads ({} active)", "📥  Descargas ({} activas)" },
     { "📥 Buffer: {:.0f}s", "📥 Búfer: {:.0f}s" },
+    { "Skip intro", "Saltar intro" },
+    { "Skip recap", "Saltar resumen" },
+    { "Intro skipped", "Intro omitida" },
+    { "Recap skipped", "Resumen omitido" },
+    { "IntroDB", "IntroDB" },
+    { "IntroDB (Skip intros & credits)", "IntroDB (Saltar intros y créditos)" },
+    { "Crowdsourced intro, recap, and outro timestamps via introdb.app.", "Marcas de tiempo colaborativas de intro, resumen y créditos vía introdb.app." },
+    { "Auto-skip intros", "Saltar intros automáticamente" },
+    { "Automatically skip intros without waiting for manual confirmation.", "Salta automáticamente las intros sin esperar confirmación manual." },
 };
 
 const Entry kEsEs[] = {
@@ -1129,6 +1138,15 @@ const Entry kEsEs[] = {
     { "📥  Downloads", "📥  Descargas" },
     { "📥  Downloads ({} active)", "📥  Descargas ({} activas)" },
     { "📥 Buffer: {:.0f}s", "📥 Búfer: {:.0f}s" },
+    { "Skip intro", "Saltar intro" },
+    { "Skip recap", "Saltar resumen" },
+    { "Intro skipped", "Intro omitida" },
+    { "Recap skipped", "Resumen omitido" },
+    { "IntroDB", "IntroDB" },
+    { "IntroDB (Skip intros & credits)", "IntroDB (Saltar intros y créditos)" },
+    { "Crowdsourced intro, recap, and outro timestamps via introdb.app.", "Marcas de tiempo colaborativas de intro, resumen y créditos vía introdb.app." },
+    { "Auto-skip intros", "Saltar intros automáticamente" },
+    { "Automatically skip intros without waiting for manual confirmation.", "Salta automáticamente las intros sin esperar confirmación manual." },
 };
 
 const Entry kPtBr[] = {
@@ -1688,6 +1706,15 @@ const Entry kPtBr[] = {
     { "📥  Downloads", "📥  Downloads" },
     { "📥  Downloads ({} active)", "📥  Downloads ({} ativos)" },
     { "📥 Buffer: {:.0f}s", "📥 Buffer: {:.0f}s" },
+    { "Skip intro", "Pular introdução" },
+    { "Skip recap", "Pular recapitulação" },
+    { "Intro skipped", "Introdução pulada" },
+    { "Recap skipped", "Recapitulação pulada" },
+    { "IntroDB", "IntroDB" },
+    { "IntroDB (Skip intros & credits)", "IntroDB (Pular introduções e créditos)" },
+    { "Crowdsourced intro, recap, and outro timestamps via introdb.app.", "Carimbos de data e hora colaborativos para introdução, recapitulação e créditos via introdb.app." },
+    { "Auto-skip intros", "Pular introduções automaticamente" },
+    { "Automatically skip intros without waiting for manual confirmation.", "Pula as introduções automaticamente sem esperar confirmação manual." },
 };
 
 const Entry kRu[] = {
@@ -2247,6 +2274,15 @@ const Entry kRu[] = {
     { "📥  Downloads", "📥  Загрузки" },
     { "📥  Downloads ({} active)", "📥  Загрузки ({} активных)" },
     { "📥 Buffer: {:.0f}s", "📥 Буфер: {:.0f}с" },
+    { "Skip intro", "Пропустить интро" },
+    { "Skip recap", "Пропустить пересказ" },
+    { "Intro skipped", "Интро пропущено" },
+    { "Recap skipped", "Пересказ пропущен" },
+    { "IntroDB", "IntroDB" },
+    { "IntroDB (Skip intros & credits)", "IntroDB (Пропуск интро и титров)" },
+    { "Crowdsourced intro, recap, and outro timestamps via introdb.app.", "Краудсорсинговые метки времени интро, пересказа и титров через introdb.app." },
+    { "Auto-skip intros", "Автоматический пропуск интро" },
+    { "Automatically skip intros without waiting for manual confirmation.", "Автоматически пропускает интро без ожидания ручного подтверждения." },
 };
 
 const Entry kFr[] = {
@@ -2806,6 +2842,15 @@ const Entry kFr[] = {
     { "📥  Downloads", "📥  Téléchargements" },
     { "📥  Downloads ({} active)", "📥  Téléchargements ({} actifs)" },
     { "📥 Buffer: {:.0f}s", "📥 Mémoire tampon : {:.0f}s" },
+    { "Skip intro", "Passer l'intro" },
+    { "Skip recap", "Passer le récap" },
+    { "Intro skipped", "Intro passée" },
+    { "Recap skipped", "Récap passé" },
+    { "IntroDB", "IntroDB" },
+    { "IntroDB (Skip intros & credits)", "IntroDB (Passer intros et crédits)" },
+    { "Crowdsourced intro, recap, and outro timestamps via introdb.app.", "Horodatages collaboratifs d'intro, récap et crédits via introdb.app." },
+    { "Auto-skip intros", "Passer automatiquement les intros" },
+    { "Automatically skip intros without waiting for manual confirmation.", "Passe automatiquement les intros sans attendre de confirmation manuelle." },
 };
 
 std::string g_lang = "es";

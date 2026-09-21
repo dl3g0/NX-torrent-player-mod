@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "stremio.hpp"  // stremio::Subtitle, for the addon subtitle picker
+#include "introdb.hpp"  // introdb::IntroSegments
 
 struct mpv_handle;
 struct mpv_render_context;
@@ -159,6 +160,20 @@ class MpvView : public brls::Box
     brls::Box* nextCard      = nullptr;
     brls::Label* nextCardSub = nullptr;  // "Season 1 . Episode 4"
     bool nextCardShown       = false;
+
+    // IntroDB: skip intro / recap card and timestamps
+    introdb::IntroSegments introSegments;
+    bool introSegmentsFetched = false;
+    bool introAutoSkipped     = false;
+    bool recapAutoSkipped     = false;
+    enum class ActiveSegment { None, Intro, Recap };
+    ActiveSegment activeSegment = ActiveSegment::None;
+    void fetchIntroDbSegments();
+    void updateSkipCard();
+    void skipCurrentSegment();
+    brls::Box* skipCard         = nullptr;
+    brls::Label* skipCardLabel  = nullptr;
+    bool skipCardShown          = false;
 
     // The settings panel is up. Suppresses the per-frame stick scrub, which is
     // polled straight off the controller and so would otherwise keep seeking
