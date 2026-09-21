@@ -55,6 +55,13 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
   * **Pantalla Táctil**: Doble toque en el lado derecho avanza **+10s** (`+10s ⏩`); en el lado izquierdo retrocede **-10s** (`⏪ 10s`). Toques continuos acumulan saltos mayores (**+20s**, **+30s**, **+40s**...). Un solo toque en el centro alterna los controles de inmediato.
   * **Gatillos Físicos `ZL` / `ZR`**: Doble pulsación rápida en **`ZR`** avanza +10s (acumulativo); doble pulsación en **`ZL`** retrocede -10s (acumulativo).
 * **Ajuste Inteligente de Títulos Largos**: Los nombres extensos de películas o episodios se delimitan y desplazan suavemente (*marquee/auto-scroll*) sin sobreponerse al indicador de buffer ni a los botones de ajustes.
+* **Integración con IntroDB (Saltar Intros, Resúmenes y Créditos)**:
+  * Conexión asíncrona con la base de datos comunitaria de **[IntroDB](https://introdb.app/)** para detectar marcas de tiempo precisas en series y películas.
+  * **Botón Flotante Contextual**: Aparece automáticamente en pantalla al entrar en una intro o resumen:
+    * **Con Mando**: Indicador **`(A) Saltar Intro`** o **`(A) Saltar Resumen`**.
+    * **Con Pantalla Táctil**: Toque directo sobre la tarjeta en pantalla.
+  * **Detección Quirúrgica de Créditos (*Outro*)**: El botón **"Siguiente episodio"** se activa exactamente cuando comienzan los créditos finales del capítulo en lugar de un temporizador fijo.
+  * **Modo Salto Automático (*Auto-Skip*)**: Configurable desde Opciones para omitir intros de inmediato sin necesidad de presionar ningún botón.
 * **Menú de Configuración Rápida en Pantalla (`X`)**:
   * Selector de pistas de audio (multiidioma).
   * Selector de subtítulos incrustados y externos.
@@ -158,6 +165,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 | **Pestaña "Catálogos" en Opciones** | ✅ **Reordenar con mando (X)/(Y) y táctil (▲/▼), ocultar con (A) y actualización diferida sin cuelgues** |
 | **Sincronización Manual de Addons en la Vista de Cuenta** | ✅ **Sincronización instantánea de addons y catálogos en vivo desde Stremio** |
 | **Internacionalización y Traducción Completa al 100%** | ✅ **Traducción total de la UI, botones de la barra inferior (footer hints) y 6 idiomas dinámicos** |
+| **Integración con IntroDB (Saltar Intros y Créditos)** | ✅ **Detección comunitaria de intros, recaps y créditos con botón (A), táctil y auto-skip** |
 | **Fuente Universal para Subtítulos en Árabe y Cirílico** | ✅ **Automática integrada sin configuración del usuario** |
 | **Filtro Automático de Fuentes 4K** | ✅ **Opción activa por defecto para estabilidad Switch** |
 
@@ -175,7 +183,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 * **`+` / `-`**: Abrir Ajustes de la aplicación.
 
 ### 🎬 Durante la Reproducción de Vídeo
-* **`A`**: Pausar / Reanudar reproducción.
+* **`A`**: Pausar / Reanudar reproducción. Si la tarjeta flotante **"Saltar intro"** o **"Siguiente episodio"** está activa en pantalla, presionar `A` ejecuta el salto al instante.
 * **`ZL` (Doble pulsación rápida)**: Retroceso rápido acumulativo (**-10s**, **-20s**, **-30s**...).
 * **`ZR` (Doble pulsación rápida)**: Avance rápido acumulativo (**+10s**, **+20s**, **+30s**...).
 * **`Stick Izquierdo (Izquierda / Derecha)`**: Búsqueda continua en la línea de tiempo con previsualización.
@@ -185,6 +193,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 * **`Y`**: Durante la reproducción: Bloquear/Desbloquear controles. Durante la carga/error: Reintentar stream.
 * **`B`**: Detener reproducción y salir al menú.
 * **Pantalla Táctil**:
+  * **Tocar tarjeta flotante**: Pulsa directamente sobre **"Saltar intro"** o **"Siguiente episodio"** para saltar al instante sin usar el mando.
   * **Doble toque a la derecha**: Salto rápido hacia adelante (**+10s**, **+20s**, **+30s**...).
   * **Doble toque a la izquierda**: Salto rápido hacia atrás (**-10s**, **-20s**, **-30s**...).
   * **Toque simple en el centro**: Mostrar/Ocultar barra de controles y estado.
@@ -240,6 +249,7 @@ El archivo resultante `NX-torrent-player.nro` se generará en la carpeta `build/
 * **[mpv](https://mpv.io/)** — Motor multimedia libre y potente.
 * **[libutp](https://github.com/bittorrent/libutp)** — Protocolo de transporte BitTorrent uTP.
 * **[Stremio](https://www.stremio.com/)** — Protocolo de addons, cuentas y metadata.
+* **[IntroDB](https://introdb.app/)** — Base de datos comunitaria y abierta de marcas de tiempo de intros, resúmenes y créditos.
 * **[OpenMoji](https://openmoji.org/)** — Emojis de código abierto integrados.
 * **[devkitPro](https://devkitpro.org/)** — Toolchain indispensable para el desarrollo Homebrew en Nintendo Switch.
 
