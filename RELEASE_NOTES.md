@@ -1,51 +1,18 @@
-# 🚀 NX Torrent Player MOD v0.0.9 — Release Notes
+# 🚀 NX Torrent Player MOD v0.0.9.1 — Release Notes
 
-¡Bienvenidos a la versión **v0.0.9** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
+¡Bienvenidos a la versión **v0.0.9.1** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
 
-Esta versión introduce la esperada **Integración con IntroDB (Saltar Intros y Créditos)** para una experiencia de visualización moderna estilo streaming, junto a un **Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)** tras una auditoría exhaustiva en la consola Nintendo Switch para erradicar cualquier vector de falla y garantizar un rendimiento 100% sólido.
-
----
-
-## 🌟 Novedades en v0.0.9
-
-### ⏭️ 1. Integración con IntroDB (Saltar Intros, Resúmenes y Créditos)
-* **Sincronización con la API de [IntroDB](https://introdb.app/)**:
-  * Detección comunitaria y abierta de marcas de tiempo de inicio y fin para intros, recaps (resúmenes previos) y outros (créditos finales) en series y películas.
-  * Peticiones HTTP asíncronas en segundo plano sin ralentizar el arranque ni la fluidez del reproductor.
-  * Caché en memoria protegida contra peticiones concurrentes para no repetir llamadas si se reanuda el contenido.
-* **Tarjeta Flotante Contextual en Pantalla (`skipCard`)**:
-  * **Con Mando**: Al entrar en el lapso del intro o resumen, aparece el indicador **`(A) Saltar intro`** o **`(A) Saltar resumen`**. Presionar **`(A)`** realiza un salto instantáneo al segundo exacto donde finaliza la intro.
-  * **Con Pantalla Táctil**: Puedes pulsar directamente sobre la tarjeta en pantalla para omitir el segmento sin usar los botones físicos.
-  * **Notificación Flotante**: Al saltar, se muestra un mensaje informativo en pantalla (*"Intro omitida"* o *"Resumen omitido"*).
-* **Detección Quirúrgica de Créditos (*Outro*)**:
-  * El botón **"Siguiente episodio"** ahora se activa en el segundo exacto en que comienzan los créditos finales del capítulo según los datos de IntroDB, en lugar de depender de un temporizador fijo.
-* **Opciones en Ajustes de Reproducción**:
-  * **IntroDB (Saltar intros y créditos)**: Permite habilitar o deshabilitar la consulta de marcas de tiempo.
-  * **Saltar intros automáticamente (*Auto-skip*)**: Opcional para omitir las intros de forma totalmente automática al iniciar cada episodio.
+Esta versión introduce un **Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)** tras una auditoría en la consola Nintendo Switch para erradicar cualquier vector de falla y garantizar un rendimiento 100% sólido.
 
 ---
 
-### 🛡️ 2. Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)
-* **Eliminación de Abortos en Peticiones Multihilo (`CURLOPT_NOSIGNAL`)**:
-  * Se implementó estrictamente `CURLOPT_NOSIGNAL = 1L` en todas las transferencias de red (`app/http.cpp` y `app/download.cpp`).
-  * En Nintendo Switch, `libcurl` sin esta bandera enviaba señales de sistema (`SIGALRM`) en timeouts DNS que colisionaban con los hilos secundarios de descarga y carátulas, provocando el cierre forzado del programa por Horizon OS (*"se cerró el programa a causa de un error"*).
-* **Protección de Foco y Prevención de Fallos por Memoria Liberada (*Use-After-Free*)**:
-  * Corregido el fallo crítico al refrescar el catálogo principal o reordenar catálogos en Opciones: se implementó un mecanismo de aparcado de foco (`parkFocusOffList()`) que traslada el foco fuera del contenedor antes de vaciar las vistas (`clearViews()`), evitando desreferenciaciones a vistas destruidas en `onFocusLost()`.
-  * Los tokens de ciclo de vida (`rowsAlive`) ahora se cancelan de inmediato al invalidar vistas, asegurando que tareas en cola no intenten dibujar sobre elementos que ya no existen.
-* **Seguridad Asíncrona en Pantalla de Cuenta**:
-  * Si el usuario sale de la vista de Cuenta mientras se realiza una petición de sincronización de addons, los callbacks asíncronos se descartan limpiamente de inmediato sin intentar modificar componentes destruidos.
-* **Manejo Seguro de Pantallas y Estados Vacíos**:
-  * Soporte robusto en caso de que todos los catálogos estén ocultos o no haya conexión a Internet: se muestra un estado informativo enfocado sin provocar punteros nulos en el sistema de navegación.
-* **Seguridad en Caché Local e Imágenes**:
-* **Carga Garantizada de Pósters al Ocultar/Mostrar o Reordenar Catálogos (Cola Multicanal)**:
-  * Solucionado el problema donde, al alternar la visibilidad de un catálogo en Opciones (ocultar y luego volver a marcarlo visible) o al cambiar su orden, las carátulas de varias películas y series dejaban de cargar y quedaban vacías.
-  * **Causa**: La cola de imágenes descartaba silenciosamente las peticiones de las nuevas tarjetas si la descarga ya estaba en vuelo para una vista previa, y al finalizar se perdía la notificación al haber expirado el token anterior.
-  * **Solución**: Reingeniería con un sistema multicanal (`std::map<std::string, std::vector<ImageListener>>`) que suscribe todas las vistas activas a la misma imagen en vuelo y despacha el póster a todas las tarjetas que sigan en pantalla.
-* **Corrección de Carga y Persistencia en Pantalla de Inicio**:
-  * Solucionado el problema por el cual la animación de carga terminaba prematuramente mostrando "No hay catálogos disponibles" mientras la red aún descargaba los catálogos, y el mensaje persistía en pantalla una vez cargados.
-  * Ahora el indicador de carga se mantiene activo de manera fluida hasta que los datos están listos, y cualquier etiqueta de estado vacío se remueve automáticamente antes de dibujar los catálogos.
-* **Comprobaciones de Límites de Episodios**:
-  * Se añadieron comprobaciones estrictas de límites de vector en la selección de temporadas y episodios de series para proteger la aplicación frente a metadatos mal formados.
+## 🌟 Novedades en v0.0.9.1
+
+### 🛡️ 1. Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)
+* **Blindaje en Pestaña "Continuar" y Recarga (`(Y) Reload`)**:
+  * Corregido el crasheo que ocurría al intercalar entre pestañas y presionar recargar en "Continuar viendo", o al iniciar la app e ir rápidamente a "Continuar" y recargar.
+  * **Causa**: Al recargar o alternar vistas rápidamente, peticiones asíncronas de pósters intentaban actualizar tarjetas destruidas tras `clearViews()` debido a que `rowsAlive` no se invalidaba en `reload()`; además, `fetchLibraryAsync` modificaba la estructura global `g_libIds` concurrentemente en hilos secundarios generando colisiones de memoria, y el foco quedaba atrapado en elementos no enfocables si la lista no había terminado de cargar.
+  * **Solución**: Se implementó un guardia de carga (`libLoading`) con identificador de secuencia (`libLoadSeq`), invalidación inmediata de `rowsAlive` en `reload()`, actualización segura de `g_libIds` exclusivamente en el hilo UI (`brls::sync`), estado visual de "Cargando..." cuando los datos aún están en vuelo para evitar estados vacíos prematuros, y un sistema de aparcado y rescate de foco en `finishList()` que redirige el cursor a la barra de pestañas superior si no hay tarjetas disponibles.
 * **Aparcado de Foco en Descargas y Explorador de Archivos**:
   * Foco resguardado antes de vaciar y reconstruir listas en las actividades de descargas y explorador de archivos local.
 

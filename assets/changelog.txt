@@ -1,12 +1,12 @@
-# 🚀 NX Torrent Player MOD v0.0.9 — Release Notes
+# 🚀 NX Torrent Player MOD v0.0.9.1 — Release Notes
 
-¡Bienvenidos a la versión **v0.0.9** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
+¡Bienvenidos a la versión **v0.0.9.1** de **NX Torrent Player (MOD)** desarrollada por **dl3g0**!
 
 Esta versión introduce la esperada **Integración con IntroDB (Saltar Intros y Créditos)** para una experiencia de visualización moderna estilo streaming, junto a un **Blindaje de Estabilidad Integral y Prevención de Cierres Inesperados (Anti-Crash)** tras una auditoría exhaustiva en la consola Nintendo Switch para erradicar cualquier vector de falla y garantizar un rendimiento 100% sólido.
 
 ---
 
-## 🌟 Novedades en v0.0.9
+## 🌟 Novedades en v0.0.9.1
 
 ### ⏭️ 1. Integración con IntroDB (Saltar Intros, Resúmenes y Créditos)
 * **Sincronización con la API de [IntroDB](https://introdb.app/)**:
@@ -47,6 +47,10 @@ Esta versión introduce la esperada **Integración con IntroDB (Saltar Intros y 
   * Ahora el indicador de carga se mantiene activo de manera fluida hasta que los datos están listos, y cualquier etiqueta de estado vacío se remueve automáticamente antes de dibujar los catálogos.
 * **Comprobaciones de Límites de Episodios**:
   * Se añadieron comprobaciones estrictas de límites de vector en la selección de temporadas y episodios de series para proteger la aplicación frente a metadatos mal formados.
+* **Blindaje en Pestaña "Continuar" y Recarga (`(Y) Reload`)**:
+  * Corregido el crasheo que ocurría al intercalar entre pestañas y presionar recargar en "Continuar viendo", o al iniciar la app e ir rápidamente a "Continuar" y recargar.
+  * **Causa**: Al recargar o alternar vistas rápidamente, peticiones asíncronas de pósters intentaban actualizar tarjetas destruidas tras `clearViews()` debido a que `rowsAlive` no se invalidaba en `reload()`; además, `fetchLibraryAsync` modificaba la estructura global `g_libIds` concurrentemente en hilos secundarios generando colisiones de memoria, y el foco quedaba atrapado en elementos no enfocables si la lista no había terminado de cargar.
+  * **Solución**: Se implementó un guardia de carga (`libLoading`) con identificador de secuencia (`libLoadSeq`), invalidación inmediata de `rowsAlive` en `reload()`, actualización segura de `g_libIds` exclusivamente en el hilo UI (`brls::sync`), estado visual de "Cargando..." cuando los datos aún están en vuelo para evitar estados vacíos prematuros, y un sistema de aparcado y rescate de foco en `finishList()` que redirige el cursor a la barra de pestañas superior si no hay tarjetas disponibles.
 * **Aparcado de Foco en Descargas y Explorador de Archivos**:
   * Foco resguardado antes de vaciar y reconstruir listas en las actividades de descargas y explorador de archivos local.
 

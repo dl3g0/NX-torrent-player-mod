@@ -584,6 +584,8 @@ class StremioTab : public brls::Box
     // without re-hitting the network on every R press.
     std::vector<stremio::LibItem> libItems;
     bool libLoaded = false;
+    bool libLoading = false;
+    uint64_t libLoadSeq = 0;
     // Popular catalogs, fetched lazily on first view and cached after.
     std::vector<stremio::LibItem> popMovies, popSeries;
     bool popMoviesLoaded = false, popSeriesLoaded = false;

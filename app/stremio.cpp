@@ -627,6 +627,7 @@ void fetchLibraryAsync(const std::string& authKey,
 {
     brls::async([authKey, done]() {
         LibraryResult r;
+        std::set<std::string> parsedLibIds;
         std::string body = "{\"authKey\":\"" + json::escape(authKey) +
                            "\",\"collection\":\"libraryItem\",\"all\":true}";
         std::string resp, err;
@@ -697,13 +698,11 @@ void fetchLibraryAsync(const std::string& authKey,
                 // holds, whether or not it survived the filters above -- a
                 // "temp" (auto-added by watching) item IS in the library as far
                 // as the +/- button is concerned; only "removed" is not.
-                g_libIds.clear();
-                g_libFetched = true;
                 for (const auto& o : objs)
                 {
                     std::string id = json::str(o, "_id");
                     if (!id.empty() && !json::boolean(o, "removed", false))
-                        g_libIds.insert(id);
+                        parsedLibIds.insert(id);
                 }
 
                 // Most recently viewed first: watching bumps _mtime, and the ISO
@@ -722,7 +721,14 @@ void fetchLibraryAsync(const std::string& authKey,
                     nTemp);
             }
         }
-        brls::sync([done, r]() { done(r); });
+        brls::sync([done, r, ids = std::move(parsedLibIds)]() mutable {
+            if (r.ok)
+            {
+                g_libIds = std::move(ids);
+                g_libFetched = true;
+            }
+            done(r);
+        });
     });
 }
 
@@ -3002,7 +3008,7 @@ void StremioTab::onGlobalFocus(brls::View* focused)
     while (root->getParent()) root = root->getParent();
     if (!isUnder(focused, root)) return;
 
-    if (catalogLoadsPaused)
+    if (view == View::Home && catalogLoadsPaused)
     {
         resumeCatalogLoads();
     }
@@ -3211,6 +3217,8 @@ void StremioTab::parkFocusOffList()
     // back to a row afterwards.
     brls::View* cur = brls::Application::getCurrentFocus();
     if (cur && (
+        cur == libraryBox ||
+        (libraryBox && isUnder(cur, libraryBox)) ||
         (libList && isUnder(cur, libList)) ||
         (searchBox && isUnder(cur, searchBox)) ||
         (homeBox && isUnder(cur, homeBox)) ||
@@ -3331,8 +3339,20 @@ void StremioTab::loadLibrary()
 {
     stremio::fetchAddonsAsync(authKey, [](stremio::AddonsResult) {});
 
-    stremio::fetchLibraryAsync(authKey, [this, live = alive](stremio::LibraryResult r) {
+    uint64_t reqId = ++libLoadSeq;
+    libLoading = true;
+    this->setActionAvailable(brls::BUTTON_Y, false);
+    this->setActionHidden(brls::BUTTON_Y, true);
+
+    stremio::fetchLibraryAsync(authKey, [this, live = alive, reqId](stremio::LibraryResult r) {
         if (!*live) return;
+        if (reqId != libLoadSeq) return;
+        libLoading = false;
+
+        bool canReload = !authKey.empty() && (view == View::ContinueWatching || view == View::Library);
+        this->setActionAvailable(brls::BUTTON_Y, canReload);
+        this->setActionHidden(brls::BUTTON_Y, !canReload);
+
         if (!r.ok)
         {
             if (view == View::ContinueWatching || view == View::Library)
@@ -3353,12 +3373,15 @@ void StremioTab::loadLibrary()
 
 void StremioTab::reload()
 {
-    if (authKey.empty()) return;
+    if (authKey.empty() || libLoading) return;
     if (view == View::ContinueWatching || view == View::Library)
     {
         parkFocusOffList();
+        *rowsAlive = false;
+        rowsAlive  = std::make_shared<bool>(true);
         if (view == View::ContinueWatching && continueBox) continueBox->clearViews();
         if (view == View::Library && libraryBoxView) libraryBoxView->clearViews();
+        resetOnShow = true;
         showStatus(tr("Loading..."), true);
         loadLibrary();
     }
@@ -3420,7 +3443,7 @@ void StremioTab::renderView()
     if (activeBox) libList->addView(activeBox);
 
     loadingBox->setVisibility(brls::Visibility::GONE);
-    bool canReload = !authKey.empty() && (view == View::ContinueWatching || view == View::Library);
+    bool canReload = !authKey.empty() && !libLoading && (view == View::ContinueWatching || view == View::Library);
     this->setActionAvailable(brls::BUTTON_Y, canReload);
     this->setActionHidden(brls::BUTTON_Y, !canReload);
 
@@ -3453,6 +3476,13 @@ void StremioTab::renderContinueWatching()
     *rowsAlive = false;
     rowsAlive  = std::make_shared<bool>(true);
     continueBox->clearViews();
+
+    if (!libLoaded)
+    {
+        showStatus(tr("Loading..."), true);
+        return;
+    }
+
     loadingBox->setVisibility(brls::Visibility::GONE);
 
     stremio::LocalWatch lw = stremio::lastWatch();
@@ -3520,6 +3550,13 @@ void StremioTab::renderLibrary()
     *rowsAlive = false;
     rowsAlive  = std::make_shared<bool>(true);
     libraryBoxView->clearViews();
+
+    if (!libLoaded)
+    {
+        showStatus(tr("Loading..."), true);
+        return;
+    }
+
     loadingBox->setVisibility(brls::Visibility::GONE);
 
     std::vector<stremio::LibItem> lib;
@@ -5412,19 +5449,48 @@ void StremioTab::finishList(brls::View* lastRow)
 
         brls::View* focus = brls::Application::getCurrentFocus();
         bool parked = !focus || focus == libraryBox || isUnder(focus, loginBox);
-        libraryBox->setFocusable(false);
-        // resetOnShow (a view change) forces the cursor to the first row and the
-        // list back to the top, regardless of where focus was in the old list --
-        // unless suppressFocusMove (a header tab-bar pick) asked to leave focus
-        // where it is, up on the bar.
-        if (first && (parked || resetOnShow) && !suppressFocusMove)
-            brls::Application::giveFocus(first);
-        if (resetOnShow && libScroll)
-            libScroll->setContentOffsetY(0.0f, false);
+        if (first)
+        {
+            libraryBox->setFocusable(false);
+            // resetOnShow (a view change) forces the cursor to the first row and the
+            // list back to the top, regardless of where focus was in the old list --
+            // unless suppressFocusMove (a header tab-bar pick) asked to leave focus
+            // where it is, up on the bar.
+            if ((parked || resetOnShow) && !suppressFocusMove)
+                brls::Application::giveFocus(first);
+            if (resetOnShow && libScroll)
+                libScroll->setContentOffsetY(0.0f, false);
 
-        if (first && stremio::libraryUpTarget)
-            first->setCustomNavigationRoute(brls::FocusDirection::UP,
-                                            stremio::libraryUpTarget);
+            if (stremio::libraryUpTarget)
+                first->setCustomNavigationRoute(brls::FocusDirection::UP,
+                                                stremio::libraryUpTarget);
+        }
+        else
+        {
+            if (stremio::libraryUpTarget && (parked || resetOnShow) && !suppressFocusMove)
+            {
+                libraryBox->setFocusable(false);
+                brls::Application::giveFocus(stremio::libraryUpTarget);
+            }
+            else
+            {
+                libraryBox->setFocusable(true);
+                libraryBox->setHideHighlight(true);
+            }
+        }
+    }
+    else
+    {
+        if (stremio::libraryUpTarget && !suppressFocusMove)
+        {
+            libraryBox->setFocusable(false);
+            brls::Application::giveFocus(stremio::libraryUpTarget);
+        }
+        else
+        {
+            libraryBox->setFocusable(true);
+            libraryBox->setHideHighlight(true);
+        }
     }
     resetOnShow       = false;
     suppressFocusMove = false;

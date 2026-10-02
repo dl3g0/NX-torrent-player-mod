@@ -125,6 +125,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 * **Cola de Imágenes con Suscripción Multicanal (*Multicast Image Queue*)**: Reingeniería completa de la cola de carátulas (`ImageQueue`) con soporte multicanal de oyentes. Soluciona el problema donde, al ocultar y volver a mostrar catálogos o cambiar su orden en Opciones, las nuevas tarjetas creadas en la interfaz quedaban sin cargar sus pósters al descartarse indebidamente los callbacks en vuelo.
 * **Eliminación de Recargas Innecesarias**: Caché en memoria para transiciones instantáneas y fluidas entre pestañas (`Home`, `Continuar`, `Biblioteca`, `Búsqueda`).
 * **Barra de Pistas Limpia y Recarga Focalizada**: Botón `(Y) Recargar` visible y activo únicamente en las pestañas *Continuar viendo* y *Biblioteca* con feedback visual de progreso, y eliminación de indicaciones duplicadas en la barra inferior (`[L] [R] Vista`).
+* **Blindaje en Pestaña "Continuar" y Recarga (`(Y) Reload`)**: Protección integral contra cuelgues al intercalar entre pestañas y presionar recargar o al entrar rápidamente a *Continuar viendo*. Incluye guardia de carga concurrente (`libLoading`), secuencia de petición (`libLoadSeq`), descarte inmediato de callbacks de pósters antiguos (`rowsAlive`), sincronización de IDs (`g_libIds`) exclusiva en hilo UI y rescate automático del foco a la barra de pestañas superior en listas vacías.
 
 ---
 
@@ -156,8 +157,6 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 | **Reproductor Local Exclusivo (`LocalPlayerActivity`)** | ✅ **Reproductor local desacoplado y optimizado** |
 | **Salto Rápido Doble Toque Táctil y Gatillos `ZL` / `ZR`** | ✅ **Estilo Netflix/YouTube (+10s, +20s, +30s...)** |
 | **Streaming Torrent 1080p sin Deadlocks** | ✅ **Ventana de 64 MB + Pre-descarga de cola 16 MB** |
-| **Protección Anti-Crash al Salir y Reentrar** | ✅ **Exclusión mutua global de ciclo de vida** |
-| **Blindaje de Red y Salida Segura (Anti-Crash Shield)** | ✅ **Cero pantallazos negros al cerrar con internet lento** |
 | **Reintento Rápido de Streams (`Y`) y Anti-Timeout** | ✅ **Reconexión en 1 clic + Límite a los 15s** |
 | **Fondos Panorámicos 16:9 + Logos con Pulso** | ✅ **Renderizado nativo y prefetching sin pantallas negras** |
 | **CPU FastLoad Boost Inteligente** | ✅ **Dinámico: 1785 MHz carga -> 1020 MHz normal** |
