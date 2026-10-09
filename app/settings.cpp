@@ -845,9 +845,31 @@ void applyUiScale()
     if (uiScaleHook) uiScaleHook();
 }
 
+static SettingsActivity* s_activeSettings = nullptr;
+
+SettingsActivity::SettingsActivity()
+{
+    s_activeSettings = this;
+}
+
 SettingsActivity::~SettingsActivity()
 {
+    if (s_activeSettings == this)
+        s_activeSettings = nullptr;
     stremio::refreshHomeIfDirty();
+}
+
+void SettingsActivity::reloadUi()
+{
+    this->setContentView(this->createContentView());
+    this->willAppear();
+    brls::Application::giveFocus(this->getDefaultFocus());
+}
+
+void reloadActiveSettingsUi()
+{
+    if (s_activeSettings)
+        s_activeSettings->reloadUi();
 }
 
 brls::View* SettingsActivity::createContentView()

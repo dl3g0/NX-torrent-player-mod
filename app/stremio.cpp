@@ -145,11 +145,16 @@ class SectionActivity : public brls::Activity
     {
     }
 
-    // Retires the page's liveness tokens. B pops this screen while its poster
-    // downloads -- and possibly a catalog page -- are still in flight, and
-    // every one of them holds a raw pointer into the view tree that is about to
-    // be freed. The tab's own token is no good here: the tab is still alive, so
-    // it would not stop any of them.
+    void willDisappear(bool resetState = false) override
+    {
+        if (onGone)
+        {
+            onGone();
+            onGone = nullptr;
+        }
+        brls::Activity::willDisappear(resetState);
+    }
+
     ~SectionActivity() override
     {
         if (onGone) onGone();
@@ -1623,8 +1628,10 @@ void pauseCatalogLoading()
 
 void resumeCatalogLoading()
 {
-    if (s_catalogResumeHook)
-        s_catalogResumeHook();
+    brls::sync([]() {
+        if (s_catalogResumeHook)
+            s_catalogResumeHook();
+    });
 }
 
 void shutdown()
@@ -2344,9 +2351,8 @@ void fetchSubtitlesAsync(const std::string& authKey, const std::string& type,
             }
 
             // OpenSubtitles alone can answer with dozens of files for a popular
-            // title. Past a point they are the same subtitle from different
-            // rips, and a selector nobody can scroll is worse than a short one.
-            constexpr size_t kMaxSubs = 40;
+            // title. Keep enough so secondary/international languages are not truncated.
+            constexpr size_t kMaxSubs = 120;
 
             // The preferred language first -- stable, so each language keeps the
             // order its addon sent (which is roughly best-match first).
@@ -2900,6 +2906,8 @@ StremioTab::StremioTab()
     stremio::reportView(-1);
 
     stremio::setLanguageChangeHook([this]() {
+        *rowsAlive = false;
+        rowsAlive = std::make_shared<bool>(true);
         homeRenderedStrips.clear();
         emptyHomeLabel = nullptr;
         if (homeBox) homeBox->clearViews();
@@ -2907,7 +2915,10 @@ StremioTab::StremioTab()
         if (libraryBoxView) libraryBoxView->clearViews();
         if (searchBox) searchBox->clearViews();
         this->updateActionHint(brls::BUTTON_Y, tr("Reload"));
-        renderView();
+        if (brls::Application::getActivitiesStack().size() <= 1)
+            renderView();
+        else
+            stremio::markHomeCatalogsDirty();
     });
 
     stremio::setCatalogPauseHook([this]() { pauseCatalogLoads(); });
@@ -3010,7 +3021,11 @@ void StremioTab::onGlobalFocus(brls::View* focused)
 
     if (view == View::Home && catalogLoadsPaused)
     {
-        resumeCatalogLoads();
+        auto live = alive;
+        brls::sync([this, live]() {
+            if (*live && view == View::Home && catalogLoadsPaused)
+                resumeCatalogLoads();
+        });
     }
 
     if (stremio::libraryGen() == seenGen) return;
@@ -3397,10 +3412,13 @@ void StremioTab::cycleView(int dir)
         pauseCatalogLoads();
     resetOnShow  = true;              // land on the first row, scrolled to the top
     pendingSlide = dir > 0 ? 1 : -1;  // slide the new list in from that side
-    if (view == View::Home && catalogLoadsPaused)
-        resumeCatalogLoads();
-    else
-        renderView();
+    if (view == View::Home)
+    {
+        catalogLoadsPaused = false;
+        catalogCancelToken = std::make_shared<std::atomic<bool>>(false);
+        stremio::s_catalogCancelToken = catalogCancelToken;
+    }
+    renderView();
 }
 
 // A header tab-bar pick: jump straight to `v`. Like cycleView, and it hands the
@@ -3415,10 +3433,13 @@ void StremioTab::selectView(View v)
     pendingSlide = static_cast<int>(v) > static_cast<int>(view) ? 1 : -1;
     view = v;
     resetOnShow = true;
-    if (view == View::Home && catalogLoadsPaused)
-        resumeCatalogLoads();
-    else
-        renderView();
+    if (view == View::Home)
+    {
+        catalogLoadsPaused = false;
+        catalogCancelToken = std::make_shared<std::atomic<bool>>(false);
+        stremio::s_catalogCancelToken = catalogCancelToken;
+    }
+    renderView();
 }
 
 // Builds or toggles the list for the current view.
@@ -3750,11 +3771,15 @@ void StremioTab::promptSearch()
 
 void StremioTab::scheduleRenderHome()
 {
-    if (homeRenderScheduled || view != View::Home) return;
+    if (homeRenderScheduled || view != View::Home || catalogLoadsPaused) return;
     homeRenderScheduled = true;
     auto live = alive;
     brls::sync([this, live]() {
-        if (!*live) return;
+        if (!*live || catalogLoadsPaused)
+        {
+            homeRenderScheduled = false;
+            return;
+        }
         homeRenderScheduled = false;
         if (view == View::Home) renderHome();
     });
@@ -3763,7 +3788,7 @@ void StremioTab::scheduleRenderHome()
 // Fetches Cinemeta's "top" catalog for `type` into `cache`, then renders it if
 void StremioTab::renderHome()
 {
-    if (!homeBox) return;
+    if (!homeBox || catalogLoadsPaused) return;
 
     if (!catalogCancelToken || catalogCancelToken->load(std::memory_order_relaxed))
     {
@@ -3982,6 +4007,7 @@ void StremioTab::renderHome()
             tryAddStrip(c.key, c.title, c.items, c.catType, c.catId, c.addonBase);
 
         if (last) finishList(last);
+        else if (homeBox && !homeBox->getChildren().empty()) finishList(homeBox->getChildren().back());
         return;
     }
 
@@ -4011,6 +4037,7 @@ void StremioTab::renderHome()
         makeSection(c.key, c.title, c.items, c.catType, c.catId, c.addonBase);
 
     if (last) finishList(last);
+    else if (homeBox && !homeBox->getChildren().empty()) finishList(homeBox->getChildren().back());
 }
 
 void StremioTab::refreshHome()
@@ -4023,6 +4050,8 @@ void StremioTab::refreshHome()
     if (homeBox) homeBox->clearViews();
     if (view == View::Home)
         renderHome();
+    else
+        renderView();
 }
 
 // Fetches Cinemeta's "top" catalog for `type` into `cache`, then renders it if

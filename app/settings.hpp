@@ -7,8 +7,10 @@
 class SettingsActivity : public brls::Activity
 {
   public:
+    SettingsActivity();
     ~SettingsActivity() override;
     brls::View* createContentView() override;
+    void reloadUi();
 };
 
 // The account screen, opened from the header's profile button: who is signed in
@@ -34,4 +36,7 @@ void setUiScaleHook(std::function<void()> fn);
 
 // Instantly reloads the entire UI in the new language without restarting the app.
 void reloadAppUi();
+
+// Reloads the active settings activity in-place if open.
+void reloadActiveSettingsUi();
 

@@ -35,6 +35,7 @@ const std::vector<std::string>& langLabels();
 // either the literal passed in or a string owned by the table, so it outlives
 // the call either way.
 const char* tr(const char* en);
+inline std::string tr(const std::string& en) { return tr(en.c_str()); }
 
 } // namespace i18n
 

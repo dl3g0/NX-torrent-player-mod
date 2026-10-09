@@ -1,0 +1,15 @@
+{
+    "hints": {
+        "ok": "Εντάξει",
+        "back": "Πίσω",
+        "exit": "Έξοδος"
+    },
+
+    "crash_frame": {
+        "button": "Εντάξει"
+    },
+
+    "thumbnail_sidebar": {
+        "save": "Αποθήκευση"
+    }
+}

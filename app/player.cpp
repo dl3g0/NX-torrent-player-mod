@@ -1105,7 +1105,7 @@ void MpvView::loadOnlineSub(int index)
     if (index < 0 || index >= (int)onlineSubs.size() || !mpv) return;
 
     const stremio::Subtitle& sub = onlineSubs[index];
-    std::string title = config::langLabelFor(sub.lang);
+    std::string title = tr(config::langLabelFor(sub.lang));
     if (title.empty()) title = tr("Subtitle");
     if (!sub.addon.empty()) title += " - " + sub.addon;
 
@@ -1139,9 +1139,9 @@ void MpvView::loadOnlineSub(int index)
 // delay changes -- the menu and the L/R shortcut both come through here.
 void MpvView::setSubDelay(double seconds)
 {
-    // Past ten seconds either way it is not a sync problem any more, it is the
-    // wrong subtitle file.
-    constexpr double kMax = 10.0;
+    // Up to two minutes either way covers large intro/logo differences, "Previously on"
+    // segments and web-vs-bluray release offsets.
+    constexpr double kMax = 120.0;
     if (seconds < -kMax) seconds = -kMax;
     if (seconds > kMax) seconds = kMax;
     // Snap: the shortcut steps by 0.1 and floating point drift would otherwise
@@ -1752,7 +1752,7 @@ void MpvView::openTrackMenu()
         for (size_t i = 0; i < onlineSubs.size(); i++)
         {
             if (loadedSubs.count((int)i)) continue;
-            std::string l = config::langLabelFor(onlineSubs[i].lang);
+            std::string l = tr(config::langLabelFor(onlineSubs[i].lang));
             if (l.empty()) l = tr("Unknown");
             if (!onlineSubs[i].addon.empty()) l += " - " + onlineSubs[i].addon;
             picks.push_back({ -1, (int)i });
@@ -1865,7 +1865,7 @@ void MpvView::openTrackMenu()
         subDelaySink = [sd](double d) { sd->setDetailText(subDelayText(d)); };
 
         auto* hint = new brls::Label();
-        hint->setText(tr("L / R shift the subtitles by 0.1 s. Later is positive. "
+        hint->setText(tr("L / R shift by 0.1 s. ZL / ZR shift by 1.0 s. (Y) resets. Later is positive. "
                       "The video keeps playing behind this."));
         hint->setFontSize(15.0f);
         hint->setTextColor(theme::textMuted());
@@ -1873,9 +1873,7 @@ void MpvView::openTrackMenu()
         hint->setMargins(6.0f, 12.0f, 4.0f, 12.0f);
         content->addView(hint);
 
-        // L/R belong to the delay in here. The player registers the same two
-        // buttons for the speed, but those never fire while the panel has the
-        // cursor -- actions are dispatched up the focused view's own tree.
+        // L/R and ZL/ZR adjust subtitle delay in here.
         auto nudge = [this](double delta) {
             setSubDelay(subDelay + delta);
             return true;
@@ -1888,6 +1886,21 @@ void MpvView::openTrackMenu()
             tr("Subtitles later"), brls::BUTTON_RB,
             [nudge](brls::View*) { return nudge(0.1); }, false, true,
             brls::SOUND_NONE);
+        panel->registerAction(
+            tr("Fast earlier (-1s)"), brls::BUTTON_LT,
+            [nudge](brls::View*) { return nudge(-1.0); }, true, true,
+            brls::SOUND_NONE);
+        panel->registerAction(
+            tr("Fast later (+1s)"), brls::BUTTON_RT,
+            [nudge](brls::View*) { return nudge(1.0); }, true, true,
+            brls::SOUND_NONE);
+        panel->registerAction(
+            tr("Reset delay"), brls::BUTTON_Y,
+            [this](brls::View*) {
+                setSubDelay(0.0);
+                return true;
+            },
+            true, false, brls::SOUND_CLICK);
     }
 
     content->addView(panelSection(tr("DIAGNOSTICS"), 18.0f));

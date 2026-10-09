@@ -113,6 +113,7 @@ const Lang kLangs[] = {
     { "ar", "Arabic", "ar,ara" },
     { "de", "German", "de,ger,deu" },
     { "it", "Italian", "it,ita" },
+    { "el", "Greek", "el,ell,gre,greek" },
     { "nl", "Dutch", "nl,dut,nld" },
     { "ja", "Japanese", "ja,jpn" },
     { "ko", "Korean", "ko,kor" },
@@ -195,6 +196,7 @@ std::string langLabelFor(const std::string& tag)
     if (t == "es-419" || t == "es-la" || t == "latino") return "Spanish (Latin America)";
     if (t == "es-es" || t == "castellano" || t == "spa-es") return "Spanish (Spain)";
     if (t == "ar" || t == "ara" || t == "arabic") return "Arabic";
+    if (t == "el" || t == "ell" || t == "gre" || t == "greek") return "Greek";
 
     for (const auto& l : kLangs)
     {
@@ -232,6 +234,7 @@ std::string langCodeFor(const std::string& tag)
     if (t == "es-419" || t == "es-la" || t == "latino") return "es-419";
     if (t == "es-es" || t == "castellano" || t == "spa-es") return "es-es";
     if (t == "ar" || t == "ara" || t == "arabic") return "ar";
+    if (t == "el" || t == "ell" || t == "gre" || t == "greek") return "el";
 
     for (const auto& l : kLangs)
     {

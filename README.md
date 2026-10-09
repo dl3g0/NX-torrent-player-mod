@@ -130,16 +130,25 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 ---
 
 ### 🌐 8. Internacionalización y Soporte Universal de Subtítulos
-* **Traducción Integral al 100% en Tiempo Real (6 Idiomas)**:
+* **Traducción Integral al 100% en Tiempo Real (7 Idiomas)**:
   * **Español (Latino)**
   * **Español (España / Castellano)**
   * **English**
   * **Français**
   * **Português (Brasil)**
   * **Русский (Ruso)**
-  * *Traducción completa de toda la interfaz, menús, pantallas y barra inferior de botones (`hints` como Aceptar, Atrás, Salir), actualizándose al instante sin reiniciar la consola.*
+  * **Ελληνικά (Griego)**
+  * *Traducción nativa completa de más de 560 elementos de la interfaz, menús, pantallas de configuración, descargas, diálogos y barra inferior de botones (`hints`), con renderizado fluido y nítido de todo el alfabeto y acentos griegos.*
+* **Soporte Nativo de Griego y Subtítulos Internacionales**:
+  * Selección de **Griego (`el` / `ell` / `gre` / `greek`)** como idioma preferente de subtítulos y audio en Ajustes.
+  * Auto-selección y carga inteligente (*sticky subtitles*) de pistas en griego al arrancar cualquier contenido.
+  * Traducción contextual de nombres de pistas online en el reproductor (ej. *"Griego - OpenSubtitles v3"*, *"Greek - OpenSubtitles v3"*, *"Ελληνικά - OpenSubtitles v3"*).
+* **Pool Extendido de Subtítulos Online (120 Pistas)**:
+  * Ampliación del límite máximo de subtítulos recibidos desde Stremio y OpenSubtitles (`kMaxSubs`: de 40 a 120 pistas). Evita que subtítulos en griego u otros idiomas internacionales queden descartados en películas y series populares con docenas de pistas.
+
+  * Límite ampliado de 40 a 120 subtítulos simultáneos por vídeo, asegurando que idiomas secundarios o internacionales de OpenSubtitles no queden truncados en películas o series con muchas pistas.
 * **Fuente Universal Automática Integrada (`subfont.ttf`)**:
-  * Incluye de forma nativa cobertura tipográfica completa para alfabetos **Árabe**, **Cirílico (Ruso)** y **Latino extendido (acentos, tildes, cedillas)**.
+  * Incluye de forma nativa cobertura tipográfica completa para alfabetos **Griego**, **Árabe**, **Cirílico (Ruso)** y **Latino extendido (acentos, tildes, cedillas)**.
   * La app gestiona e instala la fuente automáticamente en la tarjeta microSD en el primer inicio sin requerir descargas externas ni configuración manual por parte del usuario.
 * **Detección y Mapeo Inteligente de Subtítulos y Audios**: Detección prioritaria de pistas multilingües internas y complementos online (OpenSubtitles / Stremio) adaptadas al idioma de preferencia del usuario.
 
@@ -167,7 +176,7 @@ Cuenta con una interfaz nativa fluida construida sobre el framework **Borealis**
 | **Sincronización Manual de Addons en la Vista de Cuenta** | ✅ **Sincronización instantánea de addons y catálogos en vivo desde Stremio** |
 | **Internacionalización y Traducción Completa al 100%** | ✅ **Traducción total de la UI, botones de la barra inferior (footer hints) y 6 idiomas dinámicos** |
 | **Integración con IntroDB (Saltar Intros y Créditos)** | ✅ **Detección comunitaria de intros, recaps y créditos con botón (A), táctil y auto-skip** |
-| **Fuente Universal para Subtítulos en Árabe y Cirílico** | ✅ **Automática integrada sin configuración del usuario** |
+| **Fuente Universal y Subtítulos (Griego, Árabe, Cirílico)** | ✅ **Automática integrada + Pool de 120 subtítulos sin truncar** |
 | **Filtro Automático de Fuentes 4K** | ✅ **Opción activa por defecto para estabilidad Switch** |
 
 ---

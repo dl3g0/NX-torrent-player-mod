@@ -1,14 +1,14 @@
 {
     "hints": {
-        "ok": "OK",
+        "ok": "ОК",
         "back": "Назад",
-        "exit": "Закрыть",
+        "exit": "Выход",
         "on": "Вкл.",
         "off": "Выкл."
     },
 
     "crash_frame": {
-        "button": "OK"
+        "button": "ОК"
     },
 
     "thumbnail_sidebar": {

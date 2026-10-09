@@ -2322,8 +2322,17 @@ void attachTopTabBar(brls::AppletFrame* frame, brls::Box* content)
             },
             false, false, brls::SOUND_BACK);
 
+        frame->registerAction(
+            tr("Exit"), brls::BUTTON_START,
+            [](brls::View*) {
+                brls::Application::quit();
+                return true;
+            },
+            false, false, brls::SOUND_NONE);
+
         if (s_localTabLanguageHook) s_localTabLanguageHook();
         stremio::onLanguageChanged();
+        brls::Application::getGlobalHintsUpdateEvent()->fire();
     };
 }
 
@@ -2369,6 +2378,14 @@ brls::View* buildBrowser()
         return true;
     }, true, false, brls::SOUND_CLICK);
 
+    frame->registerAction(
+        tr("Exit"), brls::BUTTON_START,
+        [](brls::View*) {
+            brls::Application::quit();
+            return true;
+        },
+        false, false, brls::SOUND_NONE);
+
     // select() keeps these in step from here on, but its first call ran inside
     // attachTopTabBar -- i.e. before the actions existed, where setActionAvailable
     // finds nothing to set. Seed them for the startup tab.
@@ -2392,11 +2409,8 @@ void reloadAppUi()
         i18n::load();
         if (s_browserLanguageHook)
             s_browserLanguageHook();
-        brls::Application::popActivity(brls::TransitionAnimation::NONE, [] {
-            brls::sync([] {
-                brls::Application::pushActivity(new SettingsActivity(), brls::TransitionAnimation::NONE);
-            });
-        });
+        reloadActiveSettingsUi();
+        brls::Application::getGlobalHintsUpdateEvent()->fire();
     });
 }
 
@@ -2427,8 +2441,8 @@ void ensureSubfont()
             currentVer.pop_back();
     }
 
-    bool needInstall = (access(fontDst.c_str(), F_OK) != 0) || (currentVer != "0.0.9" && currentVer != "0.0.9.1" && !hasCustom);
-
+    bool needInstall = (access(fontDst.c_str(), F_OK) != 0) || (currentVer != "0.0.9" && currentVer != "0.0.9.1" && currentVer != "0.0.9.2" && !hasCustom);
+ 
     if (hasCustom)
     {
         FILE* src = std::fopen(customFont.c_str(), "rb");
@@ -2460,11 +2474,11 @@ void ensureSubfont()
                 while ((n = std::fread(buf, 1, sizeof(buf), src)) > 0)
                     std::fwrite(buf, 1, n, dst);
                 std::fclose(dst);
-                brls::Logger::info("[font] automatically installed bundled universal font (Arabic/Cyrillic/Latin) to {}", fontDst);
+                brls::Logger::info("[font] automatically installed bundled universal font (Arabic/Cyrillic/Latin/Greek) to {}", fontDst);
 
                 if (FILE* vf = std::fopen(verFile.c_str(), "w"))
                 {
-                    std::fprintf(vf, "0.0.9.1\n");
+                    std::fprintf(vf, "0.0.9.2\n");
                     std::fclose(vf);
                 }
             }
@@ -2511,17 +2525,156 @@ int main(int argc, char* argv[])
     // tab bar and the browser are built once and never again.
     i18n::load();
     brls::Application::setTranslationHook([](const std::string& str) -> std::string {
-        if (str == "hints/ok" || str == "OK" || str == "ok") return tr("OK");
-        if (str == "hints/back" || str == "Back" || str == "back") return tr("Back");
-        if (str == "hints/exit" || str == "Exit" || str == "exit") return tr("Exit");
-        if (str == "hints/cancel" || str == "Cancel" || str == "cancel") return tr("Cancel");
-        if (str == "hints/delete" || str == "Delete" || str == "delete") return tr("Delete");
-        if (str == "hints/open" || str == "Open" || str == "open") return tr("Open");
-        if (str == "hints/save" || str == "Save" || str == "save") return tr("Save");
-        if (str == "hints/submit" || str == "Submit" || str == "submit") return tr("Submit");
-        if (str == "hints/exit_hint") return tr("You will exit this app");
-        if (str == "hints/on") return tr("On");
-        if (str == "hints/off") return tr("Off");
+        if (str.empty()) return str;
+
+        // Special prefix: "  View" / "  Vista" / "  Προβολή" ...
+        static const std::string kLbPrefix = "  ";
+        if (str.rfind(kLbPrefix, 0) == 0)
+        {
+            return kLbPrefix + tr("View");
+        }
+
+        // OK / Aceptar / Confirm
+        if (str == "hints/ok" || str == "OK" || str == "ok" || str == "Ok" ||
+            str == "Aceptar" || str == "aceptar" ||
+            str == "Εντάξει" || str == "εντάξει" || str == "ΟΚ" ||
+            str == "ОК" || str == "ок" || str == "Valider")
+        {
+            return tr("OK");
+        }
+
+        // Back / Atrás
+        if (str == "hints/back" || str == "Back" || str == "back" ||
+            str == "Atrás" || str == "atrás" || str == "Atras" || str == "atras" ||
+            str == "Retour" || str == "retour" ||
+            str == "Voltar" || str == "voltar" ||
+            str == "Назад" || str == "назад" ||
+            str == "Πίσω" || str == "πίσω")
+        {
+            return tr("Back");
+        }
+
+        // Exit / Salir
+        if (str == "hints/exit" || str == "Exit" || str == "exit" ||
+            str == "Salir" || str == "salir" ||
+            str == "Quitter" || str == "quitter" ||
+            str == "Sair" || str == "sair" ||
+            str == "Выход" || str == "выход" ||
+            str == "Έξοδος" || str == "έξοδος")
+        {
+            return tr("Exit");
+        }
+
+        // Cancel / Cancelar
+        if (str == "hints/cancel" || str == "Cancel" || str == "cancel" ||
+            str == "Cancelar" || str == "cancelar" ||
+            str == "Annuler" || str == "annuler" ||
+            str == "Отмена" || str == "отмена" ||
+            str == "Ακύρωση" || str == "ακύρωση")
+        {
+            return tr("Cancel");
+        }
+
+        // Delete / Eliminar
+        if (str == "hints/delete" || str == "Delete" || str == "delete" ||
+            str == "Eliminar" || str == "eliminar" ||
+            str == "Supprimer" || str == "supprimer" ||
+            str == "Excluir" || str == "excluir" ||
+            str == "Удалить" || str == "удалить" ||
+            str == "Διαγραφή" || str == "διαγραφή")
+        {
+            return tr("Delete");
+        }
+
+        // Open / Abrir
+        if (str == "hints/open" || str == "Open" || str == "open" ||
+            str == "Abrir" || str == "abrir" ||
+            str == "Ouvrir" || str == "ouvrir" ||
+            str == "Открыть" || str == "открыть" ||
+            str == "Άνοιγμα" || str == "άνοιγμα")
+        {
+            return tr("Open");
+        }
+
+        // Save / Guardar
+        if (str == "hints/save" || str == "Save" || str == "save" ||
+            str == "Guardar" || str == "guardar" ||
+            str == "Sauvegarder" || str == "sauvegarder" ||
+            str == "Salvar" || str == "salvar" ||
+            str == "Сохранить" || str == "сохранить" ||
+            str == "Αποθήκευση" || str == "αποθήκευση")
+        {
+            return tr("Save");
+        }
+
+        // Submit / Enviar
+        if (str == "hints/submit" || str == "Submit" || str == "submit" ||
+            str == "Enviar" || str == "enviar" ||
+            str == "Envoyer" || str == "envoyer" ||
+            str == "Отправить" || str == "отправить" ||
+            str == "Υποβολή" || str == "υποβολή")
+        {
+            return tr("Submit");
+        }
+
+        // Reload / Recargar
+        if (str == "Reload" || str == "reload" ||
+            str == "Recargar" || str == "recargar" ||
+            str == "Recharger" || str == "recharger" ||
+            str == "Recarregar" || str == "recarregar" ||
+            str == "Перезагрузить" || str == "перезагрузить" ||
+            str == "Επαναφόρτωση" || str == "επαναφόρτωση")
+        {
+            return tr("Reload");
+        }
+
+        // View / Vista
+        if (str == "View" || str == "view" ||
+            str == "Vista" || str == "vista" ||
+            str == "Vue" || str == "vue" ||
+            str == "Visualização" || str == "visualização" ||
+            str == "Visualizar" || str == "visualizar" ||
+            str == "Вид" || str == "вид" ||
+            str == "Affichage" || str == "affichage" ||
+            str == "Προβολή" || str == "προβολή")
+        {
+            return tr("View");
+        }
+
+        // Exit confirmation dialog hint
+        if (str == "hints/exit_hint" ||
+            str == "You will exit this app" ||
+            str == "¿Deseas salir de la aplicación?" ||
+            str == "Voulez-vous quitter l'application ?" ||
+            str == "Deseja sair do aplicativo?" ||
+            str == "Вы хотите выйти из приложения?" ||
+            str == "Θέλετε να βγείτε από την εφαρμογή;")
+        {
+            return tr("You will exit this app");
+        }
+
+        // Toggle state On
+        if (str == "hints/on" || str == "On" || str == "on" ||
+            str == "Activado" || str == "activado" || str == "Activo" || str == "activo" ||
+            str == "Activé" || str == "activé" ||
+            str == "Ativado" || str == "ativado" ||
+            str == "Вкл" || str == "вкл" ||
+            str == "Ενεργό" || str == "ενεργό")
+        {
+            return tr("On");
+        }
+
+        // Toggle state Off
+        if (str == "hints/off" || str == "Off" || str == "off" ||
+            str == "Desactivado" || str == "desactivado" || str == "Inactivo" || str == "inactivo" ||
+            str == "Désactivé" || str == "désactivé" ||
+            str == "Desativado" || str == "desativado" ||
+            str == "Выкл" || str == "выкл" ||
+            str == "Ανενεργό" || str == "ανενεργό")
+        {
+            return tr("Off");
+        }
+
         const char* t = tr(str.c_str());
         return (t && t != str.c_str()) ? std::string(t) : str;
     });

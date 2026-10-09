@@ -838,6 +838,12 @@ class SourceCard : public brls::Box
 class AddonSourcePicker : public brls::Activity
 {
   public:
+    void willDisappear(bool resetState = false) override
+    {
+        *alive = false;
+        brls::Activity::willDisappear(resetState);
+    }
+
     // Async fetches (addons / streams, plus the subclass's own) can land after
     // B pops us.
     ~AddonSourcePicker() override { *alive = false; }
@@ -1363,7 +1369,7 @@ class MovieDetailActivity : public AddonSourcePicker
                                  [this, live](std::string path) {
                                      if (!*live || path.empty() || !poster) return;
                                      poster->setImageFromFile(path);
-                                 });
+                                 }, live);
     }
 
     void loadMeta()
@@ -1733,6 +1739,13 @@ class SeriesDetailActivity : public brls::Activity
         , item(std::move(item))
         , art(std::move(art))
     {
+    }
+
+    void willDisappear(bool resetState = false) override
+    {
+        *alive      = false;
+        *cardsAlive = false;
+        brls::Activity::willDisappear(resetState);
     }
 
     ~SeriesDetailActivity() override
